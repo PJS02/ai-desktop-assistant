@@ -1,4 +1,3 @@
-
 # AI Desktop Assistant (Prototype)
 
 Python + PyQt 기반 데스크탑 캐릭터 예제 프로젝트
