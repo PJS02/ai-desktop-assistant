@@ -2,21 +2,39 @@
 import random
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication
-from PyQt6.QtGui import QPixmap, QTransform
-from PyQt6.QtCore import QTimer, Qt, QPoint
+from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush
+from PyQt6.QtCore import QTimer, Qt, QPoint, QRect
 from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 
+try:
+    import pygetwindow as gw
+    HAS_PYGETWINDOW = True
+except ImportError:
+    HAS_PYGETWINDOW = False
+
+# Windows API를 사용한 창 상태 확인
+try:
+    import ctypes
+    from ctypes import windll
+    HAS_WINDOWS_API = True
+except (ImportError, OSError):
+    HAS_WINDOWS_API = False
+
 
 class Surface:
     """캐릭터가 올라갈 수 있는 표면 (바닥, 팝업창 등)"""
-    def __init__(self, name: str, y_level: int):
-        self.name = name      # 표면 이름
-        self.y_level = y_level  # 캐릭터가 올라갈 Y좌표
+    def __init__(self, name: str, y_level: int, x_min: int = 0, x_max: int = 10000, height: int | None = None, source_key: str | None = None):
+        self.name = name           # 표면 이름
+        self.y_level = y_level     # 캐릭터가 올라갈 Y좌표
+        self.x_min = x_min         # 표면의 X 범위 시작 (좌)
+        self.x_max = x_max         # 표면의 X 범위 끝 (우)
+        self.height = height       # 표면 높이 (창 테두리 표시용)
+        self.source_key = source_key  # 창 추적용 고유 키
     
     def __repr__(self):
-        return f"Surface({self.name}, y={self.y_level})"
+        return f"Surface({self.name}, y={self.y_level}, x=[{self.x_min},{self.x_max}], h={self.height})"
 
 class CharacterWidget(QLabel):
     def __init__(self):
@@ -28,6 +46,7 @@ class CharacterWidget(QLabel):
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowTitle("AI Desktop Assistant")
 
         # 기본 설정
         self.mood_system = MoodSystem()
@@ -43,8 +62,8 @@ class CharacterWidget(QLabel):
         self.sprite_animator.animation_finished.connect(self.on_animation_finished)
         
         
-        # 이미지는 별도로 축소하여 대응
-        self.setFixedSize(800, 800)
+        # 이미지는 별도로 축소하여 대응 (300x400으로 조정)
+        self.setFixedSize(300, 400)
         self.update_render("idle")
         
         # 애니메이션 컨트롤러
@@ -80,6 +99,7 @@ class CharacterWidget(QLabel):
         # ====== Surface 시스템 (바닥, 팝업창 등) ======
         self.surfaces = []  # 캐릭터가 올라갈 수 있는 모든 표면
         self.current_surface = None  # 현재 캐릭터가 위에 있는 표면
+        self._self_window_handle = None  # 자기 창 제외용 핸들
         
         # 기본 표면: 작업표시줄 위 (화면 최하단)
         # 다양한 해상도 대응을 위해 동적 계산
@@ -87,12 +107,11 @@ class CharacterWidget(QLabel):
         screen_height = screen.geometry().height()
         screen_width = screen.geometry().width()
         
-        # 지면 Y좌표 = 화면 높이 - 캐릭터 높이 - 마진(작업표시줄)
-        # 작업표시줄은 보통 40-50px이므로 안전하게 캐릭터 높이만큼 빼고 상단 여유만 확보
-        ground_y = screen_height - self.height() - 5  # 5px 여유
+        # 지면 Y좌표 = 화면 맨 아래
+        ground_y = screen_height  # 화면 완전 바닥
         
-        # 기본 ground surface 추가
-        ground_surface = Surface("ground", ground_y)
+        # 기본 ground surface 추가 (화면 전체 너비)
+        ground_surface = Surface("ground", ground_y, x_min=0, x_max=screen_width)
         self.add_surface(ground_surface)
         self.current_surface = ground_surface
         
@@ -100,6 +119,15 @@ class CharacterWidget(QLabel):
         print(f"  화면 해상도: {screen_width}x{screen_height}px")
         print(f"  캐릭터 높이: {self.height()}px")
         print(f"  기본 표면(ground): y={ground_y}px")
+        
+        # 윈도우 감지 타이머 (500ms마다 창 스캔)
+        if HAS_PYGETWINDOW:
+            self._window_scan_timer = QTimer()
+            self._window_scan_timer.timeout.connect(self._scan_windows)
+            self._window_scan_timer.start(500)  # 500ms
+            self._last_window_keys = set()  # 이전 스캔의 창 키 추적
+        else:
+            print("[경고] pygetwindow 미설치 - 창 감지 비활성화")
         
         # 중력 시스템
         self.velocity_y = 0  # 수직 속도 (중력 영향)
@@ -110,6 +138,17 @@ class CharacterWidget(QLabel):
         self._gravity_timer = QTimer()
         self._gravity_timer.timeout.connect(self._apply_gravity)
         self._gravity_timer.start(16)  # 16ms = 60fps (30ms에서 개선)
+        
+        # 점프 시스템
+        self.jump_force = 15  # 점프 초기 속도 (위로)
+        self.can_jump = True  # 점프 가능 여부 (지면에 있을 때만)
+        self.is_jumping = False  # 현재 점프 중인지
+        
+        # 디버그 모드 (collision 박스 및 ground indicator 표시)
+        self.show_debug = True  # True면 디버그 표시
+        
+        # 착지 감지 상태 추적 (로그 중복 제거)
+        self._last_surface_name = None  # 이전 착지 표면 이름
 
     # 애니메이션 신호 처리
     def on_animation_position_changed(self, new_pos):
@@ -130,17 +169,153 @@ class CharacterWidget(QLabel):
         """표면 제거 (팝업창 닫힐 때)"""
         self.surfaces = [s for s in self.surfaces if s.name != surface_name]
         print(f"[Surface 제거] {surface_name}")
+
+    def _get_self_window_handle(self):
+        if self._self_window_handle is None:
+            try:
+                self._self_window_handle = int(self.winId())
+            except Exception:
+                self._self_window_handle = None
+        return self._self_window_handle
+
+    def _is_interactive_window(self, window, screen_geometry, debug=False):
+        """사용자가 직접 상호작용하는 창만 감지 (VS Code, Chrome 같은 앱)"""
+        if not window.title:
+            return False
+
+        # 최소화되었으면 제외
+        if getattr(window, "isMinimized", False):
+            if debug:
+                print(f"  ✗ {window.title}: 최소화됨")
+            return False
+
+        # 창 크기 검증
+        if window.width <= 0 or window.height <= 0:
+            if debug:
+                print(f"  ✗ {window.title}: 잘못된 크기 ({window.width}x{window.height})")
+            return False
+
+        # 너무 작은 창 제외 (1x1, 160x28 등)
+        if window.width < 300 or window.height < 200:
+            if debug:
+                print(f"  ✗ {window.title}: 너무 작음 ({window.width}x{window.height})")
+            return False
+
+        # 최소화된 창 좌표 제외 (-32000)
+        if window.left <= -30000 or window.top <= -30000:
+            if debug:
+                print(f"  ✗ {window.title}: 최소화된 좌표 ({window.left}, {window.top})")
+            return False
+
+        # ====== 명백한 시스템 창들만 제외 ======
+        # 화면 전체를 차지하는 창 제외 (배경/시스템)
+        if (window.width >= screen_geometry.width() - 10 and 
+            window.height >= screen_geometry.height() - 10):
+            if debug:
+                print(f"  ✗ {window.title}: 전체 화면 크기 ({window.width}x{window.height})")
+            return False
+
+        # 명시적 시스템 창 제외 (정확한 창 이름으로만)
+        system_exact_names = [
+            "Program Manager",
+            "Magnifier", "OnScreen Keyboard",
+            "NVIDIA GeForce Overlay",
+            "Windows 입력 환경"
+        ]
+        for exact_name in system_exact_names:
+            if window.title.strip() == exact_name or exact_name in window.title and len(window.title) < 50:
+                if debug:
+                    print(f"  ✗ {window.title}: 시스템 창 ('{exact_name}')")
+                return False
+
+        # 유해한 서브스트링만 필터링
+        harmful_substrings = [
+            "Program Manager", "Magnifier", "OnScreen Keyboard", "NVIDIA",
+            "Windows 입력", "Narrator", "Peek", "Widgets", "Cortana", "Action Center"
+        ]
+        for substring in harmful_substrings:
+            if substring.lower() in window.title.lower():
+                if debug:
+                    print(f"  ✗ {window.title}: 시스템 관련 ('{substring}')")
+                return False
+
+        # "설정"은 명시적으로 제외 (설정 앱)
+        if window.title.strip() == "설정":
+            if debug:
+                print(f"  ✗ {window.title}: 설정 앱 정확히")
+            return False
+
+        # 화면과 교집합 확인
+        window_rect = QRect(window.left, window.top, window.width, window.height)
+        if not window_rect.intersects(screen_geometry):
+            if debug:
+                print(f"  ✗ {window.title}: 화면 범위 밖 ({window.left}, {window.top})")
+            return False
+
+        # 작업표시줄 패턴 제외 (높이 매우 낮고 너비가 전체)
+        if window.height < 100 and window.width > 2000:
+            if debug:
+                print(f"  ✗ {window.title}: 작업표시줄 같은 패턴 ({window.width}x{window.height})")
+            return False
+
+        if debug:
+            print(f"  ✓ 수락: {window.title} ({window.width}x{window.height}) @ ({window.left}, {window.top})")
+        return True
+
+    def _window_key(self, window):
+        handle = getattr(window, "_hWnd", None)
+        if handle is not None:
+            return f"hWnd:{handle}"
+
+        return f"{window.title}|{window.left}|{window.top}|{window.width}|{window.height}"
+
+    def _surface_name_for_window(self, window, window_key):
+        safe_title = "".join(ch if ch.isalnum() or ch in (" ", "-", "_") else "_" for ch in window.title).strip()
+        if not safe_title:
+            safe_title = "window"
+        safe_title = safe_title[:24]
+        return f"window_{safe_title}_{window_key.replace(':', '_')}"
     
-    def get_landing_surface(self, y_pos: int) -> Surface:
+    def get_landing_surface(self, y_pos: int, x_pos: int = None) -> Surface:
         """
         주어진 Y좌표에서 캐릭터가 착지할 표면을 찾음
-        캐릭터가 떨어지면서 만나는 첫 번째 표면 반환
+        X 좌표도 범위 내에 있는지 확인
+        
+        Args:
+            y_pos: 캐릭터 Y 좌표
+            x_pos: 캐릭터 X 좌표 (중심)
         """
+        if x_pos is None:
+            x_pos = self.x()
+        
         # 현재 Y보다 아래에 있는 표면 중 가장 가까운 것 찾기
-        valid_surfaces = [s for s in self.surfaces if s.y_level >= y_pos - self.height()]
+        valid_surfaces = []
+        for s in self.surfaces:
+            # Y 범위 확인: 캐릭터 하단이 surface 상단 높이에 닿아야 함
+            if s.y_level >= y_pos - self.height():
+                # X 범위 확인
+                char_left = x_pos
+                char_right = x_pos + self.width()
+                
+                # 표면과 캐릭터가 X축에서 겹치는지 확인
+                if not (char_right < s.x_min or char_left > s.x_max):
+                    valid_surfaces.append(s)
+        
         if valid_surfaces:
-            return min(valid_surfaces, key=lambda s: s.y_level)
-        return None
+            # Y 값이 가장 작은 (가장 위에 있는) surface에 착지
+            landing = min(valid_surfaces, key=lambda s: s.y_level)
+            
+            # 착지 표면이 변했을 때만 로그 출력
+            if landing.name != self._last_surface_name:
+                print(f"[착지!] {self._last_surface_name} -> {landing.name}")
+                self._last_surface_name = landing.name
+            return landing
+        else:
+            # 착지 표면이 없어졌을 때 로그 출력
+            if self._last_surface_name is not None:
+                print(f"[공중] {self._last_surface_name} -> 없음 (떨어지는 중)")
+                self._last_surface_name = None
+            return None
 
     def update_mood(self):
         if self.is_dragging or self.is_moving:
@@ -282,6 +457,121 @@ class CharacterWidget(QLabel):
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
 
+    # ====== 점프 시스템 ======
+    def jump(self):
+        """캐릭터 점프 실행 (지면에 있을 때만)"""
+        if not self.on_ground:
+            print(f"[점프 불가] on_ground={self.on_ground}")
+            return
+        
+        print(f"[점프!] velocity_y 설정: {-self.jump_force}")
+        self.is_jumping = True
+        self.on_ground = False
+        self.velocity_y = -self.jump_force  # 음수 = 위로
+        self.can_jump = False
+        
+        # 점프 애니메이션 (나중에 jump/ 폴더가 생기면 사용)
+        # 지금은 현재 감정 상태로 표시
+        mood = self.mood_system.decide_emotion()
+        emotion = mood["emotion"]
+        self.current_action = emotion
+        self.update_render(emotion)
+        
+        # 점프 직후 화면 업데이트 (다음 _apply_gravity 호출까지 기다리지 않음)
+        self.move(self.x(), self.y() - 5)  # 즉시 5px 위로 이동
+        self.repaint()
+    
+    # ====== 디버그 렌더링 ======
+    def paintEvent(self, event):
+        """화면 그리기 (collision box 및 ground indicator)"""
+        # 부모의 paintEvent 호출 (이미지 표시)
+        super().paintEvent(event)
+        
+        if not self.show_debug:
+            return
+        
+        # 추가 디버그 그리기
+        painter = QPainter(self)
+        
+        # 1. 빨간색 collision box 그리기
+        red_pen = QPen(QColor(255, 0, 0), 3)  # 빨강, 두께 3px
+        rect = self.rect()  # 위젯 기준 좌표 (0, 0)에서 width×height
+        painter.setPen(red_pen)
+        painter.drawRect(rect)
+        
+        # 2. 초록색 ground indicator 그리기 (지면에 닿아있을 때만)
+        if self.on_ground and self.current_surface:
+            green_pen = QPen(QColor(0, 255, 0), 3)  # 초록, 두께 3px
+            green_brush = QBrush(QColor(0, 255, 0, 100))  # 반투명 초록
+            
+            # 지면을 나타내는 수평선 (캐릭터 밑 10px 높이의 사각형)
+            ground_rect = QRect(0, self.height() - 10, self.width(), 10)
+            
+            painter.setPen(green_pen)
+            painter.setBrush(green_brush)
+            painter.drawRect(ground_rect)
+        
+        # 3. 점프 중일 때 상태 표시
+        if self.is_jumping:
+            blue_pen = QPen(QColor(0, 150, 255), 2)
+            painter.setPen(blue_pen)
+            painter.drawEllipse(self.width() // 2 - 20, 10, 40, 40)
+        
+        # 4. 스크린 좌표 기반 디버그 정보 표시
+        # 절대 위치를 스크린 좌표로 표시
+        screen_pos = self.mapToGlobal(self.rect().topLeft())
+        debug_text = f"Pos:({screen_pos.x()},{screen_pos.y()}) Ground:{self.on_ground}"
+        
+        painter.setPen(QColor(255, 255, 0))
+        painter.drawText(10, 20, 200, 30, Qt.AlignmentFlag.AlignLeft, debug_text)
+        
+        # 5. 현재 Surface 정보 표시
+        if self.current_surface:
+            surface_text = f"Surface: {self.current_surface.name}"
+            painter.drawText(10, 45, 300, 30, Qt.AlignmentFlag.AlignLeft, surface_text)
+        
+        # 6. Ground surface를 주황색 선으로 표시
+        ground_pen = QPen(QColor(255, 165, 0), 4)  # 주황, 두께 4px
+        painter.setPen(ground_pen)
+        widget_screen_top_left = self.mapToGlobal(QPoint(0, 0))
+        
+        for surface in self.surfaces:
+            if surface.name == "ground":
+                # ground는 수평선으로 표시
+                ground_y_widget = int(surface.y_level - widget_screen_top_left.y())
+                ground_x_min_widget = int(surface.x_min - widget_screen_top_left.x())
+                ground_x_max_widget = int(surface.x_max - widget_screen_top_left.x())
+                
+                # 화면에 보이는 범위만 그리기
+                if 0 <= ground_y_widget < self.height():
+                    painter.drawLine(ground_x_min_widget, ground_y_widget, ground_x_max_widget, ground_y_widget)
+                break
+        
+        # 7. 감지된 창 Surface의 테두리를 노란색으로 표시
+        yellow_pen = QPen(QColor(255, 255, 0), 2)  # 노랑, 두께 2px
+        yellow_brush = QBrush(QColor(255, 255, 0, 35))
+        painter.setPen(yellow_pen)
+        painter.setBrush(yellow_brush)
+
+        for surface in self.surfaces:
+            if not surface.name.startswith("window_"):
+                continue
+
+            if surface.height is None:
+                continue
+
+            surface_rect = QRect(
+                int(surface.x_min - widget_screen_top_left.x()),
+                int(surface.y_level - widget_screen_top_left.y()),
+                int(surface.x_max - surface.x_min),
+                int(surface.height),
+            )
+
+            if surface_rect.width() > 0 and surface_rect.height() > 0:
+                painter.drawRect(surface_rect)
+        
+        painter.end()
+
     def update_dragging(self):
         if self.is_dragging:
             self.drag_time += 0.1
@@ -301,6 +591,12 @@ class CharacterWidget(QLabel):
         if self.is_dragging or self.is_moving:
             print(f"[early return] 드래그 중 또는 이동 중 스킵")
             return
+        
+        # ====== 랜덤 점프 (30% 확률) ======
+        if random.random() < 0.3:
+            print(f"[랜덤 점프] 점프 실행!")
+            self.jump()
+            return  # 점프 시 이동하지 않음
         
         if random.random() > 0.8:  # 20% 확률로 이동 스킵
             print(f"[random skip] 확률로 스킵")
@@ -454,42 +750,50 @@ class CharacterWidget(QLabel):
     
     def _apply_gravity(self):
         """중력 적용 - 캐릭터가 착지할 표면을 찾아 떨어짐"""
-        # 드래그 중이거나 이동 중이면 중력 작동 안 함
-        if self.is_dragging or self.is_moving:
+        # 드래그 중이면 중력 작동 안 함 (이동 중은 중력 계속 작용)
+        if self.is_dragging:
             self.on_ground = False
             self.velocity_y = 0
             return
         
         current_y = self.y()
-        current_surface = self.get_landing_surface(current_y)
+        current_x = self.x()
+        current_surface = self.get_landing_surface(current_y, current_x)
         
         # 이미 착지했으면 중력 작동 안 함
-        if current_surface and current_y >= current_surface.y_level:
+        # 착지 조건: 캐릭터 하단이 surface 상단보다 크거나 같을 때
+        if current_surface and current_y + self.height() >= current_surface.y_level:
             # 처음 착지했을 때만 처리
             if not self.on_ground:
                 self.on_ground = True
                 self.velocity_y = 0
                 self.current_surface = current_surface
-                # 표면에 정확히 맞춤
-                self.move(self.x(), int(current_surface.y_level))
+                self.is_jumping = False  # 착지 시 점프 상태 해제
+                self.can_jump = True  # 다시 점프 가능
+                # 표면에 정확히 맞춤 (캐릭터 하단이 surface 상단과 닿아야 함)
+                landing_y = int(current_surface.y_level - self.height())
+                self.move(self.x(), landing_y)
                 
-                # 착지 후 현재 감정 상태로 복구
-                mood = self.mood_system.decide_emotion()
-                emotion = mood["emotion"]
+                print(f"[착지!] 표면: {current_surface.name}, surface_y={current_surface.y_level}px -> char_y={landing_y}px, velocity_y={self.velocity_y}")
                 
-                if emotion == "happy":
-                    self.current_action = "happy"
-                elif emotion == "angry":
-                    self.current_action = "angry"
-                elif emotion == "bored":
-                    self.current_action = "bored"
-                else:
-                    self.current_action = "idle"
-                
-                self.update_render(self.current_action)
+                # 착지 후 현재 감정 상태로 복구 (이동 중이 아닐 때만)
+                if not self.is_moving:
+                    mood = self.mood_system.decide_emotion()
+                    emotion = mood["emotion"]
+                    
+                    if emotion == "happy":
+                        self.current_action = "happy"
+                    elif emotion == "angry":
+                        self.current_action = "angry"
+                    elif emotion == "bored":
+                        self.current_action = "bored"
+                    else:
+                        self.current_action = "idle"
+                    
+                    self.update_render(self.current_action)
             return
         
-        # 중력 가속도 적용
+        # 중력 가속도 적용 (이동 중이어도 Y축 중력은 계속 적용)
         self.on_ground = False
         self.velocity_y += self.gravity
         
@@ -501,12 +805,111 @@ class CharacterWidget(QLabel):
         # 새 위치 계산
         new_y = current_y + self.velocity_y
         
-        # 착지 표면 확인
-        landing_surface = self.get_landing_surface(new_y)
+        # 착지 표면 확인 (X 범위도 포함)
+        landing_surface = self.get_landing_surface(new_y, current_x)
         if landing_surface and new_y >= landing_surface.y_level:
-            new_y = int(landing_surface.y_level)
+            # 캐릭터 하단이 surface 상단과 닿아야 함
+            new_y = int(landing_surface.y_level - self.height())
             self.on_ground = True
             self.velocity_y = 0
             self.current_surface = landing_surface
+            self.is_jumping = False  # 착지 시 점프 상태 해제
+            self.can_jump = True  # 다시 점프 가능
         
         self.move(self.x(), int(new_y))
+        self.repaint()  # 화면 갱신 (디버그 표시 업데이트)
+    
+    # ====== 윈도우 감지 시스템 ======
+    def _scan_windows(self):
+        """활성 창들을 스캔해서 Surface 자동 추가/제거 및 좌표 업데이트"""
+        if not HAS_PYGETWINDOW:
+            return
+        
+        try:
+            # 현재 활성 창 목록
+            windows = gw.getAllWindows()
+            current_window_keys = set()
+            screen_geometry = QApplication.primaryScreen().geometry()
+            self_hwnd = self._get_self_window_handle()
+
+            # 첫 스캔 여부 확인
+            first_scan = not hasattr(self, '_first_scan_done')
+            
+            # 디버그: 첫 스캔만 요약 출력
+            if first_scan:
+                print("[윈도우 감지] 화면에 보이는 창만 Surface로 등록 (실시간 좌표 업데이트)")
+                print(f"  화면 범위: ({screen_geometry.left()}, {screen_geometry.top()}) ~ ({screen_geometry.right()}, {screen_geometry.bottom()})")
+                print(f"  ===== 감지된 모든 창 목록 (첫 스캔) =====")
+                for i, w in enumerate(windows):
+                    print(f"    [{i}] {w.title} | {w.width}x{w.height} @ ({w.left}, {w.top})")
+                print(f"  =====================================")
+                self._first_scan_done = True
+            
+            # Window 객체를 key로 빠르게 찾을 수 있도록 맵 생성
+            window_map = {}  # window_key -> window 객체
+            
+            for window in windows:
+                window_handle = getattr(window, "_hWnd", None)
+
+                # 자기 창은 제외
+                if self_hwnd is not None and window_handle == self_hwnd:
+                    continue
+
+                # 화면에 실제로 보이는 창만 사용 (첫 스캔에만 debug 로그 출력)
+                if not self._is_interactive_window(window, screen_geometry, debug=first_scan):
+                    continue
+                
+                window_key = self._window_key(window)
+                current_window_keys.add(window_key)
+                window_map[window_key] = window
+                
+                # 새로운 창이면 Surface 추가
+                if window_key not in self._last_window_keys:
+                    surface_name = self._surface_name_for_window(window, window_key)
+                    surface_y = window.top
+                    surface_x_min = window.left
+                    surface_x_max = window.left + window.width
+                    visible_height = min(window.height, screen_geometry.bottom() - window.top + 1)
+                    
+                    new_surface = Surface(
+                        surface_name, 
+                        surface_y, 
+                        x_min=surface_x_min, 
+                        x_max=surface_x_max,
+                        height=visible_height,
+                        source_key=window_key,
+                    )
+                    self.add_surface(new_surface)
+                    print(f"[창 감지] {surface_name}")
+                    print(f"  위치: ({window.left}, {window.top}) ~ ({window.left + window.width}, {window.top})")
+            
+            # 기존 window surface의 좌표 업데이트 (창을 움직이거나 크기 변경했을 때)
+            for surface in self.surfaces[:]:
+                if not surface.name.startswith("window_"):
+                    continue
+                
+                if surface.source_key in window_map:
+                    window = window_map[surface.source_key]
+                    # 좌표 업데이트
+                    surface.y_level = window.top
+                    surface.x_min = window.left
+                    surface.x_max = window.left + window.width
+                    surface.height = min(window.height, screen_geometry.bottom() - window.top + 1)
+                else:
+                    # 창이 없어졌으면 Surface 제거
+                    self.remove_surface(surface.name)
+                    print(f"[창 제거] {surface.name}")
+            
+            # 닫힌 창 제거 (ground는 제외)
+            removed = self._last_window_keys - current_window_keys
+            for window_key in removed:
+                for surface in self.surfaces[:]:
+                    if surface.name.startswith("window_") and surface.source_key == window_key:
+                        self.remove_surface(surface.name)
+                        print(f"[창 제거] {surface.name}")
+                        break
+            
+            self._last_window_keys = current_window_keys
+            
+        except Exception as e:
+            print(f"[윈도우 감지 오류] {e}")
