@@ -61,8 +61,7 @@ class CharacterWidget(QLabel):
         self.sprite_animator.frame_changed.connect(self.on_sprite_frame_changed)
         self.sprite_animator.animation_finished.connect(self.on_animation_finished)
         
-        
-        # 이미지는 별도로 축소하여 대응 (300x400으로 조정)
+        # 이미지 별도로 축소 대응
         self.setFixedSize(300, 400)
         self.update_render("idle")
         
@@ -384,14 +383,24 @@ class CharacterWidget(QLabel):
         if pixmap is None:
             print("pixmap: NONE!")
             return
+        
+        # 일관된 크기로 스케일링 (300x400)
+        target_width = 300
+        target_height = 400
+        scaled_pixmap = pixmap.scaledToWidth(target_width, Qt.TransformationMode.SmoothTransformation)
+        # 높이도 맞춰서 조정
+        if scaled_pixmap.height() != target_height:
+            scaled_pixmap = scaled_pixmap.scaledToHeight(target_height, Qt.TransformationMode.SmoothTransformation)
+        
+        self.setFixedSize(target_width, target_height)
         if self.is_flipped:
             # 좌우반전
             transform = QTransform()
             transform.scale(-1, 1)  # 가로 반전
-            flipped_pixmap = pixmap.transformed(transform)
+            flipped_pixmap = scaled_pixmap.transformed(transform)
             self.setPixmap(flipped_pixmap)
         else:
-            self.setPixmap(pixmap)
+            self.setPixmap(scaled_pixmap)
         
         self.repaint()
 
@@ -411,21 +420,10 @@ class CharacterWidget(QLabel):
                 self._move_timer.stop()
                 self.is_moving = False
                 self.sprite_animator.stop()
-                
-                # 현재 감정 상태로 복구
-                mood = self.mood_system.decide_emotion()
-                emotion = mood["emotion"]
-                
-                if emotion == "happy":
-                    self.current_action = "happy"
-                elif emotion == "angry":
-                    self.current_action = "angry"
-                elif emotion == "bored":
-                    self.current_action = "bored"
-                else:
-                    self.current_action = "idle"
-                
-                self.update_render(self.current_action)
+            
+            # 드래그 시작 시 hovering 애니메이션 로드 (한 번만)
+            self.current_action = "hovering"
+            self.update_render("hovering")
 
     def mouseMoveEvent(self, event):
         if self.is_dragging and self.drag_pos:
@@ -520,15 +518,22 @@ class CharacterWidget(QLabel):
         # 4. 스크린 좌표 기반 디버그 정보 표시
         # 절대 위치를 스크린 좌표로 표시
         screen_pos = self.mapToGlobal(self.rect().topLeft())
+        emotion = self.mood_system.decide_emotion()
+        mood_text = emotion.get("emotion", "idle")
         debug_text = f"Pos:({screen_pos.x()},{screen_pos.y()}) Ground:{self.on_ground}"
         
-        painter.setPen(QColor(255, 255, 0))
+        painter.setPen(QColor(255, 0, 0))
         painter.drawText(10, 20, 200, 30, Qt.AlignmentFlag.AlignLeft, debug_text)
         
         # 5. 현재 Surface 정보 표시
         if self.current_surface:
             surface_text = f"Surface: {self.current_surface.name}"
             painter.drawText(10, 45, 300, 30, Qt.AlignmentFlag.AlignLeft, surface_text)
+        
+        # 6. 현재 Mood 상태 표시
+        painter.setPen(QColor(255, 0, 0))
+        mood_display_text = f"Mood: {mood_text}"
+        painter.drawText(10, 70, 200, 30, Qt.AlignmentFlag.AlignLeft, mood_display_text)
         
         # 6. Ground surface를 주황색 선으로 표시
         ground_pen = QPen(QColor(255, 165, 0), 4)  # 주황, 두께 4px
@@ -577,7 +582,7 @@ class CharacterWidget(QLabel):
             self.drag_time += 0.1
             self.mood_system.mood["angry"] += 0.02
             self.mood_system.mood["happy"] *= 0.98
-            self.update_render("talking")
+            # hovering 애니메이션은 draq 시작 시에만 로드됨
     
     # 캐릭터 랜덤 이동
     def random_move(self):
@@ -681,12 +686,7 @@ class CharacterWidget(QLabel):
     def _get_walk_animation(self, emotion):
         """
         기분에 맞는 walk 애니메이션 폴더명 반환
-        
-        우선순위:
-        1. walk_${emotion}/ (예: walk_happy/)
-        2. walk/ (기본, idle 표정)
-        
-        나중에 walk_happy/, walk_angry/ 등이 생기면 자동으로 사용되고, 없으면 기존 walk/ 폴더 사용하게 할겅ㅇ
+        walk_happy/, walk_angry/ 등이 생기면 자동으로 사용되고, 없으면 기존 walk/ 폴더 사용하게 할겅ㅇ
         """
         emotion_walk = f"walk_{emotion}"
         emotion_walk_path = self.assets_path / emotion_walk
@@ -735,10 +735,22 @@ class CharacterWidget(QLabel):
             self._move_timer.stop()
             self.is_moving = False
             
-            # walk 애니메이션 중지 후 idle로 복귀
+            # walk 애니메이션 중지 후 현재 감정 상태로 복귀 (idle 깜빡임 방지)
             self.sprite_animator.stop()
-            self.current_action = "idle"
-            self.update_render("idle")
+            
+            mood = self.mood_system.decide_emotion()
+            emotion = mood["emotion"]
+            
+            if emotion == "happy":
+                self.current_action = "happy"
+            elif emotion == "angry":
+                self.current_action = "angry"
+            elif emotion == "bored":
+                self.current_action = "bored"
+            else:
+                self.current_action = "idle"
+            
+            self.update_render(self.current_action)
             
             self.animation_controller.update_base_pos(self.pos())
             self.animation_controller.start_idle()
