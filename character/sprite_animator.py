@@ -46,7 +46,7 @@ class SpriteAnimator(QObject):
         self.current_frames = [QPixmap(str(f)) for f in frame_files]
         self.current_frame = 0
         
-        print(f"[로드됨] {animation_name}: {len(self.current_frames)}개 프레임")
+        # print(f"[로드됨] {animation_name}: {len(self.current_frames)}개 프레임")
         return True
     
     def play(self, animation_name, fps=10, loop=True):

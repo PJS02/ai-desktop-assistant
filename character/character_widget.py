@@ -1,9 +1,10 @@
 # 캐릭터 위젯을 관리하는 파일
 import random
+import shutil
 from pathlib import Path
-from PyQt6.QtWidgets import QLabel, QApplication
-from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush
-from PyQt6.QtCore import QTimer, Qt, QPoint, QRect
+from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider
+from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont
+from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo
 from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
@@ -37,7 +38,7 @@ class Surface:
         return f"Surface({self.name}, y={self.y_level}, x=[{self.x_min},{self.x_max}], h={self.height})"
 
 class CharacterWidget(QLabel):
-    def __init__(self):
+    def __init__(self, screen_width=None, screen_height=None):
         super().__init__()
 
         # 배경창 투명화
@@ -55,6 +56,27 @@ class CharacterWidget(QLabel):
         self.current_pixmap = None
         self.is_flipped = False
         self.assets_path = Path(__file__).resolve().parent.parent / "assets"
+        
+        # 드래그 앤 드롭 시스템 (초기화)
+        self.held_items = []  # 들고있는 파일/폴더 리스트 (여러 개 가능)
+        self.held_items_icons = {}  # 아이템별 아이콘 캐시
+        self.setAcceptDrops(True)  # 드롭 이벤트 수용
+        
+        # 아이템 반환 타이머 (순차 배치용)
+        self._release_timer = None
+        self._remaining_items_to_release = []  # 반환 대기 중인 아이템
+        
+        # 캐릭터 아이템 폴더 생성
+        self.character_items_path = self.assets_path.parent / "character_items"
+        self.character_items_path.mkdir(parents=True, exist_ok=True)
+        print(f"[캐릭터 아이템 폴더] {self.character_items_path}")
+        
+        # 이벤트 트래킹
+        self.last_interaction_time = 0  # 마지막 상호작용 시간
+        self.idle_counter = 0  # idle 카운터 (neglected 감지용)
+        self.drag_speed = 0  # 드래그 속도
+        self.last_window_count = 0  # 이전 창 개수 (급격한 변화 감지용)
+        self.window_change_count = 0  # 창 변화 횟수
         
         # 스프라이트 애니메이터 초기화
         self.sprite_animator = SpriteAnimator(self.assets_path)
@@ -103,10 +125,17 @@ class CharacterWidget(QLabel):
         # 기본 표면: 작업표시줄 위 (화면 최하단)
         # 다양한 해상도 대응을 위해 동적 계산
         screen = QApplication.primaryScreen()
-        screen_height = screen.geometry().height()
-        screen_width = screen.geometry().width()
         
-        # 지면 Y좌표 = 화면 맨 아래
+        # 커스텀 해상도가 없으면 실제 화면 해상도 사용
+        if screen_width is None or screen_height is None:
+            screen_height = screen.geometry().height()
+            screen_width = screen.geometry().width()
+        
+        # 커스텀 해상도 저장 (나중에 경계 확인 시 사용)
+        self.custom_screen_width = screen_width
+        self.custom_screen_height = screen_height
+        
+        # 지면 Y좌표 = 화면 맨 아래 (커스텀 해상도 사용)
         ground_y = screen_height  # 화면 완전 바닥
         
         # 기본 ground surface 추가 (화면 전체 너비)
@@ -115,9 +144,9 @@ class CharacterWidget(QLabel):
         self.current_surface = ground_surface
         
         print(f"[Surface 시스템 초기화]")
-        print(f"  화면 해상도: {screen_width}x{screen_height}px")
+        print(f"  설정된 해상도: {screen_width}x{screen_height}px")
         print(f"  캐릭터 높이: {self.height()}px")
-        print(f"  기본 표면(ground): y={ground_y}px")
+        print(f"  기본 표면(ground): y={ground_y}px, x=[0, {screen_width}]px")
         
         # 윈도우 감지 타이머 (500ms마다 창 스캔)
         if HAS_PYGETWINDOW:
@@ -320,8 +349,29 @@ class CharacterWidget(QLabel):
         if self.is_dragging or self.is_moving:
             return
         
+        # 상호작용 없는 시간 추적
+        self.idle_counter += 1
+        
+        # 5초 이상 상호작용 없다면 on_idle 트리거
+        if self.idle_counter % 5 == 0:  # 매 5초마다
+            self.mood_system.on_idle()
+            print(f"[on_idle 트리거] idle_counter={self.idle_counter}")
+        
+        # 20초 이상 상호작용 없음 → on_neglected 트리거
+        if self.idle_counter % 20 == 0 and self.idle_counter > 0:
+            self.mood_system.on_neglected()
+            print(f"[on_neglected 트리거] idle_counter={self.idle_counter}")
+        
         self.mood_system.decay()
         mood = self.mood_system.decide_emotion()
+        
+        # 감정 상태 변경 감지 및 로깅
+        has_changed, old_emotion, new_emotion = self.mood_system.has_emotion_changed()
+        if has_changed:
+            print(f"\n✨ [감정 변화] {old_emotion} → {new_emotion}")
+            print(self.mood_system.get_formatted_mood_log())
+            print()
+        
         self.update_action(mood)
 
     # 행동 결정
@@ -334,7 +384,15 @@ class CharacterWidget(QLabel):
         elif emotion == "angry":
             self.current_action = "angry"
         elif emotion == "bored":
-            self.current_action = "bored"
+            self.current_action = "idle"  # bored 애셋 없으면 idle로
+        elif emotion == "sad":
+            self.current_action = "sad"
+        elif emotion == "fear":
+            self.current_action = "angry"  # fear 임시로 angry 사용
+        elif emotion == "anxiety":
+            self.current_action = "bored"  # anxiety 임시로 bored 사용
+        elif emotion == "thinking":
+            self.current_action = "idle"  # thinking 임시로 idle 사용
         else:
             self.current_action = "idle"
 
@@ -398,18 +456,138 @@ class CharacterWidget(QLabel):
             transform = QTransform()
             transform.scale(-1, 1)  # 가로 반전
             flipped_pixmap = scaled_pixmap.transformed(transform)
-            self.setPixmap(flipped_pixmap)
+            final_pixmap = flipped_pixmap
         else:
-            self.setPixmap(scaled_pixmap)
+            final_pixmap = scaled_pixmap
         
+        # 아이콘 오버레이 (들고있는 아이템이 있을 때)
+        if self.held_items:
+            final_pixmap = self._overlay_icons_on_character(final_pixmap)
+        
+        self.setPixmap(final_pixmap)
         self.repaint()
+
+    def _get_item_icon(self, file_path):
+        """파일/폴더의 아이콘을 QPixmap으로 반환"""
+        try:
+            icon_provider = QFileIconProvider()
+            file_info = QFileInfo(file_path)
+            icon = icon_provider.icon(file_info)
+            
+            # QIcon을 QPixmap으로 변환 (64x64 크기)
+            icon_pixmap = icon.pixmap(64, 64)
+            
+            # 아이콘이 없으면 기본 파일 아이콘 사용
+            if icon_pixmap.isNull():
+                icon = icon_provider.icon(QFileIconProvider.IconType.File)
+                icon_pixmap = icon.pixmap(64, 64)
+            
+            return icon_pixmap
+        except Exception as e:
+            print(f"[오류] 아이콘 가져오기 실패: {e}")
+            return None
+
+    def _decorate_icon_with_ownership(self, icon_pixmap):
+        """아이콘에 캐릭터 소유권 표현 추가 (금색 테두리 + 광환)"""
+        if icon_pixmap is None or icon_pixmap.isNull():
+            return icon_pixmap
+        
+        try:
+            # 투명 배경으로 더 큰 캔버스 생성 (테두리/광환용)
+            decorated = QPixmap(80, 80)
+            decorated.fill(Qt.GlobalColor.transparent)
+            
+            painter = QPainter(decorated)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # 광환 (흐린 노란색 원형)
+            glow_color = QColor(255, 215, 0, 80)  # 금색, 반투명
+            painter.setBrush(QBrush(glow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(8, 8, 64, 64)
+            
+            # 아이콘 중앙에 배치
+            painter.drawPixmap(8, 8, icon_pixmap)
+            
+            # 금색 테두리 (소유권 표시)
+            painter.setPen(QPen(QColor(255, 215, 0), 3))  # 금색 3px 테두리
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(8, 8, 64, 64)
+            
+            # 코너에 별 모양 배지 (캐릭터 소유 표시)
+            star_color = QColor(255, 255, 0)  # 노란색 별
+            painter.setBrush(QBrush(star_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            
+            # 우상단 별 (작은 원으로 표현)
+            painter.drawEllipse(66, 6, 12, 12)
+            
+            painter.end()
+            
+            return decorated
+        except Exception as e:
+            print(f"[오류] 아이콘 소유권 표현 추가 실패: {e}")
+            return icon_pixmap
+
+    def _overlay_icons_on_character(self, character_pixmap):
+        """캐릭터 이미지 위에 여러 아이콘을 오버레이 (소유권 표현)"""
+        if not self.held_items:
+            return character_pixmap
+        
+        try:
+            # 원본 pixmap 복사 (투명 배경이 아닌 원래 이미지 유지)
+            result = character_pixmap.copy()
+            
+            # 기존 캐릭터 이미지 위에 아이콘 추가
+            painter = QPainter(result)
+            
+            # 여러 아이콘을 순차적으로 표시 (최대 3개, 겹쳐서 배치)
+            base_icon_x = 180 if not self.is_flipped else 20  # 우측 또는 좌측
+            base_icon_y = 100  # 위쪽
+            
+            for idx, item_path in enumerate(self.held_items[:3]):  # 최대 3개만 표시
+                if idx >= 3:
+                    break
+                
+                # 각 아이콘 위치 설정 (약간 겹쳐서 배치)
+                offset_x = idx * 20
+                offset_y = idx * 15
+                icon_x = base_icon_x + offset_x
+                icon_y = base_icon_y + offset_y
+                
+                try:
+                    icon_pixmap = self._get_item_icon(item_path)
+                    if icon_pixmap is not None and not icon_pixmap.isNull():
+                        decorated_icon = self._decorate_icon_with_ownership(icon_pixmap)
+                        painter.drawPixmap(icon_x, icon_y, decorated_icon)
+                except Exception as e:
+                    print(f"[경고] 아이콘 표시 실패: {e}")
+            
+            # 아이템이 3개 이상이면 숫자 표시
+            if len(self.held_items) > 3:
+                painter.setPen(QPen(QColor(255, 255, 0), 2))
+                font = QFont()
+                font.setPointSize(12)
+                font.setBold(True)
+                painter.setFont(font)
+                painter.drawText(base_icon_x + 60, base_icon_y + 60, 
+                                f"+{len(self.held_items) - 3}")
+            
+            painter.end()
+            
+            return result
+        except Exception as e:
+            print(f"[오류] 아이콘 오버레이 실패: {e}")
+            return character_pixmap
 
     # 클릭 이벤트
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.mood_system.on_click()
+            self.idle_counter = 0  # 상호작용 카운터 리셋
             self.drag_pos = event.globalPosition().toPoint()
-            print(f"[지금 상태] {self.mood_system.mood}")
+            print(f"[클릭 이벤트 발생]")
+            print(self.mood_system.get_formatted_mood_log())
 
             self.is_dragging = True
             self.drag_time = 0
@@ -427,14 +605,27 @@ class CharacterWidget(QLabel):
 
     def mouseMoveEvent(self, event):
         if self.is_dragging and self.drag_pos:
-            self.move(self.pos() + event.globalPosition().toPoint() - self.drag_pos)
-            self.drag_pos = event.globalPosition().toPoint()
+            current_pos = event.globalPosition().toPoint()
+            delta = current_pos - self.drag_pos
+            
+            # 드래그 속도 계산 (픽셀 거리)
+            drag_distance = (delta.x() ** 2 + delta.y() ** 2) ** 0.5
+            self.drag_speed = drag_distance
+            
+            # 빠른 드래그 감지 (100px 이상) → on_drag_hard 트리거
+            if drag_distance > 100:
+                self.mood_system.on_drag_hard()
+                print(f"[on_drag_hard 트리거] 속도={drag_distance:.1f}px")
+            
+            self.move(self.pos() + delta)
+            self.drag_pos = current_pos
             self.animation_controller.update_base_pos(self.pos())
 
     def mouseReleaseEvent(self, event):
         self.is_dragging = False
         self.drag_time = 0
         self.drag_pos = None
+        self.idle_counter = 0  # 상호작용 카운터 리셋
         
         # 중력 즉시 활성화 (첫 프레임 바로 적용)
         self.on_ground = False
@@ -454,6 +645,164 @@ class CharacterWidget(QLabel):
         # 호흡 애니메이션 비활성화 (떨어지는 중이므로)
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
+
+    # ====== 드래그 앤 드롭 시스템 ======
+    def dragEnterEvent(self, event):
+        """드래그가 위젯으로 진입했을 때"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            print(f"[드래그 진입] 파일/폴더 감지")
+
+    def dragMoveEvent(self, event):
+        """드래그하는 중"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        """드래그가 위젯을 벗어났을 때"""
+        print(f"[드래그 이탈]")
+
+    def dropEvent(self, event):
+        """파일/폴더를 드롭했을 때 - 여러 개 파일 수용"""
+        mime_data = event.mimeData()
+        
+        if mime_data.hasUrls():
+            urls = mime_data.urls()
+            for url in urls:
+                file_path = url.toLocalFile()
+                self.acquire_item(file_path)
+            event.acceptProposedAction()
+
+    def acquire_item(self, file_path):
+        """파일/폴더를 획득했을 때 - 캐릭터 폴더로 이동 (여러 개 가능)"""
+        try:
+            file_path = Path(file_path)
+            
+            # 파일 이름 추출
+            item_name = file_path.name
+            
+            # 캐릭터 폴더로 파일/폴더 이동
+            dest_path = self.character_items_path / item_name
+            
+            # 이미 존재하면 번호 추가
+            if dest_path.exists():
+                stem = file_path.stem
+                suffix = file_path.suffix
+                counter = 1
+                while (self.character_items_path / f"{stem}_{counter}{suffix}").exists():
+                    counter += 1
+                dest_path = self.character_items_path / f"{stem}_{counter}{suffix}"
+            
+            # 파일/폴더 이동
+            shutil.move(str(file_path), str(dest_path))
+            
+            # 리스트에 추가
+            self.held_items.append(str(dest_path))
+            
+            # 첫 번째 아이템이면 감정 변화
+            if len(self.held_items) == 1:
+                self.mood_system.on_item_acquired()
+                print(f"\n✨ [아이템 획득 시작]")
+            
+            print(f"   - {item_name} (총 {len(self.held_items)}개)")
+            print(f"   위치: {dest_path}")
+            
+            # 마지막 아이템이면 감정 로그 출력
+            if len(self.held_items) >= 1:
+                print(self.mood_system.get_formatted_mood_log())
+                print()
+            
+            # 현재 감정 애니메이션 갱신 + 아이콘 표시
+            mood = self.mood_system.decide_emotion()
+            self.update_action(mood)
+        except Exception as e:
+            print(f"[오류] 아이템 획득 실패: {e}")
+
+    def release_items_to_desktop(self):
+        """들고있던 아이템을 바탕화면으로 순차적 반환 (1초 간격)"""
+        if not self.held_items:
+            return
+        
+        # 반환 대기 리스트 설정
+        self._remaining_items_to_release = list(self.held_items)
+        
+        print(f"\n[아이템 반환 시작] {len(self._remaining_items_to_release)}개 아이템")
+        print(f"   캐릭터 위치: ({self.x()}, {self.y()})")
+        
+        # 첫 번째 아이템 즉시 반환
+        self._release_single_item()
+        
+        # 이후 아이템들 순차 반환 (1초 간격)
+        if len(self._remaining_items_to_release) > 1:
+            self._release_timer = QTimer()
+            self._release_timer.timeout.connect(self._release_single_item)
+            self._release_timer.start(1000)  # 1초 간격
+
+    def _release_single_item(self):
+        """단일 아이템을 바탕화면으로 반환"""
+        if not self._remaining_items_to_release:
+            if self._release_timer:
+                self._release_timer.stop()
+                self._release_timer = None
+            
+            # 모든 아이템 반환 완료
+            self.held_items = []
+            self.held_items_icons = {}
+            
+            self.mood_system.on_item_dropped()
+            
+            print(f"\n[모든 아이템 반환 완료]")
+            print(self.mood_system.get_formatted_mood_log())
+            print()
+            
+            mood = self.mood_system.decide_emotion()
+            self.update_action(mood)
+            return
+        
+        try:
+            desktop_path = Path.home() / "Desktop"
+            if not desktop_path.exists():
+                desktop_path = Path.home() / "바탕화면"  # 한글 시스템
+            
+            if not desktop_path.exists():
+                print("[오류] 바탕화면 경로를 찾을 수 없습니다")
+                return
+            
+            # 반환할 아이템 선택
+            item_path = self._remaining_items_to_release.pop(0)
+            held_item_path = Path(item_path)
+            item_name = held_item_path.name
+            
+            # 대상 경로 설정
+            dest_path = desktop_path / item_name
+            
+            # 이미 존재하면 번호 추가
+            if dest_path.exists():
+                stem = held_item_path.stem
+                suffix = held_item_path.suffix
+                counter = 1
+                while (desktop_path / f"{stem}_{counter}{suffix}").exists():
+                    counter += 1
+                dest_path = desktop_path / f"{stem}_{counter}{suffix}"
+            
+            # 바탕화면으로 이동
+            shutil.move(str(held_item_path), str(dest_path))
+            
+            # held_items에서도 제거
+            self.held_items.remove(item_path)
+            if item_path in self.held_items_icons:
+                del self.held_items_icons[item_path]
+            
+            print(f"[아이템 반환] {item_name}")
+            print(f"   -> {dest_path}")
+            print(f"   캐릭터 위치: ({self.x()}, {self.y()})")
+            print(f"   남은 아이템: {len(self.held_items)}개")
+            
+            # 아이콘 업데이트 (제거된 아이템을 반영)
+            self.render()
+            
+        except Exception as e:
+            print(f"[오류] 아이템 반환 실패: {e}")
 
     # ====== 점프 시스템 ======
     def jump(self):
@@ -580,6 +929,12 @@ class CharacterWidget(QLabel):
     def update_dragging(self):
         if self.is_dragging:
             self.drag_time += 0.1
+            
+            # 3초 이상 드래그하면 아이템 반환 시작
+            if self.drag_time >= 3.0 and self.held_items and not self._remaining_items_to_release:
+                print(f"[드래그 중 3초 도달] drag_time={self.drag_time:.1f}초 - 아이템 반환 시작")
+                self.release_items_to_desktop()
+            
             self.mood_system.mood["angry"] += 0.02
             self.mood_system.mood["happy"] *= 0.98
             # hovering 애니메이션은 draq 시작 시에만 로드됨
@@ -587,6 +942,11 @@ class CharacterWidget(QLabel):
     # 캐릭터 랜덤 이동
     def random_move(self):
         print(f"[random_move 시작] is_dragging={self.is_dragging}, is_moving={self.is_moving}, on_ground={self.on_ground}")
+        
+        # Long idle 감지 (30초 이상 상호작용 없음) → on_long_idle 트리거
+        if self.idle_counter > 30 and self.idle_counter % 30 == 0:
+            self.mood_system.on_long_idle()
+            print(f"[on_long_idle 트리거] idle_counter={self.idle_counter}")
         
         # 떨어지는 중이면 이동 방지
         if not self.on_ground:
@@ -599,7 +959,7 @@ class CharacterWidget(QLabel):
         
         # ====== 랜덤 점프 (30% 확률) ======
         if random.random() < 0.3:
-            print(f"[랜덤 점프] 점프 실행!")
+            # print(f"[랜덤 점프] 점프 실행!")
             self.jump()
             return  # 점프 시 이동하지 않음
         
@@ -626,10 +986,9 @@ class CharacterWidget(QLabel):
             dx = random.randint(-200, 200)
             dy = 0
 
-        # 화면 경계 내로 이동 위치 제한
-        screen = QApplication.primaryScreen()
-        screen_width = screen.geometry().width()
-        screen_height = screen.geometry().height()
+        # 화면 경계 내로 이동 위치 제한 (커스텀 해상도 사용)
+        screen_width = self.custom_screen_width
+        screen_height = self.custom_screen_height
         
         target_x = self.x() + dx
         target_y = self.y() + dy  # dy = 0이므로 target_y = self.y()
@@ -649,8 +1008,8 @@ class CharacterWidget(QLabel):
         actual_dx = target_x - self.x()
         actual_dy = target_y - self.y()
         
-        print(f"위치 이동: ({self.x()}, {self.y()}) -> ({target_x}, {target_y})")
-        print(f"[이동] actual_dx={actual_dx}, actual_dy={actual_dy}, is_flipped={self.is_flipped}")
+        # print(f"위치 이동: ({self.x()}, {self.y()}) -> ({target_x}, {target_y})")
+        # print(f"[이동] actual_dx={actual_dx}, actual_dy={actual_dy}, is_flipped={self.is_flipped}")
 
         # 이동 방향에 따라 좌우반전 결정
         if actual_dx > 0:
@@ -692,10 +1051,10 @@ class CharacterWidget(QLabel):
         emotion_walk_path = self.assets_path / emotion_walk
         
         if emotion_walk_path.exists() and emotion_walk_path.is_dir():
-            print(f"[walk 애니메이션] {emotion_walk}/ 사용")
+            # print(f"[walk 애니메이션] {emotion_walk}/ 사용")
             return emotion_walk
         else:
-            print(f"[walk 애니메이션] walk/ 사용 (기본)")
+            # print(f"[walk 애니메이션] walk/ 사용 (기본)")
             return "walk"
     
     def _get_falling_action(self, emotion):
@@ -922,6 +1281,31 @@ class CharacterWidget(QLabel):
                         break
             
             self._last_window_keys = current_window_keys
+            
+            # 여러 창이 열려있으면 on_high_activity 트리거
+            # ground를 제외한 창 개수
+            active_windows = len([s for s in self.surfaces if s.name.startswith("window_")])
+            
+            # 창 개수가 급격히 변했으면 on_sudden_move 트리거
+            if abs(active_windows - self.last_window_count) > 1:
+                self.mood_system.on_sudden_move()
+                print(f"[on_sudden_move 트리거] 창 개수 변화: {self.last_window_count} -> {active_windows}")
+                self.window_change_count += 1
+            
+            # 복잡한 작업 감지 (창이 많고 자주 변함)
+            if active_windows > 2 and self.window_change_count > 2:
+                self.mood_system.on_task_complex()
+                print(f"[on_task_complex 트리거] 활성 창={active_windows}개, 변화 횟수={self.window_change_count}")
+            
+            # # 고활동 감지 - 굳이 필요없을 듯?
+            # if active_windows > 2:
+            #     self.mood_system.on_high_activity()
+            #     print(f"[on_high_activity 트리거] 활성 창={active_windows}개")
+            
+            # 창 변화 카운트 리셋 (매 스캔마다 리셋하지 말고 누적)
+            self.last_window_count = active_windows
+            if self.window_change_count > 5:
+                self.window_change_count = 0
             
         except Exception as e:
             print(f"[윈도우 감지 오류] {e}")
