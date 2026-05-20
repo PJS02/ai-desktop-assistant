@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local/editor state
+.vscode/
+.idea/
+*.swp
+
+# Runtime outputs
+outputs/
+output/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
