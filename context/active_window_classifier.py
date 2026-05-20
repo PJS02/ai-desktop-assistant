@@ -214,6 +214,18 @@ def build_system_instruction():
     )
 
 
+def build_response_schema():
+    # Gemini 구조화 출력 스키마입니다.
+    return {
+        "type": "object",
+        "properties": {
+            "dialogue": {"type": "string"},
+        },
+        "required": ["dialogue"],
+        "additionalProperties": False,
+    }
+
+
 def encode_image_base64(image):
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
@@ -232,17 +244,20 @@ def call_gemini(prompt, config, image=None):
     if image is not None:
         parts.append(
             {
-                "inline_data": {
-                    "mime_type": "image/png",
+                "inlineData": {
+                    "mimeType": "image/png",
                     "data": encode_image_base64(image),
                 }
             }
         )
 
-    # response_mime_type으로 JSON 응답을 유도합니다.
+    # responseJsonSchema로 JSON만 출력되도록 강제합니다.
     payload = {
         "contents": [{"parts": parts}],
-        "generationConfig": {"response_mime_type": "application/json"},
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": build_response_schema(),
+        },
         "system_instruction": {
             "parts": [{"text": build_system_instruction()}]
         },
