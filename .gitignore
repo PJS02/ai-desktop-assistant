@@ -13,6 +13,14 @@ env/
 # Environment variables
 .env
 
+# API Keys and Tokens
+*_config.json
+*_token.json
+gemini_config.json
+igdb_config.json
+igdb_token.json
+url_cache.json
+
 # OS files
 .DS_Store
 Thumbs.db
