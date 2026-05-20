@@ -238,7 +238,6 @@ def call_gemini(prompt, config, image=None):
                 }
             }
         )
-
     # response_mime_type으로 JSON 응답을 유도합니다.
     payload = {
         "contents": [{"parts": parts}],
@@ -267,6 +266,45 @@ def call_gemini(prompt, config, image=None):
     if not parts:
         return "[gemini error] empty content"
     return parts[0].get("text", "").strip()
+
+    # # gemma-4-31b-it 호환성을 위해 JSON 응답 형식 설정을 일단 제거
+    # payload = {
+    #     "contents": [{"parts": parts}],
+    #     "system_instruction": 
+    #         "parts": [{"text": build_system_instruction()}]
+    #     },
+    # }
+    # req = Request(
+    #     endpoint,
+    #     data=json.dumps(payload).encode("utf-8"),
+    #     method="POST",
+    # )
+    # req.add_header("Content-Type", "application/json")
+
+    # try:
+    #     with urlopen(req, timeout=30) as resp:
+    #         response_text = resp.read().decode("utf-8")
+    #         # 먼저 JSON으로 파싱 시도
+    #         try:
+    #             data = json.loads(response_text)
+    #         except json.JSONDecodeError:
+    #             # JSON 파싱 실패 시 텍스트 응답으로 처리
+    #             return response_text.strip()
+    # except Exception as exc:
+    #     return f"[gemini error] {exc}"
+
+    # # JSON \uc751\ub2f5 \ucc98\ub9ac
+    # if isinstance(data, dict):
+    #     candidates = data.get("candidates", [])
+    #     if not candidates:
+    #         return "[gemini error] no candidates"
+    #     parts = candidates[0].get("content", {}).get("parts", [])
+    #     if not parts:
+    #         return "[gemini error] empty content"
+    #     return parts[0].get("text", "").strip()
+    
+    # # \ud14d\uc2a4\ud2b8 \uc751\ub2f5 \ucc98\ub9ac
+    # return data if isinstance(data, str) else str(data)
 
 
 def generate_dialogue_json(start_server=False):
