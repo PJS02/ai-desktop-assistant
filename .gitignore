@@ -133,13 +133,10 @@ env.bak/
 venv.bak/
 
 # cache
-context/igdb_cache.json
-context/url_cache.json
+context/cache/
 
 # API key configs
-context/gemini_config.json
-context/igdb_config.json
-context/igdb_token.json
+context/config/
 
 # Spyder project settings
 .spyderproject

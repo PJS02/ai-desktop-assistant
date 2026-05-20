@@ -12,9 +12,24 @@ pip install -r requirements.txt
 
 3. API 키 설정
 
-.env 파일 생성
+템플릿을 복사해 실제 설정 파일을 만드세요.
 
-OPENAI_API_KEY=your_key_here
+context/config/gemini_config.template.json -> context/config/gemini_config.json
+context/config/igdb_config.template.json -> context/config/igdb_config.json
+
+gemini_config.json 예시:
+
+{
+	"api_key": "YOUR_KEY",
+	"model": "gemma-3-4b-it"
+}
+
+igdb_config.json 예시:
+
+{
+	"client_id": "YOUR_ID",
+	"client_secret": "YOUR_SECRET"
+}
 
 4. 실행
 
