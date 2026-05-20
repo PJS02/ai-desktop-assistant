@@ -132,6 +132,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# cache
+context/igdb_cache.json
+context/url_cache.json
+
 # API key configs
 context/gemini_config.json
 context/igdb_config.json
