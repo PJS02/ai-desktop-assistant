@@ -8,10 +8,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
-from rules_config import get_rules
 
 
 def get_active_window_info():
@@ -162,7 +159,7 @@ def build_gemini_prompt(info, category, url):
     # Gemini에 보낼 입력을 구성합니다.
     proc = info["process"] if info else ""
     title = info["title"] if info else ""
-    url_part = url or ""
+    url_part = url if category == "web" else ""
 
     return (
         "입력 정보:\n"
@@ -176,14 +173,28 @@ def build_gemini_prompt(info, category, url):
 def extract_dialogue(text):
     if not text:
         return ""
+    # 불필요한 서식을 제거합니다.
+    cleaned = re.sub(r"```[\s\S]*?```", "", text)
+    cleaned = re.sub(r"^[\s\*\-]+", "", cleaned, flags=re.MULTILINE)
+    cleaned = cleaned.replace("`", "").strip()
 
     try:
-        data = json.loads(text)
+        data = json.loads(cleaned)
     except json.JSONDecodeError:
-        return ""
+        data = None
 
     if isinstance(data, dict):
         return data.get("dialogue", "").strip()
+
+    # 여러 JSON 조각이 섞이면 마지막 유효 객체를 우선합니다.
+    matches = re.findall(r"\{[\s\S]*?\}", cleaned)
+    for candidate in reversed(matches):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "dialogue" in data:
+            return data.get("dialogue", "").strip()
 
     return ""
 
@@ -197,23 +208,10 @@ def build_system_instruction():
         "규칙:\n"
         "1. 한국어 1~2문장으로 작성.\n"
         "2. 메타 상황(개발 중) 적극 반영.\n"
-        "3. 활동 분류가 프로세스/창 제목/URL과 맞지 않으면 스스로 적절한 활동으로 재분류하세요.\n"
-        "4. JSON 외의 텍스트(인사말, 마크다운 코드 블록 등) 절대 포함 금지.\n"
-        "5. 옵션/후보/초안/목록 형태로 나열하지 마세요.\n"
-        "6. JSON 객체만 출력하고, 앞뒤에 어떤 문자도 붙이지 마세요."
+        "3. JSON 외의 텍스트(인사말, 마크다운 코드 블록 등) 절대 포함 금지.\n"
+        "4. 옵션/후보/초안/목록 형태로 나열하지 마세요.\n"
+        "5. JSON 객체만 출력하고, 앞뒤에 어떤 문자도 붙이지 마세요."
     )
-
-
-def build_response_schema():
-    # Gemini 구조화 출력 스키마입니다.
-    return {
-        "type": "object",
-        "properties": {
-            "dialogue": {"type": "string"},
-        },
-        "required": ["dialogue"],
-        "additionalProperties": False,
-    }
 
 
 def encode_image_base64(image):
@@ -234,20 +232,17 @@ def call_gemini(prompt, config, image=None):
     if image is not None:
         parts.append(
             {
-                "inlineData": {
-                    "mimeType": "image/png",
+                "inline_data": {
+                    "mime_type": "image/png",
                     "data": encode_image_base64(image),
                 }
             }
         )
 
-    # responseJsonSchema로 JSON만 출력되도록 강제합니다.
+    # response_mime_type으로 JSON 응답을 유도합니다.
     payload = {
         "contents": [{"parts": parts}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseJsonSchema": build_response_schema(),
-        },
+        "generationConfig": {"response_mime_type": "application/json"},
         "system_instruction": {
             "parts": [{"text": build_system_instruction()}]
         },
@@ -259,20 +254,11 @@ def call_gemini(prompt, config, image=None):
     )
     req.add_header("Content-Type", "application/json")
 
-    for attempt in range(3):
-        try:
-            with urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            break
-        except HTTPError as exc:
-            if exc.code == 500 and attempt < 2:
-                time.sleep(1 + attempt)
-                continue
-            return f"[gemini error] {exc}"
-        except URLError as exc:
-            return f"[gemini error] {exc}"
-        except Exception as exc:
-            return f"[gemini error] {exc}"
+    try:
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return f"[gemini error] {exc}"
 
     candidates = data.get("candidates", [])
     if not candidates:
@@ -286,29 +272,33 @@ def call_gemini(prompt, config, image=None):
 def generate_dialogue_json(start_server=False):
     # 외부 호출을 위한 1회 실행 결과를 반환합니다.
     base_dir = Path(__file__).resolve().parent
-    config_dir = base_dir / "config"
-    cache_dir = base_dir / "cache"
-    config_dir.mkdir(exist_ok=True)
-    cache_dir.mkdir(exist_ok=True)
-    url_cache_path = cache_dir / "url_cache.json"
+    url_cache_path = base_dir / "url_cache.json"
     if start_server:
         try:
             start_url_server(8765, url_cache_path)
         except OSError:
             pass
 
-    gemini_config_path = config_dir / "gemini_config.json"
+    gemini_config_path = base_dir / "gemini_config.json"
     gemini_config = load_json_file(gemini_config_path, {})
-    igdb_config_path = config_dir / "igdb_config.json"
+    igdb_config_path = base_dir / "igdb_config.json"
     igdb_config = load_json_file(igdb_config_path, {})
     if not igdb_config.get("client_id") or not igdb_config.get("client_secret"):
         igdb_config = None
 
-    rules = get_rules()
+    rules = {
+        "browsers": {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"},
+        "title_extract_patterns": [
+            r"^\[(?P<title>[^\]]+)\]\s*.*$",
+            r"^(?P<title>.+?)\s*[|:]\s*.*$",
+            r"^(?P<title>.+?)\s*-\s*(steam|epic|gog|origin|uplay|ubisoft|battlenet|battle\.net|xbox|launcher)\b.*$",
+            r"^(?P<title>.+?)\s*-\s*.*$",
+        ],
+    }
 
     info = get_active_window_info()
-    category = classify_activity(info, rules, igdb_config, cache_dir)
-    url = load_url_cache(url_cache_path) if info and info["process"] in rules["browsers"] else ""
+    category = classify_activity(info, rules, igdb_config, base_dir)
+    url = load_url_cache(url_cache_path) if category == "web" else ""
 
     if not gemini_config.get("api_key"):
         return {
@@ -418,27 +408,14 @@ def normalize_game_query(value):
 
 def classify_activity(info, rules, igdb_config, cache_dir):
     if not info:
-        return "IDLE"
+        return "unknown"
 
     proc = info["process"]
     title = info["title"].lower()
 
-    if proc in rules["media_players"]:
-        return "MEDIA"
-
-    if proc in rules["developers"]:
-        return "DEVELOP"
-
-    if proc in rules["documents"]:
-        return "DOCUMENT"
-
     # 로컬 규칙으로 웹 여부를 판단합니다.
     if proc in rules["browsers"]:
-        if any(keyword in title for keyword in rules["web_media_keywords"]):
-            return "MEDIA"
-        if any(keyword in title for keyword in rules["web_study_keywords"]):
-            return "STUDY"
-        return "WEB"
+        return "web"
 
     # 로컬 규칙이 아니면 IGDB로 확인합니다.
     if igdb_config:
@@ -452,7 +429,7 @@ def classify_activity(info, rules, igdb_config, cache_dir):
         for query in queries:
             if query in cache:
                 if cache[query]:
-                    return "GAME"
+                    return "game"
                 continue
 
             try:
@@ -463,28 +440,32 @@ def classify_activity(info, rules, igdb_config, cache_dir):
             cache[query] = bool(result)
             save_json_file(cache_dir / "igdb_cache.json", cache)
             if result:
-                return "GAME"
-    return "ETC"
+                return "game"
+    return "work"
 
 
 def main():
     base_dir = Path(__file__).resolve().parent
     # 로컬 URL 캐시 경로입니다.
-    config_dir = base_dir / "config"
-    cache_dir = base_dir / "cache"
-    config_dir.mkdir(exist_ok=True)
-    cache_dir.mkdir(exist_ok=True)
-    url_cache_path = cache_dir / "url_cache.json"
+    url_cache_path = base_dir / "url_cache.json"
     start_url_server(8765, url_cache_path)
-    gemini_config_path = config_dir / "gemini_config.json"
+    gemini_config_path = base_dir / "gemini_config.json"
     gemini_config = load_json_file(gemini_config_path, {})
-    igdb_config_path = config_dir / "igdb_config.json"
+    igdb_config_path = base_dir / "igdb_config.json"
     igdb_config = load_json_file(igdb_config_path, {})
     if not igdb_config.get("client_id") or not igdb_config.get("client_secret"):
         igdb_config = None
 
     # 분류 규칙과 제목 패턴입니다.
-    rules = get_rules()
+    rules = {
+        "browsers": {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"},
+        "title_extract_patterns": [
+            r"^\[(?P<title>[^\]]+)\]\s*.*$",
+            r"^(?P<title>.+?)\s*[|:]\s*.*$",
+            r"^(?P<title>.+?)\s*-\s*(steam|epic|gog|origin|uplay|ubisoft|battlenet|battle\.net|xbox|launcher)\b.*$",
+            r"^(?P<title>.+?)\s*-\s*.*$",
+        ],
+    }
 
     for remaining in range(3, 0, -1):
         print(f"[debug] 실행까지 {remaining}초")
@@ -493,9 +474,9 @@ def main():
     # 카운트다운 후 한 번 실행합니다.
     while True:
         info = get_active_window_info()
-        category = classify_activity(info, rules, igdb_config, cache_dir)
+        category = classify_activity(info, rules, igdb_config, base_dir)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        url = load_url_cache(url_cache_path) if info and info["process"] in rules["browsers"] else ""
+        url = load_url_cache(url_cache_path) if category == "web" else ""
         last_signature = (category, info["process"] if info else "", info["title"] if info else "", url)
 
         if info:
