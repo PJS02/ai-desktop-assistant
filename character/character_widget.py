@@ -1,13 +1,30 @@
 # 캐릭터 위젯을 관리하는 파일
 import random
 import shutil
+import json
+import threading
+import time
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider
 from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont
-from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo
+from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal
 from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
+from .dialogue_system import DialogueSystem, QuickDialoguePresets
+
+# Context 모듈 import
+try:
+    from context.active_window_classifier import (
+        get_active_window_info,
+        call_gemini,
+        extract_dialogue,
+        build_gemini_prompt
+    )
+    HAS_CONTEXT = True
+except ImportError:
+    print("[경고] context 모듈 import 실패 - 자동 대사 생성 비활성화")
+    HAS_CONTEXT = False
 
 try:
     import pygetwindow as gw
@@ -38,6 +55,9 @@ class Surface:
         return f"Surface({self.name}, y={self.y_level}, x=[{self.x_min},{self.x_max}], h={self.height})"
 
 class CharacterWidget(QLabel):
+    # 신호들
+    show_ai_response = pyqtSignal(str)  # AI 응답 신호
+    
     def __init__(self, screen_width=None, screen_height=None):
         super().__init__()
 
@@ -175,8 +195,36 @@ class CharacterWidget(QLabel):
         # 디버그 모드 (collision 박스 및 ground indicator 표시)
         self.show_debug = True  # True면 디버그 표시
         
-        # 착지 감지 상태 추적 (로그 중복 제거)
+        # 착지 감지 상태 추적 (로그 중복 제제거)
         self._last_surface_name = None  # 이전 착지 표면 이름
+        
+        # ====== 컨텍스트 모니터링 & 자동 대사 생성 ======
+        self.gemini_config = {}
+        self.last_detected_activity = None  # 마지막 감지한 활동
+        self.last_dialogue_time = 0  # 마지막 대사 시간
+        self.dialogue_cooldown = 5  # 수동 대화 쿨다운: 5초
+        self.last_auto_dialogue_time = 0  # 마지막 자동 대사 시간
+        self.auto_dialogue_cooldown = 20  # 자동 감지 쿨다운: 20초 (API 제한 방지)
+        
+        if HAS_CONTEXT:
+            # Gemini 설정 파일 로드
+            self._load_gemini_config()
+            
+            # 활성 창 모니터링 타이머 (30초마다 체크, 120초 쿨다운으로 최대 2분마다 요청)
+            self._activity_monitor_timer = QTimer()
+            self._activity_monitor_timer.timeout.connect(self._on_activity_monitor)
+            self._activity_monitor_timer.start(30000)  # 30초마다 체크
+            
+            print("[자동 대사 생성 시스템 초기화 완료]")
+        else:
+            print("[자동 대사 생성 시스템 비활성화]")
+        
+        # ====== 대화 시스템 초기화 ======
+        self.dialogue_system = DialogueSystem(self)
+        print("[대화 시스템 초기화 완료]")
+        
+        # 신호 연결
+        self.show_ai_response.connect(self.dialogue_system.show_ai_response)
 
     # 애니메이션 신호 처리
     def on_animation_position_changed(self, new_pos):
@@ -345,6 +393,113 @@ class CharacterWidget(QLabel):
                 self._last_surface_name = None
             return None
 
+    # ====== 자동 대사 생성 시스템 ======
+    def _load_gemini_config(self):
+        """Gemini 설정 파일 로드"""
+        config_path = Path(__file__).resolve().parent.parent / "context" / "gemini_config.json"
+        try:
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    self.gemini_config = json.load(f)
+                print(f"[Gemini 설정 로드] API 키: {'설정됨' if self.gemini_config.get('api_key') else '미설정'}")
+            else:
+                print(f"[경고] Gemini 설정 파일 없음: {config_path}")
+        except Exception as e:
+            print(f"[오류] Gemini 설정 로드 실패: {e}")
+    
+    def _on_activity_monitor(self):
+        """활성 창 모니터링 타이머 콜백 (10초마다)"""
+        if not HAS_CONTEXT or not self.gemini_config.get('api_key'):
+            return
+        
+        # 비동기 스레드에서 실행 (UI 블로킹 방지)
+        thread = threading.Thread(target=self._check_active_window_async, daemon=True)
+        thread.start()
+    
+    def _check_active_window_async(self):
+        """활성 창 정보 수집 및 대사 생성 (스레드에서 실행)"""
+        try:
+            import time
+            current_time = time.time()
+            
+            # 자동 감지 쿨다운 체크 (60초)
+            if current_time - self.last_auto_dialogue_time < self.auto_dialogue_cooldown:
+                return
+            
+            # 활성 창 정보 수집
+            info = get_active_window_info()
+            if not info:
+                return
+            
+            self.last_detected_activity = info
+            
+            # 프로세스 이름으로 활동 분류
+            process = info.get('process', '').lower()
+            title = info.get('title', '')
+            
+            # 활동 카테고리 결정
+            category = "unknown"
+            if 'chrome' in process or 'firefox' in process or 'edge' in process:
+                category = "web"
+            elif 'vscode' in process or 'code' in process:
+                category = "development"
+            elif 'game' in process or 'steam' in process or 'unity' in process:
+                category = "game"
+            elif 'discord' in process or 'slack' in process or 'telegram' in process:
+                category = "communication"
+            else:
+                category = "work"
+            
+            # Gemini 프롬프트 생성 및 API 호출
+            prompt = build_gemini_prompt(info, category, "")
+            print(f"[활동 감지] {category}: {process} - {title[:50]}")
+            print(f"[API 요청] Gemini 호출 중... (자동 감지)")
+            
+            response = call_gemini(prompt, self.gemini_config)
+            print(f"[Gemini 응답] {response[:100] if response else '(없음)'}")
+            
+            # 쿨다운 업데이트
+            self.last_auto_dialogue_time = current_time
+            
+            if response and not response.startswith("[gemini error]"):
+                # JSON에서 대사 추출
+                dialogue_text = extract_dialogue(response)
+                
+                if dialogue_text:
+                    print(f"[대사 생성] {dialogue_text}")
+                    
+                    # 신호를 통해 메인 스레드에서 대사 표시
+                    self.show_ai_response.emit(dialogue_text)
+                else:
+                    print(f"[경고] 응답에서 대사를 추출하지 못함: {response[:100]}")
+            elif response:
+                # Gemini 에러가 발생한 경우 - 캐릭터가 에러 메시지를 말함
+                print(f"[Gemini 에러] {response}")
+                
+                # 에러 메시지를 사용자 친화적으로 변환
+                error_message = self._convert_error_to_dialogue(response)
+                
+                # 신호를 통해 메인 스레드에서 에러 메시지 표시
+                self.show_ai_response.emit(error_message)
+        
+        except Exception as e:
+            print(f"[오류] 활동 모니터링 실패: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _convert_error_to_dialogue(self, error_response: str) -> str:
+        """Gemini 에러를 캐릭터 대사로 변환"""
+        if "429" in error_response or "Too Many Requests" in error_response:
+            return "너무 많은 요청이 들어왔어요... 잠시 쉬고 있을게요! 😅"
+        elif "401" in error_response or "Unauthorized" in error_response:
+            return "API 키가 잘못된 것 같아요... 설정을 확인해주시겠어요?"
+        elif "403" in error_response or "Forbidden" in error_response:
+            return "접근 권한이 없네요... 설정을 다시 확인해주세요."
+        elif "500" in error_response or "Internal" in error_response:
+            return "AI 서버에 문제가 생겼어요... 잠시 후에 다시 시도해주세요."
+        else:
+            return f"음... 뭔가 문제가 생겼어요. 😔 ({error_response[:30]}...)"
+
     def update_mood(self):
         if self.is_dragging or self.is_moving:
             return
@@ -355,7 +510,6 @@ class CharacterWidget(QLabel):
         # 5초 이상 상호작용 없다면 on_idle 트리거
         if self.idle_counter % 5 == 0:  # 매 5초마다
             self.mood_system.on_idle()
-            print(f"[on_idle 트리거] idle_counter={self.idle_counter}")
         
         # 20초 이상 상호작용 없음 → on_neglected 트리거
         if self.idle_counter % 20 == 0 and self.idle_counter > 0:
@@ -588,6 +742,9 @@ class CharacterWidget(QLabel):
             self.drag_pos = event.globalPosition().toPoint()
             print(f"[클릭 이벤트 발생]")
             print(self.mood_system.get_formatted_mood_log())
+            
+            # 임시로 클릭 반응 대화 표시
+            self.dialogue_system.show_dialogue("클릭.", duration=3000)
 
             self.is_dragging = True
             self.drag_time = 0
@@ -620,6 +777,9 @@ class CharacterWidget(QLabel):
             self.move(self.pos() + delta)
             self.drag_pos = current_pos
             self.animation_controller.update_base_pos(self.pos())
+            
+            # 말풍선 위치 업데이트 (캐릭터를 따라가게 함)
+            self.dialogue_system.update_dialogue_position()
 
     def mouseReleaseEvent(self, event):
         self.is_dragging = False
@@ -645,6 +805,12 @@ class CharacterWidget(QLabel):
         # 호흡 애니메이션 비활성화 (떨어지는 중이므로)
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
+    
+    def mouseDoubleClickEvent(self, event):
+        """더블클릭 이벤트 - 대화 입력창 열기"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            print("[더블클릭] 대화 입력창 열기")
+            self.dialogue_system.open_input_dialog()
 
     # ====== 드래그 앤 드롭 시스템 ======
     def dragEnterEvent(self, event):
@@ -941,7 +1107,6 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
-        print(f"[random_move 시작] is_dragging={self.is_dragging}, is_moving={self.is_moving}, on_ground={self.on_ground}")
         
         # Long idle 감지 (30초 이상 상호작용 없음) → on_long_idle 트리거
         if self.idle_counter > 30 and self.idle_counter % 30 == 0:
@@ -969,7 +1134,6 @@ class CharacterWidget(QLabel):
         
         mood = self.mood_system.decide_emotion()
         emotion = mood['emotion']
-        print(f"[감정] emotion={emotion}")
 
         # 감정에 따라 움직이는 범위 결정 (X축만: 왼쪽/오른쪽)
         # Y축은 중력에 의해서만 제어됨
@@ -1162,6 +1326,9 @@ class CharacterWidget(QLabel):
                         self.current_action = "idle"
                     
                     self.update_render(self.current_action)
+                
+                # 말풍선 위치 업데이트 (착지 후에도)
+                self.dialogue_system.update_dialogue_position()
             return
         
         # 중력 가속도 적용 (이동 중이어도 Y축 중력은 계속 적용)
@@ -1188,6 +1355,10 @@ class CharacterWidget(QLabel):
             self.can_jump = True  # 다시 점프 가능
         
         self.move(self.x(), int(new_y))
+        
+        # 말풍선 위치 업데이트 (중력 적용 중에도)
+        self.dialogue_system.update_dialogue_position()
+        
         self.repaint()  # 화면 갱신 (디버그 표시 업데이트)
     
     # ====== 윈도우 감지 시스템 ======
@@ -1309,3 +1480,18 @@ class CharacterWidget(QLabel):
             
         except Exception as e:
             print(f"[윈도우 감지 오류] {e}")
+    
+    # ====== 대화 시스템 테스트 메서드 ======
+    def test_dialogue_bubble(self, text: str = "안녕하세요!"):
+        """말풍선 대화 테스트"""
+        self.dialogue_system.show_dialogue(text, duration=5000, use_narration=False)
+    
+    def test_dialogue_narration(self, text: str = "이것은 나레이션 박스입니다!"):
+        """나레이션 박스 대화 테스트"""
+        self.dialogue_system.show_dialogue(text, duration=5000, use_narration=True, character_name="AI 어시스턴트")
+    
+    def test_dialogue_sequence(self):
+        """여러 대화를 순차적으로 표시하는 테스트"""
+        self.dialogue_system.queue_dialogue("안녕하세요!", duration=3000, delay_ms=0)
+        self.dialogue_system.queue_dialogue("저는 AI 어시스턴트입니다.", duration=3000, delay_ms=1000)
+        self.dialogue_system.queue_dialogue("문제가 있으신가요?", duration=3000, delay_ms=1000, use_narration=True)

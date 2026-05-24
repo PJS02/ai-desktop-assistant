@@ -12,24 +12,9 @@ pip install -r requirements.txt
 
 3. API 키 설정
 
-템플릿을 복사해 실제 설정 파일을 만드세요.
+.env 파일 생성
 
-context/config/gemini_config.template.json -> context/config/gemini_config.json
-context/config/igdb_config.template.json -> context/config/igdb_config.json
-
-gemini_config.json 예시:
-
-{
-	"api_key": "YOUR_KEY",
-	"model": "gemma-3-4b-it"
-}
-
-igdb_config.json 예시:
-
-{
-	"client_id": "YOUR_ID",
-	"client_secret": "YOUR_SECRET"
-}
+OPENAI_API_KEY=your_key_here
 
 4. 실행
 
@@ -40,4 +25,9 @@ python main.py
 - 화면 위 캐릭터 표시
 - 클릭 반응
 - 감정 애니메이션
-- AI 인사 응답
+- **캐릭터 대화 시스템** (NEW!)
+  - 말풍선 UI 대화 표시
+  - 나레이션 박스 UI
+  - 순차 대화 큐 시스템
+  - 다양한 대사 템플릿
+- AI 인사 응답 (준비 중)
