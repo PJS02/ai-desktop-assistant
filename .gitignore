@@ -136,7 +136,8 @@ venv.bak/
 context/cache/
 
 # API key configs
-context/config/
+context/*.json
+!context/*.template.json
 
 # Spyder project settings
 .spyderproject
