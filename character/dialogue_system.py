@@ -217,6 +217,7 @@ class DialogueSystem(QObject):
     def ask_ai(self, user_input: str):
         """
         사용자 입력을 AI에 보내고 응답 받기 (비동기, 요청 제한 포함 - 수동 대화)
+        감정 기반 프롬프트 엔지니어링 적용 , 현재 감정에 따라 말투 변경
         
         Args:
             user_input: 사용자 입력 텍스트
@@ -251,14 +252,36 @@ class DialogueSystem(QObject):
                 if not self.gemini_config:
                     self._load_gemini_config()
                 
-                # AI에 질문 보내기
-                prompt = f"사용자가 말했습니다: {user_input}\n\n이 사용자에게 친절하고 간단하게 응답해주세요. 응답은 한두 문장으로 간단하게 해주세요."
+                # 현재 캐릭터의 감정 상태 가져오기
+                mood_system = self.character_widget.mood_system
+                emotion_description = mood_system.get_emotion_description_for_prompt()
+                tone_instruction = mood_system.get_emotion_tone_instructions()
+                
+                # 감정 기반 프롬프트 구성
+                prompt = f"""당신은 사용자의 데스크톱 어시스턴트인 러셀이라는 AI 캐릭터입니다.
+
+【 현재 캐릭터 상태 】
+{emotion_description}
+
+【 말투 지침 】
+{tone_instruction}
+
+【 사용자 입력 】
+{user_input}
+
+지침을 따르면서 사용자에게 자연스럽고 일관된 대답을 해주세요.
+응답은 한두 문장으로 간단하게 유지해주세요."""
+                
                 print(f"[API 요청] Gemini 호출 중... (수동 대화)")
+                print(f"[감정 상태] {emotion_description.replace(chr(10), ' | ')}")
                 response = call_gemini(prompt, self.gemini_config)
                 print(f"[응답] {response[:100] if response else '(없음)'}")
                 
                 # 에러 처리 및 응답 변환
                 response_text = self._process_gemini_response(response)
+                
+                # 감정 기반 말투 필터 적용
+                response_text = self._apply_emotion_filter(response_text, mood_system)
                 
                 # 응답 표시 (메인 스레드에서 실행되도록 신호 사용)
                 self.character_widget.show_ai_response.emit(response_text)
@@ -330,6 +353,101 @@ class DialogueSystem(QObject):
             except (json.JSONDecodeError, ValueError):
                 # JSON이 아니면 그대로 사용
                 return response
+    
+    def _apply_emotion_filter(self, dialogue: str, mood_system) -> str:
+        """감정 기반 말투 필터 - AI 응답에 감정 표현을 추가로 강화"""
+        emotion_info = mood_system.decide_emotion()
+        emotion = emotion_info["emotion"]
+        intensity = emotion_info["intensity"]
+        
+        # 17가지 감정별 표현 필터
+        emotion_filters = {
+            # 긍정적-흥분
+            "joy": {
+                "suffixes": [" 😊", " ✨", " 🎉", " ^_^"],
+                "tone": "happy"
+            },
+            "delight": {
+                "suffixes": [" 😄", " 😁", " 좋아요!", " 훌륭해!"],
+                "tone": "delighted"
+            },
+            "excitement": {
+                "suffixes": [" 🤩", " 와!", " 정말!", " 오!"],
+                "tone": "excited"
+            },
+            "interest": {
+                "suffixes": [" 😃", " 오호!", " 흥미롭네", " 궁금해!"],
+                "tone": "interested"
+            },
+            "contentment": {
+                "suffixes": [" 😌", " 편안해", " 좋네요", " 만족해"],
+                "tone": "content"
+            },
+            
+            # 부정적-흥분
+            "anger": {
+                "suffixes": [" 😠", " ..!", " !!", " 화나!"],
+                "tone": "angry"
+            },
+            "disgust": {
+                "suffixes": [" 😒", " 역겨워", " 싫어", " 혐오해"],
+                "tone": "disgusted"
+            },
+            "fear": {
+                "suffixes": [" 😰", " ...?", " 무서워...", " 도와줘"],
+                "tone": "scared"
+            },
+            "anxiety": {
+                "suffixes": [" 😟", " ...혹시...", " ...?", " 불안해"],
+                "tone": "anxious"
+            },
+            
+            # 긍정적-진정
+            "calm": {
+                "suffixes": [" 😊", " 침착해", " 괜찮아", " 차분해"],
+                "tone": "calm"
+            },
+            "peaceful": {
+                "suffixes": [" 😌", " 평온해", " 편해", " 여유로워"],
+                "tone": "peaceful"
+            },
+            
+            # 부정적-진정
+            "sadness": {
+                "suffixes": [" 😔", " ...", " 슬퍼", " 안타까워"],
+                "tone": "sad"
+            },
+            "melancholy": {
+                "suffixes": [" 😞", " ...음...", " 우울해", " 피곤해"],
+                "tone": "melancholic"
+            },
+            "despair": {
+                "suffixes": [" 😩", " ...더 이상...", " 절망해", " 힘들어"],
+                "tone": "desperate"
+            },
+            
+            # 중립
+            "neutral": {
+                "suffixes": [" 😐", " 네...", " ..."],
+                "tone": "neutral"
+            },
+        }
+        
+        filter_config = emotion_filters.get(emotion)
+        
+        if not filter_config:
+            return dialogue
+        
+        # 강도가 높을수록 더 강한 표현 적용
+        import random
+        
+        if intensity > 0.7 and filter_config.get("suffixes"):
+            # 강한 감정: suffix 추가
+            suffix = random.choice(filter_config["suffixes"])
+            if not dialogue.endswith(suffix):
+                dialogue = f"{dialogue}{suffix}"
+        
+        return dialogue
 
 
 class QuickDialoguePresets:
