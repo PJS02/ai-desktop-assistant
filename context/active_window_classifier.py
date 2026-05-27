@@ -240,6 +240,7 @@ def call_gemini(prompt, config, image=None):
                 }
             }
         )
+    # response_mime_type으로 JSON 응답을 유도합니다.
 
     # responseJsonSchema로 JSON만 출력되도록 강제합니다.
     payload = {
@@ -281,7 +282,6 @@ def call_gemini(prompt, config, image=None):
     if not parts:
         return "[gemini error] empty content"
     return parts[0].get("text", "").strip()
-
 
 def generate_dialogue_json(start_server=False):
     # 외부 호출을 위한 1회 실행 결과를 반환합니다.

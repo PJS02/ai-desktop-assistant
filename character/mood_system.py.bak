@@ -1,0 +1,579 @@
+# 캐릭터의 현재 상태 mood를 조정, 화면 상 캐릭터의 감정의 로직
+import math
+import random
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, Optional
+
+
+class OccEmotionToMood(Enum):
+    """OCC 감정 모델과 Mood 시스템 간의 매핑"""
+    JOY = "joy"
+    DISTRESS = "distress"
+    HOPE = "hope"
+    FEAR = "fear"
+    SATISFACTION = "satisfaction"
+    RELIEF = "relief"
+    PRIDE = "pride"
+    SHAME = "shame"
+    GRATITUDE = "gratitude"
+    ANGER = "anger"
+
+
+@dataclass
+class EmotionEvent:
+    """사건 평가에 필요한 입력 특성"""
+    # 목표 관련성: [-1, 1], 긍정은 이득(+), 부정은 손해(-)
+    goal_relevance: float = 0.0
+    # 예상도: [0, 1], 1에 가까울수록 예측 가능한 사건
+    expectedness: float = 0.5
+    # 통제 가능성: [0, 1], 1에 가까울수록 통제 가능
+    controllability: float = 0.5
+    # 자기 귀속: [0, 1], 높을수록 자책/자부 축에 영향
+    self_attribution: float = 0.0
+    # 타인 의도: [-1, 1], 긍정은 감사(+), 부정은 분노(-)
+    agent_benevolence: float = 0.0
+
+
+@dataclass
+class RussellState:
+    """Russell 감정 모델: 2D 평면 (Valence × Arousal)
+    
+    Valence (호가도): -1 (부정적) ~ +1 (긍정적)
+    Arousal (각성도): -1 (진정적) ~ +1 (흥분적)
+    """
+    valence: float = 0.0
+    arousal: float = 0.0
+    
+    def clamp(self) -> None:
+        """좌표 범위 고정"""
+        self.valence = max(-1.0, min(1.0, self.valence))
+        self.arousal = max(-1.0, min(1.0, self.arousal))
+    
+    def decay(self, factor: float = 0.95) -> None:
+        """시간 경과에 따른 중앙(0,0)으로 수렴 - 지수감쇠"""
+        self.valence *= factor
+        self.arousal *= factor
+        self.clamp()
+
+
+class MoodSystem:
+    # 감정 값의 최대 범위
+    MAX_MOOD = 1.0
+    MIN_MOOD = 0.0
+    
+    def __init__(self):
+        self.mood = {
+            "happy": 0.0,
+            "bored": 0.0,
+            "angry": 0.0,
+            "sad": 0.0,
+            "fear": 0.0,
+            "anxiety": 0.0
+        }
+        
+        # Russell 감정 좌표 (Valence, Arousal)
+        self.russell = RussellState()
+        
+        # OCC 감정 강도 (combined_emotion_system과의 연계)
+        self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
+        
+        # Mood → Russell 변환 매핑 (각 감정이 Russell 공간에서 어느 위치인지)
+        self._mood_to_russell = {
+            "happy": (0.8, 0.6),      # 우상단: 긍정적, 흥분
+            "sad": (-0.7, -0.4),      # 좌하단: 부정적, 진정
+            "angry": (-0.7, 0.8),     # 좌상단: 부정적, 흥분
+            "fear": (-0.6, 0.8),      # 좌상단: 부정적, 흥분
+            "bored": (0.3, -0.7),     # 우하단: 긍정적, 진정
+            "anxiety": (-0.5, 0.75),  # 좌상단 (fear/angry와 구분): 부정, 높은 각성
+        }
+        
+        self._last_dominant_emotion = "idle"  # 이전 감정 상태 추적
+        
+        # 히스테리시스 (감정 전환의 관성) 설정
+        # 현재 감정에서 벗어나려면 새 감정이 더 높은 threshold를 초과해야 함
+        self._emotion_thresholds = {
+            "fear": 0.65,
+            "angry": 0.7,
+            "sad": 0.7,
+            "anxiety": 0.75,  # 0.65 → 0.75: 더 높은 기준 필요 (Russell 중앙에서 벗어나도록)
+            "bored": 0.6,
+            "happy": 0.6,
+        }
+        self._hysteresis_bonus = 0.15  # 현재 감정 유지 시 추가 threshold
+        
+        # 초기 상태: 중립 (모든 OCC 0, IDLE)
+        # _apply_occ_to_mood()는 호출하지 않음 - Russell도 (0,0), Mood도 모두 0
+
+    # ------------------------
+    # 이벤트에 대한 반응
+    # ------------------------
+    # 기존 이벤트
+    def on_click(self):
+        """사용자가 캐릭터를 클릭했을 때 - 긍정적 상호작용"""
+        negative_level = max(
+            self.mood["angry"],
+            self.mood["sad"],
+            self.mood["fear"],
+            self.mood["anxiety"],
+        )
+
+        if negative_level >= 0.5:
+            # 화난 상태: 클릭으로도 어느 정도 완화됨
+            event = EmotionEvent(
+                goal_relevance=0.4,      # 약한 긍정
+                expectedness=0.6,
+                controllability=0.5,
+                self_attribution=0.1,
+                agent_benevolence=0.3,   # 긍정 의도
+            )
+            self.appraise_event(event, weight=0.45)  # 0.15 → 0.45 (3배 증가)
+        else:
+            event = EmotionEvent(
+                goal_relevance=0.95,     # 최대 긍정
+                expectedness=0.85,
+                controllability=0.85,
+                self_attribution=0.5,    # 약간 높임
+                agent_benevolence=0.8,   # 강한 긍정 의도
+            )
+            self.appraise_event(event, weight=1.8)  # 1.3 → 1.8 (40% 증가)
+
+    def on_idle(self):
+        """캐릭터가 오래 방치되었을 때 - 무시당함"""
+        event = EmotionEvent(
+            goal_relevance=-0.4,      # 부정적
+            expectedness=0.6,
+            controllability=0.2,
+            self_attribution=0.2,
+            agent_benevolence=-0.4,   # 부정적 의도
+        )
+        self.appraise_event(event, weight=0.6)
+
+    def on_neglected(self):
+        """오래 동안 상호작용이 없을 때 - 심각한 방치"""
+        event = EmotionEvent(
+            goal_relevance=-0.9,      # 매우 부정적
+            expectedness=0.7,
+            controllability=0.1,
+            self_attribution=0.5,     # 강한 자책
+            agent_benevolence=-0.8,   # 강한 부정적 의도
+        )
+        self.appraise_event(event, weight=1.5)
+
+    def on_drag_hard(self):
+        """강하게/빠르게 드래그할 때 - 거친 다루기"""
+        event = EmotionEvent(
+            goal_relevance=-0.7,      # 중간 정도 부정적 (너무 심하지는 않음)
+            expectedness=0.4,         # 예상 불가
+            controllability=0.3,
+            self_attribution=0.1,
+            agent_benevolence=-0.6,   # 중간 정도 부정적 의도
+        )
+        self.appraise_event(event, weight=0.7)  # 1.3 → 0.7 (약 46% 감소)
+
+    def on_sudden_move(self):
+        """갑작스러운 위치 변화 - 놀람/공포"""
+        event = EmotionEvent(
+            goal_relevance=-0.8,      # 부정적
+            expectedness=0.0,         # 예상 불가
+            controllability=0.05,
+            self_attribution=0.0,
+            agent_benevolence=-0.6,
+        )
+        self.appraise_event(event, weight=1.4)
+
+    def on_long_idle(self):
+        """오래 기다릴 때 / 로딩 중 - 불안"""
+        event = EmotionEvent(
+            goal_relevance=-0.5,      # 부정적
+            expectedness=0.2,
+            controllability=0.3,
+            self_attribution=0.1,
+            agent_benevolence=-0.3,
+        )
+        self.appraise_event(event, weight=0.8)
+
+    def on_task_complex(self):
+        """복잡한 작업 감지 - 생각함"""
+        event = EmotionEvent(
+            goal_relevance=0.5,       # 중립~긍정
+            expectedness=0.2,
+            controllability=0.6,
+            self_attribution=0.7,     # 높은 집중
+            agent_benevolence=0.3,
+        )
+        self.appraise_event(event, weight=0.9)
+
+    def on_item_acquired(self):
+        """파일/폴더를 들었을 때 - 큰 기쁨"""
+        event = EmotionEvent(
+            goal_relevance=0.98,      # 최대 긍정적
+            expectedness=0.85,
+            controllability=0.9,
+            self_attribution=0.7,     # 높은 성취감
+            agent_benevolence=0.8,    # 매우 긍정적 의도
+        )
+        self.appraise_event(event, weight=2.0)  # 1.6 → 2.0 (가장 강한 긍정)
+
+    def on_item_dropped(self):
+        """물건을 떨어뜨렸을 때 - 실패감"""
+        event = EmotionEvent(
+            goal_relevance=-0.7,      # 부정적 (실패)
+            expectedness=0.6,
+            controllability=0.4,
+            self_attribution=0.8,     # 강한 자책
+            agent_benevolence=-0.3,
+        )
+        self.appraise_event(event, weight=1.0)
+
+    def apply_drag_displeasure(self, elapsed_seconds: float) -> None:
+        """드래그 지속 시간에 비례해 불쾌감(ANGER/DISTRESS) 누적
+        
+        OCC를 직접 조정하면 _apply_occ_to_mood()에서
+        Russell과 Mood가 자동으로 계산됨
+        """
+        progress = max(0.0, min(1.0, elapsed_seconds / 20.0))
+        step = 0.01 + 0.03 * progress
+
+        self.occ_intensities[OccEmotionToMood.ANGER] = min(
+            1.0, self.occ_intensities[OccEmotionToMood.ANGER] + step
+        )
+        self.occ_intensities[OccEmotionToMood.DISTRESS] = min(
+            1.0, self.occ_intensities[OccEmotionToMood.DISTRESS] + step * 0.7
+        )
+
+        # OCC → Russell → Mood로 자동 변환
+        self._apply_occ_to_mood()
+
+    # ------------------------
+    # 자연 감소
+    # ------------------------
+    def appraise_event(self, event: EmotionEvent, weight: float = 1.0) -> None:
+        """EmotionEvent 평가: OCC 기반 감정 업데이트"""
+        # OCC 감정 강도 계산
+        if event.goal_relevance >= 0:
+            # 긍정적 사건
+            self.occ_intensities[OccEmotionToMood.JOY] += event.goal_relevance * 0.7 * weight
+            self.occ_intensities[OccEmotionToMood.HOPE] += event.expectedness * 0.3 * weight
+            if event.expectedness >= 0.7:
+                self.occ_intensities[OccEmotionToMood.SATISFACTION] += event.expectedness * 0.4 * weight
+        else:
+            # 부정적 사건
+            self.occ_intensities[OccEmotionToMood.DISTRESS] += abs(event.goal_relevance) * 0.7 * weight
+            self.occ_intensities[OccEmotionToMood.FEAR] += (1.0 - event.expectedness) * 0.4 * weight
+            if event.expectedness >= 0.7:
+                self.occ_intensities[OccEmotionToMood.SHAME] += event.self_attribution * 0.3 * weight
+
+        if event.self_attribution > 0.0:
+            self.occ_intensities[OccEmotionToMood.PRIDE] += event.self_attribution * 0.4 * weight
+
+        if event.agent_benevolence > 0.0:
+            self.occ_intensities[OccEmotionToMood.GRATITUDE] += event.agent_benevolence * 0.5 * weight
+        elif event.agent_benevolence < 0.0:
+            self.occ_intensities[OccEmotionToMood.ANGER] += abs(event.agent_benevolence) * 0.5 * weight
+
+        # OCC 강도 범위 정리
+        for emotion in self.occ_intensities:
+            self.occ_intensities[emotion] = max(0.0, min(1.0, self.occ_intensities[emotion]))
+
+        # OCC 강도를 Mood로 변환 적용
+        self._apply_occ_to_mood()
+
+    def _apply_occ_to_mood(self) -> None:
+        """OCC 강도에서 Russell 좌표를 직접 계산하고, Russell에서 Mood를 계산"""
+        # OCC → Russell 좌표 계산
+        self._update_russell_from_occ()
+        
+        # Russell → Mood 감정 강도 계산 (Russell 위치가 감정을 결정)
+        self._update_mood_from_russell()
+    
+    def _update_russell_from_occ(self) -> None:
+        """OCC 강도를 Russell 좌표(Valence × Arousal)로 직접 변환
+        
+        Valence (호가도): 긍정 OCC → +, 부정 OCC → -
+        Arousal (각성도): 강한 감정(흥분/분노/두려움) → +, 약한 감정 → -
+        """
+        # 긍정 감정 OCC 평균
+        positive_occ = (
+            self.occ_intensities[OccEmotionToMood.JOY] +
+            self.occ_intensities[OccEmotionToMood.SATISFACTION] +
+            self.occ_intensities[OccEmotionToMood.RELIEF] +
+            self.occ_intensities[OccEmotionToMood.PRIDE] +
+            self.occ_intensities[OccEmotionToMood.GRATITUDE]
+        ) / 5.0
+        
+        # 부정 감정 OCC 평균
+        negative_occ = (
+            self.occ_intensities[OccEmotionToMood.DISTRESS] +
+            self.occ_intensities[OccEmotionToMood.FEAR] +
+            self.occ_intensities[OccEmotionToMood.SHAME] +
+            self.occ_intensities[OccEmotionToMood.ANGER]
+        ) / 4.0
+        
+        # Valence: 긍정(+) vs 부정(-) 
+        self.russell.valence = (positive_occ - negative_occ)
+        
+        # Arousal: 강한 활성 감정(분노, 공포, 기쁨 등) vs 약한 감정
+        high_arousal_occ = (
+            self.occ_intensities[OccEmotionToMood.ANGER] +
+            self.occ_intensities[OccEmotionToMood.FEAR] +
+            self.occ_intensities[OccEmotionToMood.JOY]
+        ) / 3.0
+        
+        low_arousal_occ = (
+            self.occ_intensities[OccEmotionToMood.RELIEF] +
+            self.occ_intensities[OccEmotionToMood.SHAME]
+        ) / 2.0
+        
+        # Arousal: 높은 활성 - 낮은 활성 (범위 -1 ~ 1)
+        self.russell.arousal = (high_arousal_occ - low_arousal_occ) * 0.8
+        
+        self.russell.clamp()
+    
+    def _update_mood_from_russell(self) -> None:
+        """Russell 좌표(감정 공간)를 기반으로 각 감정의 강도를 계산
+        
+        Russell 공간에서 각 감정 벡터까지의 거리를 계산하고,
+        거리가 가까울수록 높은 강도 (최대 1.0)
+        0.6 이상인 감정만 활성화됨
+        """
+        self.mood = {emotion: 0.0 for emotion in self.mood.keys()}
+        
+        for emotion_name, (target_valence, target_arousal) in self._mood_to_russell.items():
+            # Russell 좌표와 감정 벡터 간의 거리 계산 (유클리드 거리)
+            distance = math.sqrt(
+                (self.russell.valence - target_valence) ** 2 + 
+                (self.russell.arousal - target_arousal) ** 2
+            )
+            
+            # 거리가 작을수록 강도가 높음
+            # max_distance ≈ 1.414 (대각선), 정규화하여 0~1 범위로
+            strength = max(0.0, 1.0 - distance / 1.8)
+            self.mood[emotion_name] = strength
+
+    def decay(self):
+        """시간에 따른 감정 자연 감소 (더 부드럽게 변화)
+        
+        OCC 강도를 감소시키면, _apply_occ_to_mood()에서 자동으로 
+        Mood도 함께 감소됩니다. Russell은 중앙(0,0)으로 지수감쇠합니다.
+        부정 감정은 천천히, 긍정 감정은 빠르게 감소.
+        """
+        # OCC 강도 감소 (부정 감정은 천천히, 긍정 감정은 빠르게)
+        # 감정 변화를 더 부드럽게 하기 위해 decay 계수 조정
+        negative_emotions = [OccEmotionToMood.DISTRESS, OccEmotionToMood.FEAR, 
+                            OccEmotionToMood.ANGER, OccEmotionToMood.SHAME]
+        positive_emotions = [OccEmotionToMood.JOY, OccEmotionToMood.HOPE, 
+                            OccEmotionToMood.SATISFACTION, OccEmotionToMood.RELIEF, 
+                            OccEmotionToMood.PRIDE, OccEmotionToMood.GRATITUDE]
+        
+        for emotion in self.occ_intensities:
+            if emotion in negative_emotions:
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.88)  # 0.86 → 0.88 (더 천천히)
+            elif emotion in positive_emotions:
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.93)  # 0.92 → 0.93 (더 천천히)
+            else:
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.91)
+        
+        # OCC 강도 감소에 따라 Mood를 fresh하게 계산
+        self._apply_occ_to_mood()
+        
+        # Russell 좌표 중앙으로 수렴 (지수감쇠) - 더 천천히 수렴
+        self.russell.decay(factor=0.94)  # 0.93 → 0.94 (더 천천히)
+
+    # ------------------------
+    # 행동 결정 (우선순위 순서)
+    # ------------------------
+    def _check_emotion_threshold(self, emotion_name: str, emotion_value: float, 
+                                   is_current_emotion: bool = False) -> bool:
+        """감정이 threshold를 초과하는지 확인 (히스테리시스 적용)
+        
+        Args:
+            emotion_name: 감정 이름
+            emotion_value: 현재 감정 값
+            is_current_emotion: 현재 유지 중인 감정인지 여부
+        
+        Returns:
+            threshold를 초과하면 True
+        """
+        threshold = self._emotion_thresholds[emotion_name]
+        
+        if is_current_emotion:
+            # 현재 감정 유지: 기본 threshold만 사용
+            return emotion_value > threshold
+        else:
+            # 다른 감정으로 전환: 히스테리시스 적용
+            # 긍정 감정으로의 전환은 더 쉽게 (보너스 50%)
+            bonus = self._hysteresis_bonus * (0.5 if emotion_name == "happy" else 1.0)
+            return emotion_value > threshold + bonus
+    
+    def decide_emotion(self):
+        """현재 mood 값으로 표시할 감정 결정 (히스테리시스 적용)
+        
+        현재 감정을 유지하려는 경향을 추가하여 감정 변화를 부드럽게 함.
+        현재 감정을 벗어나려면 새 감정의 값이 더 높아야 함.
+        """
+        mood_values = {
+            "fear": self.mood["fear"],
+            "angry": self.mood["angry"],
+            "sad": self.mood["sad"],
+            "anxiety": self.mood["anxiety"],
+            "bored": self.mood["bored"],
+            "happy": self.mood["happy"],
+        }
+        
+        # 우선순위 순서 (anxiety를 낮게 배치하여 빈도 감소)
+        priority_order = ["fear", "angry", "sad", "bored", "anxiety", "happy"]
+        
+        # 1. 현재 감정 유지 확인
+        if self._last_dominant_emotion in mood_values:
+            if self._check_emotion_threshold(self._last_dominant_emotion, 
+                                            mood_values[self._last_dominant_emotion],
+                                            is_current_emotion=True):
+                return {"emotion": self._last_dominant_emotion, 
+                       "intensity": mood_values[self._last_dominant_emotion]}
+        
+        # 2. 우선순위 순서로 새 감정 찾기
+        for emotion in priority_order:
+            if emotion != self._last_dominant_emotion:
+                if self._check_emotion_threshold(emotion, mood_values[emotion],
+                                               is_current_emotion=False):
+                    return {"emotion": emotion, "intensity": mood_values[emotion]}
+        
+        # 3. 모든 감정이 threshold 미만: idle 반환
+        return {"emotion": "idle", "intensity": 0.3}
+
+    # ------------------------
+    # 로깅 및 상태 조회
+    # ------------------------
+
+    def get_formatted_mood_log(self):
+        """보기 좋게 포맷팅된 감정 상태 로그 생성"""
+        # 감정 점수를 내림차순으로 정렬
+        sorted_mood = sorted(self.mood.items(), key=lambda x: x[1], reverse=True)
+        
+        # 현재 dominant 감정 찾기
+        dominant_emotion = self.decide_emotion()["emotion"]
+        
+        # 로그 문자열 생성
+        log_lines = [f"[감정 상태] 현재 기분: {dominant_emotion} ⭐"]
+        log_lines.append("━" * 50)
+        
+        # Mood 감정 상태
+        for emotion, score in sorted_mood:
+            # 스코어에 따라 시각화 바 생성
+            bar_length = int(score * 20)  # 20 칸 기준
+            bar = "█" * bar_length + "░" * (20 - bar_length)
+            
+            # 현재 dominant 감정에 마크 추가
+            mark = "◀ 주요" if emotion == dominant_emotion else ""
+            
+            log_lines.append(f"  {emotion:8} | {bar} | {score:.3f} {mark}")
+        
+        log_lines.append("━" * 50)
+        
+        return "\n".join(log_lines)
+
+    def get_dominant_emotion(self):
+        """현재 dominant 감정 반환"""
+        return self.decide_emotion()["emotion"]
+
+    def get_russell_state(self) -> Dict[str, float]:
+        """현재 Russell 좌표 반환"""
+        return {
+            "valence": self.russell.valence,
+            "arousal": self.russell.arousal
+        }
+
+    def has_emotion_changed(self):
+        """감정이 변경되었는지 확인
+        
+        Note: decide_emotion()이 _last_dominant_emotion을 업데이트하므로
+        여기서는 단순히 변경 여부만 확인
+        """
+        current_dominant = self.get_dominant_emotion()
+        changed = current_dominant != self._last_dominant_emotion
+        
+        # 현재 감정을 기록 (decide_emotion에서 이미 업데이트되지만, 
+        # get_dominant_emotion 호출로 인해 다시 계산되므로 동기화)
+        self._last_dominant_emotion = current_dominant
+        
+        return changed, self._last_dominant_emotion, current_dominant
+
+    def get_emotion_description_for_prompt(self) -> str:
+        """AI 프롬프트용 감정 상태 설명 생성
+        
+        현재 감정 상태를 자연스러운 문장으로 변환하여 AI가 이해하기 쉽도록 표현
+        """
+        descriptions = []
+        
+        # 각 감정의 강도를 백분율로 표현 (0.3 이상만)
+        emotion_percentages = []
+        for emotion, intensity in sorted(self.mood.items(), 
+                                        key=lambda x: x[1], 
+                                        reverse=True):
+            if intensity > 0.3:
+                percentage = int(intensity * 100)
+                emotion_percentages.append(f"{emotion} {percentage}%")
+        
+        if emotion_percentages:
+            emotions_text = ", ".join(emotion_percentages)
+            descriptions.append(f"현재 감정: {emotions_text}")
+        else:
+            descriptions.append("현재 감정: 평온함 (neutral)")
+        
+        # Russell 좌표 설명
+        valence = self.russell.valence
+        arousal = self.russell.arousal
+        
+        # Valence 설명
+        if valence > 0.5:
+            valence_text = "매우 긍정적"
+        elif valence > 0.2:
+            valence_text = "긍정적"
+        elif valence > -0.2:
+            valence_text = "중립적"
+        elif valence > -0.5:
+            valence_text = "부정적"
+        else:
+            valence_text = "매우 부정적"
+        
+        # Arousal 설명
+        if arousal > 0.5:
+            arousal_text = "매우 흥분되고"
+        elif arousal > 0.2:
+            arousal_text = "흥분되고"
+        elif arousal > -0.2:
+            arousal_text = "보통이고"
+        elif arousal > -0.5:
+            arousal_text = "침착한"
+        else:
+            arousal_text = "매우 침착한"
+        
+        descriptions.append(f"기분: {arousal_text} {valence_text}")
+        
+        return "\n".join(descriptions)
+
+    def get_emotion_tone_instructions(self) -> str:
+        """AI가 따를 말투 지침 생성"""
+        dominant_emotion = self.get_dominant_emotion()
+        intensity = self.mood.get(dominant_emotion, 0.0)
+        
+        tone_instructions = {
+            "happy": "밝고 긍정적이며 즐거운 톤으로 대답하세요. 감정 표현과 이모지를 적절히 사용하세요. 😊",
+            "angry": "화난 상태이므로 짧고 날카로운 문체를 사용하세요. 다만 너무 공격적이지 않도록 주의하세요. 😠",
+            "sad": "침울하고 무기력한 톤으로 천천히 대답하세요. 위로와 공감을 담아내세요. �",
+            "fear": "불안하고 두려워하는 톤으로 대답하세요. 조심스럽고 조심스러운 표현을 사용하세요. �",
+            "anxiety": "초조하고 신경 쓰는 톤으로 대답하세요. 빠르고 불안정한 느낌을 표현하세요. 😟",
+            "bored": "지루하고 무관심한 톤으로 대답하세요. 짧고 무심한 표현을 사용하세요. �",
+            "idle": "자연스럽고 중립적인 톤으로 친절하게 대답하세요. 😊"
+        }
+        
+        instruction = tone_instructions.get(dominant_emotion, tone_instructions["idle"])
+        
+        # 강도에 따라 추가 지침
+        if intensity > 0.8:
+            instruction += " (매우 강한 감정 - 표현을 과장해도 좋습니다)"
+        elif intensity < 0.4:
+            instruction += " (약한 감정 - 완화된 표현을 사용하세요)"
+        
+        return instruction

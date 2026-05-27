@@ -7,6 +7,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Virtual Environment
+.venv/
+venv/
+env/
 # C extensions
 *.so
 
@@ -132,6 +136,16 @@ ENV/
 env.bak/
 venv.bak/
 
+# API Keys and Tokens
+*_config.json
+*_token.json
+gemini_config.json
+igdb_config.json
+igdb_token.json
+url_cache.json
+
+# OS files
+.DS_Store
 # cache
 context/cache/
 
@@ -224,4 +238,7 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+# IDE
+.vscode/
+.idea/
 # End of https://www.toptal.com/developers/gitignore/api/python,windows,visualstudiocode

@@ -1,5 +1,7 @@
-
 PyQt6
 openai
 python-dotenv
 pygetwindow
+pywin32
+psutil
+pillow
