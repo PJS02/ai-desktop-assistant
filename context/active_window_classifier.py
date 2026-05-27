@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from context.rules_config import get_rules
+from rules_config import get_rules
 
 
 def get_active_window_info():

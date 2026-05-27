@@ -14,6 +14,10 @@ def load_config():
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
+                # 새로운 형식: resolution.width/height
+                if 'resolution' in config:
+                    return config['resolution'].get('width', 1920), config['resolution'].get('height', 1080)
+                # 이전 형식 호환성: 최상위 width/height
                 return config.get('width', 1920), config.get('height', 1080)
         except Exception as e:
             print(f"[설정 읽기 오류] {e}, 기본값 사용")
@@ -24,7 +28,7 @@ def load_config():
 def save_config(width, height):
     """설정 저장"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config = {'width': width, 'height': height}
+    config = {'resolution': {'width': width, 'height': height}}
     
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:

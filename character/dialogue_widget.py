@@ -64,36 +64,41 @@ class DialogueBubble(QWidget):
         """텍스트 크기를 기반으로 말풍선 크기 계산"""
         metrics = QFontMetrics(self.font)
         
-        # 텍스트 높이 (개행 처리)
-        text_lines = self.text.split('\n')
-        line_height = metrics.height()
-        
-        # 최대 텍스트 너비 계산 (줄 바꿈 대비)
-        max_width = max(metrics.horizontalAdvance(line) for line in text_lines)
-        text_height = line_height * len(text_lines)
-        
-        # 최대 너비 제한 (화면 너비의 30%)
+        # 화면 크기 기반 최대 너비/높이 계산
         try:
             screen = QApplication.primaryScreen()
             screen_width = screen.geometry().width()
+            screen_height = screen.geometry().height()
         except:
             screen_width = 1920  # 기본값
+            screen_height = 1080
         
-        max_text_width = int(screen_width * 0.3)
+        max_text_width = int(screen_width * 0.35)
+        max_text_height = int(screen_height * 0.4)  # 화면 높이의 40% 이상 차지 방지
         
-        if max_width > max_text_width:
-            # 텍스트 줄 바꿈 필요
-            # 간단히 최대 너비로 설정
-            max_width = max_text_width
-            # 실제 줄 수 재계산 (근사)
-            estimated_lines = max(len(text_lines), (len(self.text) * metrics.averageCharWidth()) // max_text_width)
-            text_height = line_height * estimated_lines
+        # QFontMetrics.boundingRect()를 사용해 정확한 크기 계산
+        # WordWrap 플래그와 최대 너비를 적용한 실제 텍스트 크기
+        text_rect = metrics.boundingRect(
+            0, 0,
+            max_text_width,
+            max_text_height,  # 실제 최대 높이로 제한
+            Qt.TextFlag.TextWordWrap,
+            self.text
+        )
         
-        # 말풍선 전체 크기
-        self.bubble_width = max_width + self.padding_x * 2
+        # 계산된 텍스트 크기
+        text_width = text_rect.width()
+        text_height = min(text_rect.height(), max_text_height)  # 높이도 제한
+        
+        # 말풍선 전체 크기 (padding 추가)
+        self.bubble_width = text_width + self.padding_x * 2
         self.bubble_height = text_height + self.padding_y * 2
+        
+        # 최소/최대 크기 제한
         self.bubble_width = max(self.bubble_width, 100)  # 최소 너비
+        self.bubble_width = min(self.bubble_width, max_text_width + self.padding_x * 2)  # 최대 너비
         self.bubble_height = max(self.bubble_height, 50)  # 최소 높이
+        self.bubble_height = min(self.bubble_height, max_text_height + self.padding_y * 2)  # 최대 높이
         
         # 전체 위젯 크기 (꼬리 포함)
         total_width = self.bubble_width + 10
