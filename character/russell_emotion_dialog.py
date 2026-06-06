@@ -7,17 +7,40 @@ from PyQt6.QtCore import Qt, QTimer, QPointF
 class RussellEmotionCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.valence = 0.0
-        self.arousal = 0.0
+        self.valence_current = 0.0
+        self.arousal_current = 0.0
+        self.valence_target = 0.0
+        self.arousal_target = 0.0
         self.dominant = "idle"
         self.setMinimumSize(360, 360)
         self.setMouseTracking(True)  # 마우스 추적 활성화
+        
+        # 애니메이션 타이머 (매 16ms = 60fps)
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self._update_animation)
+        self.animation_timer.start(16)
+    
+    def _update_animation(self) -> None:
+        """부드러운 이동 애니메이션"""
+        # 선형 보간 (lerp) - 속도: 0.15 (0-1 범위에서 스무스함)
+        speed = 0.15
+        
+        if abs(self.valence_current - self.valence_target) > 0.01:
+            self.valence_current += (self.valence_target - self.valence_current) * speed
+        else:
+            self.valence_current = self.valence_target
+        
+        if abs(self.arousal_current - self.arousal_target) > 0.01:
+            self.arousal_current += (self.arousal_target - self.arousal_current) * speed
+        else:
+            self.arousal_current = self.arousal_target
+        
+        self.update()
 
     def set_state(self, valence: float, arousal: float, dominant: str) -> None:
-        self.valence = max(-1.0, min(1.0, float(valence)))
-        self.arousal = max(-1.0, min(1.0, float(arousal)))
+        self.valence_target = max(-1.0, min(1.0, float(valence)))
+        self.arousal_target = max(-1.0, min(1.0, float(arousal)))
         self.dominant = dominant or "idle"
-        self.update()
 
     def _dominant_color(self) -> QColor:
         color_map = {
@@ -90,8 +113,8 @@ class RussellEmotionCanvas(QWidget):
 
         draw_label("중립", center.x(), center.y())
 
-        point_x = center.x() + self.valence * radius
-        point_y = center.y() - self.arousal * radius
+        point_x = center.x() + self.valence_current * radius
+        point_y = center.y() - self.arousal_current * radius
         point_color = self._dominant_color()
 
         painter.setPen(QPen(QColor(0, 0, 0), 1))
@@ -107,8 +130,8 @@ class RussellEmotionCanvas(QWidget):
         center = QPointF(rect.center())
         
         # 점의 화면 좌표
-        point_x = center.x() + self.valence * radius
-        point_y = center.y() - self.arousal * radius
+        point_x = center.x() + self.valence_current * radius
+        point_y = center.y() - self.arousal_current * radius
         
         # 마우스와 점 사이의 거리
         mouse_pos = event.pos()
@@ -117,8 +140,8 @@ class RussellEmotionCanvas(QWidget):
         # 점(반경 6픽셀) 근처면 (15픽셀 이내) 툴팁 표시
         if distance <= 15:
             tooltip_text = (
-                f"호가도(Valence): {self.valence:+.3f}\n"
-                f"각성도(Arousal): {self.arousal:+.3f}\n"
+                f"호가도(Valence): {self.valence_target:+.3f}\n"
+                f"각성도(Arousal): {self.arousal_target:+.3f}\n"
                 f"감정: {self.dominant}"
             )
             global_pos = event.globalPosition().toPoint()
@@ -207,6 +230,8 @@ class RussellEmotionDialog(QDialog):
 
     def closeEvent(self, event):
         self.stop_auto_refresh()
+        if hasattr(self.canvas, 'animation_timer'):
+            self.canvas.animation_timer.stop()
         super().closeEvent(event)
 
     def showEvent(self, event):

@@ -60,9 +60,12 @@ class RussellState:
 class MoodSystem:
     """Russell 기반 감정 시스템 - 17개 감정 매핑"""
     
-    def __init__(self):
+    def __init__(self, personality_system=None):
         # Russell 감정 좌표 (Valence, Arousal)
         self.russell = RussellState()
+        
+        # 성격 시스템 (감정 반응 조절용)
+        self.personality_system = personality_system
         
         # OCC 감정 강도 (combined_emotion_system과의 연계)
         self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
@@ -91,8 +94,8 @@ class MoodSystem:
             "melancholy": (-0.50, -0.60),
             "despair": (-0.80, -0.40),
             
-            # 중립
-            "neutral": (0.00, 0.00),
+            # 중립 // 통칭 애니메이션은 idle
+            "neutral": (0.00, 0.00), 
         }
         
         self._last_dominant_emotion = "neutral"  # 이전 감정 상태 추적
@@ -107,7 +110,7 @@ class MoodSystem:
         """사용자가 캐릭터를 클릭했을 때 - 긍정적 상호작용"""
         # Russell 좌표 기반으로 부정도 판단
         if self.russell.valence < -0.2:  # 부정적 상태
-            # 화난 상태: 클릭으로도 어느 정도 완화됨
+            # 화난 상태: 클릭으로 더 강한 위로 효과 (Negativity Bias)
             event = EmotionEvent(
                 goal_relevance=0.4,      # 약한 긍정
                 expectedness=0.6,
@@ -115,7 +118,7 @@ class MoodSystem:
                 self_attribution=0.1,
                 agent_benevolence=0.3,   # 긍정 의도
             )
-            self.appraise_event(event, weight=0.45)
+            self.appraise_event(event, weight=1.2)  # 부정 상태에서 더 강한 위로
         else:
             event = EmotionEvent(
                 goal_relevance=0.95,     # 최대 긍정
@@ -124,7 +127,7 @@ class MoodSystem:
                 self_attribution=0.5,
                 agent_benevolence=0.8,   # 강한 긍정 의도
             )
-            self.appraise_event(event, weight=1.8)
+            self.appraise_event(event, weight=0.8)  # 긍정 상태에서 약한 자극
 
     def on_idle(self):
         """캐릭터가 오래 방치되었을 때 - 무시당함"""
@@ -233,7 +236,20 @@ class MoodSystem:
     # 감정 평가 및 계산
     # ========================
     def appraise_event(self, event: EmotionEvent, weight: float = 1.0) -> None:
-        """EmotionEvent 평가: OCC 기반 감정 업데이트"""
+        """EmotionEvent 평가: OCC 기반 감정 업데이트 (성격 가중치 적용)"""
+        # ======== 성격 기반 가중치 조정 ========
+        # 성격이 있다면 이벤트 타입에 따라 가중치 조정
+        if self.personality_system is not None:
+            # 긍정 이벤트 (goal_relevance > 0): 외향성에 따라 반응
+            if event.goal_relevance > 0:
+                weight *= self.personality_system.get_emotion_weight_multiplier("positive")
+            # 부정 이벤트 (goal_relevance < 0): 신경증에 따라 반응
+            elif event.goal_relevance < 0:
+                weight *= self.personality_system.get_emotion_weight_multiplier("negative")
+            # 자기 귀속 높음 (자책/자부 이벤트): 성실성에 따라 반응
+            if event.self_attribution > 0.5:
+                weight *= self.personality_system.get_emotion_weight_multiplier("shame")
+        
         # OCC 감정 강도 계산
         if event.goal_relevance >= 0:
             # 긍정적 사건
@@ -294,26 +310,39 @@ class MoodSystem:
         # Valence: 긍정(+) vs 부정(-) 
         self.russell.valence = (positive_occ - negative_occ)
         
-        # Arousal: 강한 활성 감정(분노, 공포, 기쁨 등) vs 약한 감정
+        # Arousal: 강한 활성 감정(분노, 공포, 기쁨 등) vs 약한 감정(진정, 만족, 안도 등)
         high_arousal_occ = (
             self.occ_intensities[OccEmotionToMood.ANGER] +
             self.occ_intensities[OccEmotionToMood.FEAR] +
             self.occ_intensities[OccEmotionToMood.JOY]
         ) / 3.0
         
+        # 진정적 감정: 만족, 안도, 감사, 수치심 모두 포함
         low_arousal_occ = (
             self.occ_intensities[OccEmotionToMood.RELIEF] +
+            self.occ_intensities[OccEmotionToMood.SATISFACTION] +
+            self.occ_intensities[OccEmotionToMood.GRATITUDE] +
             self.occ_intensities[OccEmotionToMood.SHAME]
-        ) / 2.0
+        ) / 4.0
+        
+        # 전반적 감정 강도 (모든 OCC의 평균)
+        total_occ = sum(self.occ_intensities.values()) / len(self.occ_intensities)
         
         # Arousal: 높은 활성 - 낮은 활성 (범위 -1 ~ 1)
+        # 추가: 전반적 감정이 약할수록 arousal이 자동으로 낮아짐
         self.russell.arousal = (high_arousal_occ - low_arousal_occ) * 0.8
+        
+        # 무감정 상태에서 arousal을 낮춤 (깊은 진정 상태로)
+        if total_occ < 0.2:
+            self.russell.arousal = min(self.russell.arousal, -0.3)
+        elif total_occ < 0.4:
+            self.russell.arousal = min(self.russell.arousal, -0.1)
         
         self.russell.clamp()
 
     def decay(self):
         """시간에 따른 감정 자연 감소"""
-        # OCC 강도 감소 (부정 감정은 천천히, 긍정 감정은 빠르게)
+        # OCC 강도 감소 (부정 감정을 더 천천히 감소)
         negative_emotions = [OccEmotionToMood.DISTRESS, OccEmotionToMood.FEAR, 
                             OccEmotionToMood.ANGER, OccEmotionToMood.SHAME]
         positive_emotions = [OccEmotionToMood.JOY, OccEmotionToMood.HOPE, 
@@ -322,17 +351,24 @@ class MoodSystem:
         
         for emotion in self.occ_intensities:
             if emotion in negative_emotions:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.88)
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.82)  # 더 천천히 감소
             elif emotion in positive_emotions:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.93)
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.88)  # 더 빠르게 감소
             else:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.91)
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.85)
         
         # OCC 감소에 따라 Russell 좌표 업데이트
         self._apply_occ_to_mood()
         
-        # Russell 좌표 중앙으로 수렴 (지수감쇠)
-        self.russell.decay(factor=0.94)
+        # Russell 좌표 중앙으로 수렴 (지수감쇠) - 더 천천히 수렴
+        self.russell.decay(factor=0.97)
+        
+        # Arousal이 높을 때(흥분/활동적)는 더 빠르게 진정되도록
+        # 이를 통해 시간이 지나면서 자연스럽게 "조용한 상태"로 변함
+        if self.russell.arousal > 0.3:
+            self.russell.arousal *= 0.94  # 흥분 상태 → 더 빠르게 감소
+        else:
+            self.russell.arousal *= 0.96  # 진정 상태 → 천천히 감소
 
     # ========================
     # 감정 결정 (Russell 기반)

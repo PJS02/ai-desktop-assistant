@@ -13,6 +13,7 @@ from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
+from .personality_system import PersonalitySystem
 
 # Context 모듈 import
 try:
@@ -59,7 +60,7 @@ class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     
-    def __init__(self, screen_width=None, screen_height=None):
+    def __init__(self, screen_width=None, screen_height=None, personality_preset=None):
         super().__init__()
 
         # 배경창 투명화
@@ -73,7 +74,8 @@ class CharacterWidget(QLabel):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # 기본 설정
-        self.mood_system = MoodSystem()
+        self.personality_system = PersonalitySystem(personality_preset or "Russell (기본)")
+        self.mood_system = MoodSystem(self.personality_system)  # 성격을 mood_system에 전달
         self.russell_dialog = None
         self.current_action = "idle"
         self.drag_pos = None
@@ -511,11 +513,8 @@ class CharacterWidget(QLabel):
                 if dialogue_text:
                     print(f"[대사 생성] {dialogue_text}")
                     
-                    # 감정 기반 필터 적용
-                    filtered_dialogue = self.dialogue_system._apply_emotion_filter(dialogue_text, mood_system)
-                    
                     # 신호를 통해 메인 스레드에서 대사 표시
-                    self.show_ai_response.emit(filtered_dialogue)
+                    self.show_ai_response.emit(dialogue_text)
                 else:
                     print(f"[경고] 응답에서 대사를 추출하지 못함: {response[:100]}")
             elif response:
@@ -608,16 +607,16 @@ class CharacterWidget(QLabel):
             self.current_action = "happy"
         # 긍정-진정: calm, peaceful
         elif emotion in ["calm", "peaceful", "contentment"]:
-            self.current_action = "happy"  # 긍정이면 happy로 매핑
+            self.current_action = "happy"  # 긍정이면 happy로 매핑 .//변경 예정 아마 편하게 생긋 웃는 애니메이션 정도?
         # 부정-흥분: anger, disgust
-        elif emotion in ["anger", "disgust"]:
+        elif emotion in ["anger", "disgust"]: 
             self.current_action = "angry"
         # 부정-흥분: fear, anxiety
         elif emotion in ["fear", "anxiety"]:
-            self.current_action = "angry"  # fear/anxiety도 angry로 표현
+            self.current_action = "angry"  # 공포/불안은 현재 애니메이션에 없어서 일단 angry로 매핑 (나중에 겁먹은 표정 애니메이션 추가 예정)
         # 부정-진정: sadness, melancholy, despair
         elif emotion in ["sadness", "melancholy", "despair"]:
-            self.current_action = "sad"
+            self.current_action = "angry"  # 슬픔/우울도 일단 angry로 매핑 (나중에 슬픈 표정 애니메이션 추가 예정)
         # 중립
         elif emotion == "neutral":
             self.current_action = "idle"
