@@ -7,7 +7,9 @@ import time
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
 from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence
-from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
+from perception.controller import PerceptionController
+from perception.receiver import QtPerceptionReceiver
 from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
@@ -243,6 +245,24 @@ class CharacterWidget(QLabel):
         
         # 신호 연결
         self.show_ai_response.connect(self.dialogue_system.show_ai_response)
+
+        # ====== 외부 감정/동작 인식 수신 ======
+        self.perception_controller = PerceptionController(
+            mood_system=self.mood_system,
+            on_dialogue=self._show_perception_dialogue,
+        )
+        self.perception_receiver = QtPerceptionReceiver(parent=self)
+        self.perception_receiver.event_received.connect(
+            self._handle_perception_payload,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.perception_receiver.status_changed.connect(self._on_perception_status)
+        self.perception_receiver.error_occurred.connect(self._on_perception_error)
+        if not self.perception_receiver.start():
+            print(
+                "[외부 인식 수신기 비활성화] "
+                f"{self.perception_receiver.startup_error or '알 수 없는 오류'}"
+            )
     
     def _get_screen_dimensions(self):
         """
@@ -255,6 +275,29 @@ class CharacterWidget(QLabel):
             # 커스텀 해상도가 없으면 실시간으로 가져옴 (해상도 변경 반영)
             screen = QApplication.primaryScreen()
             return screen.geometry().width(), screen.geometry().height()
+
+    @pyqtSlot(object)
+    def _handle_perception_payload(self, payload):
+        try:
+            self.perception_controller.handle_payload(payload)
+        except ValueError as exc:
+            print(f"[외부 인식 이벤트 무시] {exc}")
+
+    @pyqtSlot(str)
+    def _on_perception_status(self, status):
+        print(f"[외부 인식 수신기] {status}")
+
+    @pyqtSlot(str)
+    def _on_perception_error(self, message):
+        print(f"[외부 인식 수신기 오류] {message}")
+
+    def _show_perception_dialogue(self, text):
+        self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
+
+    def closeEvent(self, event):
+        if hasattr(self, "perception_receiver"):
+            self.perception_receiver.stop()
+        super().closeEvent(event)
 
     # 애니메이션 신호 처리
     def on_animation_position_changed(self, new_pos):

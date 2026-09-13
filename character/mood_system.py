@@ -217,6 +217,62 @@ class MoodSystem:
         )
         self.appraise_event(event, weight=1.0)
 
+    def on_external_emotion(self, label: str, confidence: float) -> bool:
+        """사용자 감정 인식 결과를 캐릭터의 OCC 상태에 반영합니다."""
+        emotion = str(label).strip().lower()
+        confidence = max(0.0, min(1.0, float(confidence)))
+        if confidence <= 0.0 or emotion == "neutral":
+            return False
+
+        aliases = {
+            "angry": "anger",
+            "happiness": "happy",
+            "joy": "happy",
+            "sad": "sadness",
+            "surprised": "surprise",
+        }
+        emotion = aliases.get(emotion, emotion)
+        occ_weights = {
+            "happy": {
+                OccEmotionToMood.JOY: 1.0,
+                OccEmotionToMood.GRATITUDE: 0.3,
+            },
+            "anger": {
+                OccEmotionToMood.ANGER: 1.0,
+                OccEmotionToMood.DISTRESS: 0.4,
+            },
+            "contempt": {
+                OccEmotionToMood.ANGER: 0.5,
+                OccEmotionToMood.DISTRESS: 0.4,
+            },
+            "disgust": {
+                OccEmotionToMood.ANGER: 0.7,
+                OccEmotionToMood.DISTRESS: 0.6,
+            },
+            "fear": {
+                OccEmotionToMood.FEAR: 1.0,
+                OccEmotionToMood.DISTRESS: 0.4,
+            },
+            "sadness": {
+                OccEmotionToMood.DISTRESS: 1.0,
+                OccEmotionToMood.SHAME: 0.2,
+            },
+            "surprise": {
+                OccEmotionToMood.FEAR: 0.35,
+                OccEmotionToMood.HOPE: 0.35,
+            },
+        }
+        weights = occ_weights.get(emotion)
+        if weights is None:
+            return False
+
+        influence = 0.35 * confidence
+        for occ_emotion, weight in weights.items():
+            current = self.occ_intensities[occ_emotion]
+            self.occ_intensities[occ_emotion] = min(1.0, current + influence * weight)
+        self._apply_occ_to_mood()
+        return True
+
     def apply_drag_displeasure(self, elapsed_seconds: float) -> None:
         """드래그 지속 시간에 비례해 불쾌감(ANGER/DISTRESS) 누적"""
         progress = max(0.0, min(1.0, elapsed_seconds / 20.0))

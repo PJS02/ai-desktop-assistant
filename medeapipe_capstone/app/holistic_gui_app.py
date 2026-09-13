@@ -914,6 +914,8 @@ class HolisticGuiApp:
         attention = self.always_results.get("attention", {})
         return {
             "type": "recognition_state",
+            "version": 1,
+            "source": "mediapipe_capstone",
             "always": {
                 "wave": {
                     "left": wave.get("left_state"),
@@ -951,6 +953,7 @@ class HolisticGuiApp:
             }
         return {
             "label": self.emotion_result["label"],
+            "confidence": self.emotion_result.get("confidence", 0.0),
             "scores": self.emotion_result["scores"],
         }
 
