@@ -2,6 +2,8 @@ from collections import deque
 from datetime import datetime
 import json
 from pathlib import Path
+import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from types import SimpleNamespace
@@ -72,8 +74,13 @@ MODE_LABELS = {
 
 
 class HolisticGuiApp:
-    def __init__(self, root):
+    def __init__(self, root, background_mode=False, command_stream=None):
         self.root = root
+        self.background_mode = background_mode
+        self.command_stream = command_stream
+        self.control_commands = queue.Queue()
+        self.control_thread = None
+        self.is_shutting_down = False
         self.root.title(f"Holistic Tracking GUI v{__version__}")
         self.root.geometry("1420x860")
         self.root.configure(bg="#101418")
@@ -132,7 +139,7 @@ class HolisticGuiApp:
         self.marker_only_var = tk.BooleanVar(value=False)
         self.mirror_var = tk.BooleanVar(value=False)
         self.info_overlay_var = tk.BooleanVar(value=True)
-        self.emotion_var = tk.BooleanVar(value=False)
+        self.emotion_var = tk.BooleanVar(value=background_mode)
         self.always_recognition_var = tk.BooleanVar(value=True)
         self.stt = RealtimeSTT()
 
@@ -156,9 +163,70 @@ class HolisticGuiApp:
         self.show_placeholder(
             "\uce74\uba54\ub77c\ub97c \uc2dc\uc791\ud558\uba74 \uc778\uc2dd \ud654\uba74\uc774 \uc5ec\uae30\uc5d0 \ud45c\uc2dc\ub429\ub2c8\ub2e4."
         )
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # 통합 실행에서는 X 버튼이 인식 종료가 아니라 콘솔 숨기기로 동작한다.
+        self.root.protocol(
+            "WM_DELETE_WINDOW",
+            self.hide_console if self.background_mode else self.on_close,
+        )
+        if self.background_mode:
+            self.root.withdraw()
+            self.start_control_reader()
+            # 카메라 목록을 구성한 뒤 선택된 첫 번째 카메라로 인식을 자동 시작한다.
+            self.root.after(0, self.start_selected_camera)
         self.root.after(0, self.update_frame)
         self.root.after(100, self.poll_stt_events)
+        self.root.after(100, self.poll_control_commands)
+
+    def start_control_reader(self):
+        """부모 프로세스의 명령을 읽되 Tkinter 창은 직접 조작하지 않는다."""
+        if self.command_stream is None:
+            return
+        self.control_thread = threading.Thread(
+            target=self.read_control_commands,
+            name="mediapipe-console-control",
+            daemon=True,
+        )
+        self.control_thread.start()
+
+    def read_control_commands(self):
+        try:
+            for line in self.command_stream:
+                command = line.strip().lower()
+                if command:
+                    self.control_commands.put(command)
+        except (OSError, ValueError):
+            pass
+        finally:
+            # 부모 프로세스가 비정상 종료되어 파이프가 닫히면 자식도 남지 않게 한다.
+            self.control_commands.put("shutdown")
+
+    def poll_control_commands(self):
+        if self.is_shutting_down:
+            return
+        while True:
+            try:
+                command = self.control_commands.get_nowait()
+            except queue.Empty:
+                break
+            if command == "show":
+                self.show_console()
+            elif command == "hide":
+                self.hide_console()
+            elif command == "shutdown":
+                self.on_close()
+                return
+        self.root.after(100, self.poll_control_commands)
+
+    def show_console(self):
+        """숨겨진 사용자 인식 콘솔을 복원해 화면 앞으로 가져온다."""
+        self.root.deiconify()
+        self.root.state("normal")
+        self.root.lift()
+        self.root.focus_force()
+
+    def hide_console(self):
+        """GUI만 숨기고 카메라와 인식 루프는 계속 실행한다."""
+        self.root.withdraw()
 
     def build_ui(self):
         container = tk.Frame(self.root, bg="#101418")
@@ -1626,6 +1694,9 @@ class HolisticGuiApp:
         return cv2.resize(frame_rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
     def on_close(self):
+        if self.is_shutting_down:
+            return
+        self.is_shutting_down = True
         self.event_client.stop()
         self.stt.stop()
         self.release_camera()
@@ -1633,9 +1704,13 @@ class HolisticGuiApp:
         self.root.destroy()
 
 
-def main():
+def main(background_mode=False, command_stream=None):
     root = tk.Tk()
-    HolisticGuiApp(root)
+    HolisticGuiApp(
+        root,
+        background_mode=background_mode,
+        command_stream=command_stream,
+    )
     root.mainloop()
 
 

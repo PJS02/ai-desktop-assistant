@@ -15,43 +15,81 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 MEDIAPIPE_MAIN = PROJECT_ROOT / "medeapipe_capstone" / "main.py"
 
 
-def start_mediapipe_process(script_path: Path = MEDIAPIPE_MAIN):
-    """현재 Python 환경으로 MediaPipe GUI를 별도 프로세스에서 실행한다."""
-    if not script_path.is_file():
-        print(f"[MediaPipe 실행 실패] 파일을 찾을 수 없습니다: {script_path}")
-        return None
+class MediaPipeProcessManager:
+    """숨겨진 MediaPipe GUI 프로세스의 실행, 표시, 종료를 관리한다."""
 
-    try:
-        # PyQt와 Tkinter는 각각 이벤트 루프를 가지므로 같은 프로세스에서 함께 실행하지 않는다.
-        process = subprocess.Popen(
-            [sys.executable, str(script_path)],
-            cwd=str(PROJECT_ROOT),
-        )
-    except OSError as exc:
-        print(f"[MediaPipe 실행 실패] {exc}")
-        return None
+    def __init__(self, script_path: Path = MEDIAPIPE_MAIN) -> None:
+        self.script_path = script_path
+        self.process = None
 
-    print(f"[MediaPipe 실행] PID={process.pid}")
-    return process
+    @property
+    def is_running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
 
+    def start(self) -> bool:
+        if self.is_running:
+            return True
+        if not self.script_path.is_file():
+            print(f"[MediaPipe 실행 실패] 파일을 찾을 수 없습니다: {self.script_path}")
+            return False
 
-def stop_mediapipe_process(process, wait_timeout: float = 3.0) -> None:
-    """실행 중인 MediaPipe 자식 프로세스를 안전하게 종료한다."""
-    if process is None or process.poll() is not None:
-        return
+        try:
+            # PyQt와 Tkinter는 이벤트 루프가 다르므로 MediaPipe를 별도 프로세스로 실행한다.
+            self.process = subprocess.Popen(
+                [sys.executable, str(self.script_path), "--background"],
+                cwd=str(PROJECT_ROOT),
+                stdin=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+        except OSError as exc:
+            self.process = None
+            print(f"[MediaPipe 실행 실패] {exc}")
+            return False
 
-    process.terminate()
-    try:
-        process.wait(timeout=wait_timeout)
-    except subprocess.TimeoutExpired:
-        # 정상 종료 요청에 응답하지 않을 때만 강제 종료해 자식 프로세스가 남지 않게 한다.
-        process.kill()
-        process.wait(timeout=wait_timeout)
-    print("[MediaPipe 종료]")
+        print(f"[MediaPipe 백그라운드 실행] PID={self.process.pid}")
+        return True
+
+    def _send_command(self, command: str) -> bool:
+        if not self.is_running or self.process.stdin is None:
+            return False
+        try:
+            self.process.stdin.write(f"{command}\n")
+            self.process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            print(f"[MediaPipe 명령 전송 실패] {exc}")
+            return False
+        return True
+
+    def show_console(self) -> bool:
+        """실행 중인 콘솔을 표시하고, 종료된 경우에는 다시 시작한다."""
+        if not self.is_running and not self.start():
+            return False
+        return self._send_command("show")
+
+    def stop(self, wait_timeout: float = 3.0) -> None:
+        if not self.is_running:
+            return
+
+        process = self.process
+        self._send_command("shutdown")
+        try:
+            process.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired:
+            # Tkinter가 정상 종료 명령에 응답하지 않을 때 단계적으로 프로세스를 정리한다.
+            process.terminate()
+            try:
+                process.wait(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=wait_timeout)
+        print("[MediaPipe 종료]")
 
 
 def main():
     app = QApplication(sys.argv)
+    mediapipe_manager = MediaPipeProcessManager()
     
     # 저장된 설정 불러오기
     saved_width, saved_height, saved_personality = load_config()
@@ -74,18 +112,23 @@ def main():
         print(f"[설정] 저장된 성격 사용: {personality}")
     
     # 캐릭터 위젯에 해상도 전달
-    character = CharacterWidget(screen_width=width, screen_height=height, personality_preset=personality)
+    character = CharacterWidget(
+        screen_width=width,
+        screen_height=height,
+        personality_preset=personality,
+        on_show_perception_console=mediapipe_manager.show_console,
+    )
     character.show()
 
     # 캐릭터의 인식 수신기가 준비된 다음 MediaPipe GUI를 실행한다.
-    mediapipe_process = start_mediapipe_process()
-    app.aboutToQuit.connect(lambda: stop_mediapipe_process(mediapipe_process))
+    mediapipe_manager.start()
+    app.aboutToQuit.connect(mediapipe_manager.stop)
 
     try:
         return app.exec()
     finally:
         # 예외나 외부 종료로 aboutToQuit 신호가 누락되어도 자식 프로세스를 정리한다.
-        stop_mediapipe_process(mediapipe_process)
+        mediapipe_manager.stop()
 
 
 if __name__ == "__main__":

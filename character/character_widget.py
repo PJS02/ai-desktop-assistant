@@ -62,8 +62,17 @@ class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     
-    def __init__(self, screen_width=None, screen_height=None, personality_preset=None):
+    def __init__(
+        self,
+        screen_width=None,
+        screen_height=None,
+        personality_preset=None,
+        on_show_perception_console=None,
+    ):
         super().__init__()
+
+        # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
+        self._show_perception_console_callback = on_show_perception_console
 
         # 배경창 투명화
         self.setWindowFlags(
@@ -970,8 +979,22 @@ class CharacterWidget(QLabel):
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
+        console_action = menu.addAction("사용자인식 콘솔")
+        console_action.triggered.connect(self.show_perception_console)
         self._context_menu = menu
         menu.popup(global_pos)
+
+    def show_perception_console(self):
+        """백그라운드에서 실행 중인 사용자 인식 창의 표시를 요청한다."""
+        if self._show_perception_console_callback is None:
+            print("[사용자 인식 콘솔] 실행 관리자가 연결되지 않았습니다.")
+            return
+        try:
+            if not self._show_perception_console_callback():
+                print("[사용자 인식 콘솔] 창을 표시하지 못했습니다.")
+        except Exception as exc:
+            # 메뉴 콜백 오류가 캐릭터의 Qt 이벤트 루프까지 종료시키지 않게 한다.
+            print(f"[사용자 인식 콘솔 오류] {exc}")
     
     #  <캐릭터 감정 확인 버튼 누를 시 >
     def show_russell_dialog(self):
