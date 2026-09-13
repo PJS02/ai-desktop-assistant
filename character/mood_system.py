@@ -232,6 +232,7 @@ class MoodSystem:
             "surprised": "surprise",
         }
         emotion = aliases.get(emotion, emotion)
+        # 관찰된 사용자 감정을 캐릭터의 OCC 감정 조합으로 해석한다.
         occ_weights = {
             "happy": {
                 OccEmotionToMood.JOY: 1.0,
@@ -266,6 +267,7 @@ class MoodSystem:
         if weights is None:
             return False
 
+        # 한 번의 인식 결과가 기존 기분을 덮어쓰지 않도록 제한된 강도로 누적한다.
         influence = 0.35 * confidence
         for occ_emotion, weight in weights.items():
             current = self.occ_intensities[occ_emotion]

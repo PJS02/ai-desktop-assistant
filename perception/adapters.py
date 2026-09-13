@@ -7,14 +7,14 @@ from .events import SCHEMA_VERSION
 
 
 class EmotionPredictor(Protocol):
-    """Structural interface implemented by current and external emotion models."""
+    """기존 및 외부 감정 모델이 맞춰야 하는 최소 예측 인터페이스."""
 
     def predict(self, input_data: Any) -> Mapping[str, Any]:
         ...
 
 
 class EmotionModelAdapter:
-    """Wrap a model's prediction in the common perception event contract."""
+    """각 모델의 예측 결과를 공통 perception 이벤트 형식으로 감싼다."""
 
     def __init__(
         self,
@@ -24,6 +24,7 @@ class EmotionModelAdapter:
     ) -> None:
         self.predictor = predictor
         self.source = source
+        # 외부 모델의 고유 라벨을 내부 라벨로 바꾸되 원본 모델 코드는 수정하지 않는다.
         self.label_aliases = {
             str(key).strip().lower(): str(value).strip().lower()
             for key, value in (label_aliases or {}).items()
@@ -44,6 +45,7 @@ class EmotionModelAdapter:
         scores = dict(scores_value) if isinstance(scores_value, Mapping) else {}
         confidence = prediction.get("confidence")
         if confidence is None:
+            # confidence를 따로 주지 않는 모델은 클래스별 점수에서 신뢰도를 구한다.
             confidence = scores.get(raw_label, max(scores.values(), default=0.0))
 
         return {

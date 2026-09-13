@@ -14,12 +14,13 @@ MAX_MESSAGE_BYTES = 1_000_000
 
 
 class _ThreadingTcpServer(socketserver.ThreadingTCPServer):
+    # 앱을 바로 재실행해도 같은 포트를 사용할 수 있고, 연결별 작업이 종료를 막지 않게 한다.
     allow_reuse_address = True
     daemon_threads = True
 
 
 class JsonLineTcpReceiver:
-    """Background JSON Lines TCP receiver with no Qt event-loop dependency."""
+    """Qt 이벤트 루프와 독립적으로 동작하는 백그라운드 JSON Lines 수신기."""
 
     def __init__(
         self,
@@ -63,6 +64,7 @@ class JsonLineTcpReceiver:
             daemon=True,
         )
         self._thread.start()
+        # 포트 바인딩 성공 여부를 호출자에게 동기적으로 알려주기 위해 잠시 기다린다.
         self._ready.wait(wait_timeout)
         return self.is_running
 
@@ -86,6 +88,7 @@ class JsonLineTcpReceiver:
                 owner.on_status(f"connected:{client}")
                 try:
                     while True:
+                        # 제한보다 1바이트 더 읽어 메시지가 실제로 초과했는지 판별한다.
                         raw_line = self.rfile.readline(MAX_MESSAGE_BYTES + 1)
                         if not raw_line:
                             break
@@ -123,7 +126,7 @@ class JsonLineTcpReceiver:
 
 
 class QtPerceptionReceiver(QObject):
-    """Qt signal adapter for the background TCP receiver."""
+    """백그라운드 수신 결과를 Qt 신호로 전달하는 어댑터."""
 
     event_received = pyqtSignal(object)
     status_changed = pyqtSignal(str)
@@ -136,6 +139,7 @@ class QtPerceptionReceiver(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
+        # TCP 스레드에서 UI를 직접 만지지 않고 Qt 신호만 발생시킨다.
         self._receiver = JsonLineTcpReceiver(
             host=host,
             port=port,

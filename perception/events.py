@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 SCHEMA_VERSION = 1
 
+# 인식 중이 아니거나 대기 상태임을 뜻하는 값은 실제 인식 결과에서 제외한다.
 _INACTIVE_LABELS = {
     "",
     "-",
@@ -64,6 +65,7 @@ class PerceptionEvent:
 
 
 def _canonical_label(value: Any) -> str | None:
+    """모델마다 다른 대소문자와 구분자를 내부 표준 형태로 맞춘다."""
     if value is None:
         return None
     label = str(value).strip().lower().replace(" ", "_").replace("-", "_")
@@ -73,6 +75,7 @@ def _canonical_label(value: Any) -> str | None:
 
 
 def _canonical_emotion(value: Any) -> str | None:
+    """동의어로 표현된 감정 이름을 캐릭터가 사용하는 이름으로 통일한다."""
     label = _canonical_label(value)
     if label is None:
         return None
@@ -80,6 +83,7 @@ def _canonical_emotion(value: Any) -> str | None:
 
 
 def _clamp_confidence(value: Any, default: float = 0.0) -> float:
+    """잘못된 모델 출력이 들어와도 신뢰도는 항상 0~1 범위를 유지한다."""
     try:
         confidence = float(value)
     except (TypeError, ValueError):
@@ -132,6 +136,7 @@ def _parse_gesture_item(value: Any, default_kind: str = "motion") -> GestureObse
 
 
 def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
+    """공통 perception 스키마로 전송된 이벤트를 파싱한다."""
     gestures: list[GestureObservation] = []
     raw_motions = payload.get("motions", payload.get("motion", []))
     if isinstance(raw_motions, (str, Mapping)):
@@ -155,6 +160,7 @@ def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
 
 
 def _parse_legacy_recognition_state(payload: Mapping[str, Any]) -> PerceptionEvent:
+    """기존 MediaPipe GUI의 recognition_state 형식을 공통 이벤트로 변환한다."""
     always = payload.get("always")
     always = always if isinstance(always, Mapping) else {}
     gestures: list[GestureObservation] = []
@@ -201,6 +207,7 @@ def _parse_timestamp(value: Any) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
+        # 타임스탬프가 없는 기존 송신기와도 호환되도록 수신 시각을 사용한다.
         return time.time()
 
 
@@ -212,12 +219,13 @@ def _parse_speech(value: Any) -> str | None:
 
 
 def parse_perception_event(payload: Mapping[str, Any]) -> PerceptionEvent:
-    """Convert supported model output payloads into one canonical event."""
+    """지원하는 모델 출력 형식을 하나의 공통 인식 이벤트로 변환한다."""
     if not isinstance(payload, Mapping):
         raise ValueError("perception payload must be a JSON object")
 
     event_type = _canonical_label(payload.get("type"))
     if event_type == "recognition_state":
+        # MediaPipe 쪽 형식을 즉시 바꾸지 않아도 연동되도록 이전 형식을 함께 지원한다.
         return _parse_legacy_recognition_state(payload)
     if event_type in {"perception", "perception_event"}:
         version = payload.get("version", SCHEMA_VERSION)

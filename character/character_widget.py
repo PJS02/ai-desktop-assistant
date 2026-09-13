@@ -247,11 +247,13 @@ class CharacterWidget(QLabel):
         self.show_ai_response.connect(self.dialogue_system.show_ai_response)
 
         # ====== 외부 감정/동작 인식 수신 ======
+        # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
             mood_system=self.mood_system,
             on_dialogue=self._show_perception_dialogue,
         )
         self.perception_receiver = QtPerceptionReceiver(parent=self)
+        # TCP 콜백은 백그라운드 스레드에서 실행되므로 UI 처리는 Qt 메인 스레드에 예약한다.
         self.perception_receiver.event_received.connect(
             self._handle_perception_payload,
             Qt.ConnectionType.QueuedConnection,
@@ -295,6 +297,7 @@ class CharacterWidget(QLabel):
         self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
 
     def closeEvent(self, event):
+        # 수신 스레드와 8765 포트를 먼저 정리해야 앱을 바로 다시 실행할 수 있다.
         if hasattr(self, "perception_receiver"):
             self.perception_receiver.stop()
         super().closeEvent(event)

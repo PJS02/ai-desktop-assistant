@@ -912,6 +912,7 @@ class HolisticGuiApp:
         gesture = self.always_results.get("gesture", {})
         head = self.always_results.get("head", {})
         attention = self.always_results.get("attention", {})
+        # 수신 측이 메시지 출처와 호환 스키마 버전을 구분할 수 있도록 메타데이터를 포함한다.
         return {
             "type": "recognition_state",
             "version": 1,

@@ -8,7 +8,7 @@ from .events import PerceptionEvent, parse_perception_event
 
 
 class PerceptionController:
-    """Turns canonical perception events into character-safe reactions."""
+    """공통 인식 이벤트를 중복과 노이즈가 제거된 캐릭터 반응으로 바꾼다."""
 
     def __init__(
         self,
@@ -28,6 +28,7 @@ class PerceptionController:
         self.reaction_cooldown = reaction_cooldown
         self.max_event_age = max_event_age
         self.time_provider = time_provider
+        # 얼굴 감정은 프레임마다 흔들릴 수 있으므로 최근 결과를 모아 안정성을 확인한다.
         self._emotion_history: deque[str] = deque(maxlen=max(1, emotion_samples))
         self._last_emotion: str | None = None
         self._last_emotion_at = 0.0
@@ -44,6 +45,7 @@ class PerceptionController:
 
     def handle_event(self, event: PerceptionEvent) -> None:
         now = self.time_provider()
+        # 송신기 지연이나 재연결 뒤 밀려온 과거 이벤트가 뒤늦게 반응하지 않도록 한다.
         if event.timestamp > 0 and now - event.timestamp > self.max_event_age:
             return
         self.last_event = event
@@ -66,6 +68,7 @@ class PerceptionController:
             return
         if len(set(self._emotion_history)) != 1:
             return
+        # 동일 감정이 연속으로 확인된 경우에만 캐릭터 기분에 반영한다.
         if self._last_emotion == observation.label and now - self._last_emotion_at < self.emotion_cooldown:
             return
 
@@ -79,6 +82,7 @@ class PerceptionController:
 
     def _handle_gestures(self, event: PerceptionEvent, now: float) -> None:
         active = {(item.kind, item.side, item.label) for item in event.gestures}
+        # 현재 프레임에서 새로 시작된 동작만 처리해 손을 든 동안 말풍선이 반복되지 않게 한다.
         for kind, side, label in active - self._active_gestures:
             reaction_key = f"{kind}:{side}:{label}"
             if now - self._last_reaction_at.get(reaction_key, 0.0) < self.reaction_cooldown:
@@ -98,6 +102,7 @@ class PerceptionController:
             self._last_head_motion = None
             return
         if label == self._last_head_motion:
+            # 여러 프레임에 유지되는 동일한 고개 동작은 한 번만 반응한다.
             return
         self._last_head_motion = label
         reaction_key = f"head:{label}"
@@ -115,6 +120,7 @@ class PerceptionController:
     def _handle_attention(self, event: PerceptionEvent) -> None:
         attention = event.attention
         if attention == self._last_attention:
+            # 자리를 비운 상태 자체가 아니라 상태가 바뀌는 순간만 처리한다.
             return
         self._last_attention = attention
         if attention == "away":
