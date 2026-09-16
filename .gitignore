@@ -189,6 +189,7 @@ context/cache/
 
 # API key configs
 context/config/
+medeapipe_capstone/config/device_settings.json*
 
 # Spyder project settings
 .spyderproject

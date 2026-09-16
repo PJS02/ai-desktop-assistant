@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 
 MEDIAPIPE_ROOT = Path(__file__).resolve().parents[1] / "medeapipe_capstone"
-sys.path.insert(0, str(MEDIAPIPE_ROOT))
+if str(MEDIAPIPE_ROOT) not in sys.path:
+    sys.path.append(str(MEDIAPIPE_ROOT))
 
 from app.holistic_gui_app import HolisticGuiApp  # noqa: E402
 
@@ -69,3 +70,55 @@ def test_stt_speech_event_updates_text_and_sequence():
     assert app.speech_sequence == 1
     app.send_recognition_state.assert_called_once_with()
     app.root.after.assert_called_once_with(100, app.poll_stt_events)
+
+
+def test_camera_refresh_releases_active_camera_before_full_discovery(monkeypatch):
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.camera_discovery_thread = None
+    app.status_var = Mock()
+    app.cap = Mock()
+    app.release_camera = Mock()
+
+    thread = Mock()
+    monkeypatch.setattr(
+        "app.holistic_gui_app.threading.Thread",
+        Mock(return_value=thread),
+    )
+
+    app.start_full_camera_discovery()
+
+    assert app.restart_camera_after_discovery is True
+    app.release_camera.assert_called_once_with()
+    thread.start.assert_called_once_with()
+
+
+def test_saved_bool_accepts_only_json_boolean_values():
+    assert HolisticGuiApp.saved_bool({"enabled": False}, "enabled", True) is False
+    assert HolisticGuiApp.saved_bool({"enabled": "false"}, "enabled", True) is True
+    assert HolisticGuiApp.saved_bool({}, "enabled", False) is False
+
+
+def test_recognition_mode_and_tools_are_saved_together():
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.device_settings = {}
+    app.active_mode = "air"
+    app.tracking_var = Mock(**{"get.return_value": True})
+    app.marker_only_var = Mock(**{"get.return_value": False})
+    app.mirror_var = Mock(**{"get.return_value": True})
+    app.info_overlay_var = Mock(**{"get.return_value": False})
+    app.emotion_var = Mock(**{"get.return_value": True})
+    app.always_recognition_var = Mock(**{"get.return_value": True})
+    app.save_device_settings_safely = Mock()
+
+    app.save_recognition_settings()
+
+    assert app.device_settings["recognition"] == {
+        "mode": "air",
+        "tracking": True,
+        "marker_only": False,
+        "mirror": True,
+        "info_overlay": False,
+        "emotion": True,
+        "always_recognition": True,
+    }
+    app.save_device_settings_safely.assert_called_once_with()

@@ -12,6 +12,14 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from app.device_settings import (
+    load_device_settings,
+    merge_camera_candidates,
+    microphone_name,
+    save_device_settings,
+    select_saved_camera,
+    select_saved_microphone,
+)
 from app.project_version import __version__
 from bridge.interaction_event_client import InteractionEventClient
 from recognition import holistic_tracker as core
@@ -81,6 +89,7 @@ class HolisticGuiApp:
         self.control_commands = queue.Queue()
         self.control_thread = None
         self.is_shutting_down = False
+        self.device_settings = load_device_settings()
         self.root.title(f"Holistic Tracking GUI v{__version__}")
         self.root.geometry("1420x860")
         self.root.configure(bg="#101418")
@@ -97,7 +106,14 @@ class HolisticGuiApp:
         self.current_photo = None
         self.frame_index = 0
         self.camera_candidates = []
-        self.active_mode = "rps"
+        self.active_camera_candidate = None
+        self.camera_discovery_queue = queue.Queue()
+        self.camera_discovery_thread = None
+        self.restart_camera_after_discovery = False
+        saved_recognition = self.device_settings.get("recognition", {})
+        saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
+        saved_mode = saved_recognition.get("mode", "rps")
+        self.active_mode = saved_mode if saved_mode in (*MODE_LABELS, None) else "rps"
         self.air_paths = {"left": [], "right": []}
         self.air_max_points = 180
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
@@ -116,10 +132,18 @@ class HolisticGuiApp:
             value="\uce74\uba54\ub77c\ub97c \uc120\ud0dd\ud55c \ub4a4 \uc2dc\uc791\ud558\uc138\uc694."
         )
         self.mode_var = tk.StringVar(
-            value="\ud604\uc7ac \ubaa8\ub4dc: " + LABEL_RPS
+            value=(
+                "\ud604\uc7ac \ubaa8\ub4dc: " + MODE_LABELS[self.active_mode]
+                if self.active_mode in MODE_LABELS
+                else "\ud604\uc7ac \ubaa8\ub4dc: \uc5c6\uc74c"
+            )
         )
         self.result_var = tk.StringVar(
-            value="\uc778\uc2dd \uacb0\uacfc \ub300\uae30 \uc911"
+            value=(
+                "\uc778\uc2dd \uacb0\uacfc \ub300\uae30 \uc911"
+                if self.active_mode in MODE_LABELS
+                else "\ubaa8\ub4dc \uaebc\uc9d0"
+            )
         )
         self.status_var = tk.StringVar(
             value="\ub300\uae30 \uc911"
@@ -130,18 +154,42 @@ class HolisticGuiApp:
         self.always_attention_status_var = tk.StringVar(value=f"{LABEL_ATTENTION}: -")
         self.stt_status_var = tk.StringVar(value="STT \ub300\uae30 \uc911")
         self.stt_mic_var = tk.StringVar()
-        self.stt_provider_var = tk.StringVar(value="google")
-        self.stt_silence_var = tk.StringVar(value="0.8 sec")
-        self.stt_sensitivity_var = tk.StringVar(value="medium")
-        self.stt_language_var = tk.StringVar(value="ko-KR")
-        self.stt_timestamps_var = tk.BooleanVar(value=True)
+        saved_stt = self.device_settings.get("stt", {})
+        saved_stt = saved_stt if isinstance(saved_stt, dict) else {}
+        self.stt_provider_var = tk.StringVar(
+            value=self.saved_option(saved_stt, "provider", PROVIDER_OPTIONS, "google")
+        )
+        self.stt_silence_var = tk.StringVar(
+            value=self.saved_option(saved_stt, "silence", SILENCE_OPTIONS, "0.8 sec")
+        )
+        self.stt_sensitivity_var = tk.StringVar(
+            value=self.saved_option(saved_stt, "sensitivity", SENSITIVITY_OPTIONS, "medium")
+        )
+        self.stt_language_var = tk.StringVar(
+            value=self.saved_option(saved_stt, "language", LANGUAGE_OPTIONS, "ko-KR")
+        )
+        self.stt_timestamps_var = tk.BooleanVar(
+            value=bool(saved_stt.get("timestamps", True))
+        )
 
-        self.tracking_var = tk.BooleanVar(value=True)
-        self.marker_only_var = tk.BooleanVar(value=False)
-        self.mirror_var = tk.BooleanVar(value=False)
-        self.info_overlay_var = tk.BooleanVar(value=True)
-        self.emotion_var = tk.BooleanVar(value=background_mode)
-        self.always_recognition_var = tk.BooleanVar(value=True)
+        self.tracking_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "tracking", True)
+        )
+        self.marker_only_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "marker_only", False)
+        )
+        self.mirror_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "mirror", False)
+        )
+        self.info_overlay_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "info_overlay", True)
+        )
+        self.emotion_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "emotion", background_mode)
+        )
+        self.always_recognition_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "always_recognition", True)
+        )
         self.stt = RealtimeSTT()
 
         self.holistic = core.mp_holistic.Holistic(
@@ -159,6 +207,7 @@ class HolisticGuiApp:
         self.event_client.start()
 
         self.build_ui()
+        # 카메라를 열기 전에 검색해야 Windows가 모든 장치 인덱스를 반환한다.
         self.refresh_cameras()
         self.refresh_stt_microphones(show_error=False)
         self.show_placeholder(
@@ -172,11 +221,24 @@ class HolisticGuiApp:
         if self.background_mode:
             self.root.withdraw()
             self.start_control_reader()
-            # 카메라 목록을 구성한 뒤 선택된 첫 번째 카메라로 인식을 자동 시작한다.
+            # 카메라 목록을 구성한 뒤 마지막 사용 장치(없으면 첫 장치)로 자동 시작한다.
             self.root.after(0, self.start_selected_camera)
+            # 사용자가 승인한 통합 실행에서는 마지막 마이크로 STT도 자동 시작한다.
+            self.root.after(200, lambda: self.start_stt(show_error=False))
         self.root.after(0, self.update_frame)
         self.root.after(100, self.poll_stt_events)
         self.root.after(100, self.poll_control_commands)
+        self.root.after(200, self.poll_camera_discovery)
+
+    @staticmethod
+    def saved_option(settings, key, choices, default):
+        value = settings.get(key, default)
+        return value if value in choices else default
+
+    @staticmethod
+    def saved_bool(settings, key, default):
+        value = settings.get(key, default)
+        return value if isinstance(value, bool) else default
 
     def start_control_reader(self):
         """부모 프로세스의 명령을 읽되 Tkinter 창은 직접 조작하지 않는다."""
@@ -320,7 +382,7 @@ class HolisticGuiApp:
         tk.Button(
             camera_row,
             text=LABEL_REFRESH,
-            command=self.refresh_cameras,
+            command=self.start_full_camera_discovery,
             bg="#24303d",
             fg="#f4f7fb",
             relief="flat",
@@ -379,12 +441,12 @@ class HolisticGuiApp:
         toggle_frame = tk.Frame(control_panel, bg="#161c22")
         toggle_frame.pack(fill="x", padx=18)
 
-        self.make_toggle(toggle_frame, LABEL_TRACKING, self.tracking_var).pack(fill="x", pady=(0, 8))
-        self.make_toggle(toggle_frame, LABEL_MARKER_ONLY, self.marker_only_var).pack(fill="x", pady=(0, 8))
-        self.make_toggle(toggle_frame, LABEL_MIRROR, self.mirror_var).pack(fill="x", pady=(0, 8))
-        self.make_toggle(toggle_frame, LABEL_INFO_OVERLAY, self.info_overlay_var).pack(fill="x", pady=(0, 8))
-        self.make_toggle(toggle_frame, LABEL_EMOTION, self.emotion_var).pack(fill="x", pady=(0, 8))
-        self.make_toggle(toggle_frame, LABEL_ALWAYS_RECOGNITION, self.always_recognition_var).pack(fill="x")
+        self.make_toggle(toggle_frame, LABEL_TRACKING, self.tracking_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, LABEL_MARKER_ONLY, self.marker_only_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, LABEL_MIRROR, self.mirror_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, LABEL_INFO_OVERLAY, self.info_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, LABEL_EMOTION, self.emotion_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, LABEL_ALWAYS_RECOGNITION, self.always_recognition_var, self.save_recognition_settings).pack(fill="x")
 
         self.add_section_label(control_panel, LABEL_STT)
         self.stt_mic_menu = tk.OptionMenu(control_panel, self.stt_mic_var, "")
@@ -419,13 +481,13 @@ class HolisticGuiApp:
 
         stt_option_row = tk.Frame(control_panel, bg="#161c22")
         stt_option_row.pack(fill="x", padx=18, pady=(0, 8))
-        self.make_small_option(stt_option_row, self.stt_provider_var, PROVIDER_OPTIONS).pack(side="left", fill="x", expand=True)
-        self.make_small_option(stt_option_row, self.stt_language_var, LANGUAGE_OPTIONS).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.make_small_option(stt_option_row, self.stt_provider_var, PROVIDER_OPTIONS, self.save_stt_device_settings).pack(side="left", fill="x", expand=True)
+        self.make_small_option(stt_option_row, self.stt_language_var, LANGUAGE_OPTIONS, self.save_stt_device_settings).pack(side="left", fill="x", expand=True, padx=(8, 0))
 
         stt_turn_row = tk.Frame(control_panel, bg="#161c22")
         stt_turn_row.pack(fill="x", padx=18, pady=(0, 8))
-        self.make_small_option(stt_turn_row, self.stt_sensitivity_var, SENSITIVITY_OPTIONS).pack(side="left", fill="x", expand=True)
-        self.make_small_option(stt_turn_row, self.stt_silence_var, SILENCE_OPTIONS).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.make_small_option(stt_turn_row, self.stt_sensitivity_var, SENSITIVITY_OPTIONS, self.save_stt_device_settings).pack(side="left", fill="x", expand=True)
+        self.make_small_option(stt_turn_row, self.stt_silence_var, SILENCE_OPTIONS, self.save_stt_device_settings).pack(side="left", fill="x", expand=True, padx=(8, 0))
 
         stt_action_row = tk.Frame(control_panel, bg="#161c22")
         stt_action_row.pack(fill="x", padx=18, pady=(0, 8))
@@ -465,7 +527,7 @@ class HolisticGuiApp:
             font=("Malgun Gothic", 9, "bold"),
         ).pack(side="left", fill="x", expand=True, padx=(8, 0))
 
-        self.make_toggle(control_panel, "\ud0c0\uc784\uc2a4\ud0ec\ud504 \ud45c\uc2dc", self.stt_timestamps_var).pack(fill="x", padx=18, pady=(0, 8))
+        self.make_toggle(control_panel, "\ud0c0\uc784\uc2a4\ud0ec\ud504 \ud45c\uc2dc", self.stt_timestamps_var, self.save_stt_device_settings).pack(fill="x", padx=18, pady=(0, 8))
         self.make_info_label(control_panel, self.stt_status_var).pack(fill="x", padx=18, pady=(0, 10))
 
         self.add_section_label(control_panel, LABEL_STATUS)
@@ -542,7 +604,7 @@ class HolisticGuiApp:
         )
         label.pack(fill="x", padx=18, pady=(0, 8))
 
-    def make_toggle(self, parent, text, variable):
+    def make_toggle(self, parent, text, variable, command=None):
         return tk.Checkbutton(
             parent,
             text=text,
@@ -556,6 +618,7 @@ class HolisticGuiApp:
             anchor="w",
             relief="flat",
             highlightthickness=0,
+            command=command,
         )
 
     def style_option_menu(self, option_menu):
@@ -575,8 +638,9 @@ class HolisticGuiApp:
             activeforeground="#ffffff",
         )
 
-    def make_small_option(self, parent, variable, values):
-        option = tk.OptionMenu(parent, variable, *values)
+    def make_small_option(self, parent, variable, values, command=None):
+        callback = (lambda _value: command()) if command is not None else None
+        option = tk.OptionMenu(parent, variable, *values, command=callback)
         self.style_option_menu(option)
         option.config(font=("Consolas", 8))
         return option
@@ -619,8 +683,22 @@ class HolisticGuiApp:
         )
         self.render_frame(frame)
 
-    def refresh_cameras(self):
-        self.camera_candidates = core.discover_webcams(self.capture_settings)
+    def refresh_cameras(self, stop_after_first=False):
+        saved_camera = self.device_settings.get("camera", {})
+        saved_camera = saved_camera if isinstance(saved_camera, dict) else {}
+        self.camera_candidates = core.discover_webcams(
+            self.capture_settings,
+            stop_after_first=stop_after_first,
+            preferred_index=saved_camera.get("index"),
+            preferred_backend_label=saved_camera.get("backend_label"),
+        )
+        self.apply_camera_candidates(self.camera_candidates)
+        print(f"[카메라 검색] 시작 전 전체 목록: {len(self.camera_candidates)}개")
+
+    def apply_camera_candidates(self, candidates, preserve_current=False):
+        saved_camera = self.device_settings.get("camera", {})
+        saved_camera = saved_camera if isinstance(saved_camera, dict) else {}
+        self.camera_candidates = list(candidates)
         menu = self.camera_menu["menu"]
         menu.delete(0, "end")
 
@@ -635,9 +713,68 @@ class HolisticGuiApp:
             label = f"index {candidate['index']} / {candidate['backend_label']}"
             menu.add_command(label=label, command=lambda value=label: self.camera_var.set(value))
 
-        default_label = f"index {self.camera_candidates[0]['index']} / {self.camera_candidates[0]['backend_label']}"
-        self.camera_var.set(default_label)
+        current_label = self.camera_var.get()
+        available_labels = {
+            f"index {candidate['index']} / {candidate['backend_label']}"
+            for candidate in self.camera_candidates
+        }
+        if preserve_current and current_label in available_labels:
+            self.camera_var.set(current_label)
+            self.status_var.set(f"\uc6f9\ucea0 {len(self.camera_candidates)}\uac1c \uac10\uc9c0")
+            return
+
+        selected = select_saved_camera(self.camera_candidates, saved_camera)
+        selected_label = f"index {selected['index']} / {selected['backend_label']}"
+        self.camera_var.set(selected_label)
         self.status_var.set(f"\uc6f9\ucea0 {len(self.camera_candidates)}\uac1c \uac10\uc9c0")
+
+    def start_full_camera_discovery(self):
+        if self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive():
+            self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
+            return
+        # Windows 카메라 백엔드는 실행 중인 장치를 다시 열지 못할 수 있으므로
+        # 새로고침 동안만 해제하고 검색 후 같은 선택으로 자동 재시작한다.
+        self.restart_camera_after_discovery = self.cap is not None
+        if self.restart_camera_after_discovery:
+            self.release_camera()
+        self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
+        self.camera_discovery_thread = threading.Thread(
+            target=self.discover_all_cameras,
+            name="camera-device-discovery",
+            daemon=True,
+        )
+        self.camera_discovery_thread.start()
+
+    def discover_all_cameras(self):
+        try:
+            candidates = core.discover_webcams(self.capture_settings)
+        except Exception as exc:
+            self.camera_discovery_queue.put(("error", str(exc)))
+            return
+        self.camera_discovery_queue.put(("result", candidates))
+
+    def poll_camera_discovery(self):
+        if self.is_shutting_down:
+            return
+        while True:
+            try:
+                kind, value = self.camera_discovery_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "error":
+                self.status_var.set(f"\uce74\uba54\ub77c \uac80\uc0c9 \uc2e4\ud328: {value}")
+                print(f"[카메라 검색 오류] {value}")
+                if self.restart_camera_after_discovery:
+                    self.restart_camera_after_discovery = False
+                    self.start_selected_camera()
+                continue
+            candidates = merge_camera_candidates(value, self.active_camera_candidate)
+            self.apply_camera_candidates(candidates, preserve_current=True)
+            print(f"[카메라 검색] 전체 목록 갱신: {len(candidates)}개")
+            if self.restart_camera_after_discovery:
+                self.restart_camera_after_discovery = False
+                self.start_selected_camera()
+        self.root.after(200, self.poll_camera_discovery)
 
     def refresh_stt_microphones(self, show_error=True):
         menu = self.stt_mic_menu["menu"]
@@ -662,10 +799,18 @@ class HolisticGuiApp:
             return
 
         for label in labels:
-            menu.add_command(label=label, command=lambda value=label: self.stt_mic_var.set(value))
-        if self.stt_mic_var.get() not in labels:
-            self.stt_mic_var.set(labels[0])
+            menu.add_command(
+                label=label,
+                command=lambda value=label: self.select_stt_microphone(value),
+            )
+        saved_microphone = self.device_settings.get("microphone", {})
+        selected_label = select_saved_microphone(labels, saved_microphone)
+        self.stt_mic_var.set(selected_label)
         self.stt_status_var.set(f"STT: \ub9c8\uc774\ud06c {len(labels)}\uac1c \uac10\uc9c0")
+
+    def select_stt_microphone(self, label):
+        self.stt_mic_var.set(label)
+        self.save_stt_device_settings()
 
     def start_stt(self, show_error=True):
         try:
@@ -689,6 +834,8 @@ class HolisticGuiApp:
         self.stt_start_button.configure(state="disabled")
         self.stt_stop_button.configure(state="normal")
         self.stt_status_var.set("STT: Google Web Speech \uc900\ube44 \uc911")
+        self.save_stt_device_settings()
+        print(f"[STT] 음성 인식 시작: {self.stt_mic_var.get()}")
 
     def stop_stt(self):
         self.stt.stop()
@@ -778,6 +925,7 @@ class HolisticGuiApp:
             return
 
         self.cap = result["cap"]
+        self.active_camera_candidate = dict(selected_candidate)
         self.pending_frame = result["frame"]
         self.capture_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         if self.capture_fps <= 0:
@@ -789,6 +937,63 @@ class HolisticGuiApp:
             f"\uc18c\uc2a4: webcam index {selected_candidate['index']} via {selected_candidate['backend_label']}"
         )
         self.status_var.set("\uce74\uba54\ub77c \uc2e4\ud589 \uc911")
+        self.save_camera_device_settings(selected_candidate)
+
+    def save_camera_device_settings(self, candidate):
+        self.device_settings["camera"] = {
+            "index": candidate["index"],
+            "backend_label": candidate["backend_label"],
+        }
+        self.save_device_settings_safely()
+        print(
+            "[장치 설정] 카메라 저장: "
+            f"index {candidate['index']} / {candidate['backend_label']}"
+        )
+
+    def save_stt_device_settings(self):
+        mic_label = self.stt_mic_var.get()
+        selected_device = next(
+            (
+                device
+                for device in getattr(self.stt, "audio_devices", [])
+                if device.label == mic_label
+            ),
+            None,
+        )
+        self.device_settings["microphone"] = {
+            "label": mic_label,
+            "name": microphone_name(mic_label),
+            "index": selected_device.index if selected_device is not None else None,
+        }
+        self.device_settings["stt"] = {
+            "provider": self.stt_provider_var.get(),
+            "language": self.stt_language_var.get(),
+            "silence": self.stt_silence_var.get(),
+            "sensitivity": self.stt_sensitivity_var.get(),
+            "timestamps": bool(self.stt_timestamps_var.get()),
+        }
+        self.save_device_settings_safely()
+        print(f"[설정 저장] STT/마이크: {mic_label}")
+
+    def save_recognition_settings(self):
+        """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
+        self.device_settings["recognition"] = {
+            "mode": self.active_mode,
+            "tracking": bool(self.tracking_var.get()),
+            "marker_only": bool(self.marker_only_var.get()),
+            "mirror": bool(self.mirror_var.get()),
+            "info_overlay": bool(self.info_overlay_var.get()),
+            "emotion": bool(self.emotion_var.get()),
+            "always_recognition": bool(self.always_recognition_var.get()),
+        }
+        self.save_device_settings_safely()
+        print(f"[설정 저장] 사용자 인식 모드/도구: {self.active_mode or '없음'}")
+
+    def save_device_settings_safely(self):
+        try:
+            save_device_settings(self.device_settings)
+        except OSError as exc:
+            print(f"[장치 설정 오류] 저장 실패: {exc}")
 
     def set_mode(self, mode_key):
         if self.active_mode == mode_key:
@@ -805,6 +1010,7 @@ class HolisticGuiApp:
         else:
             self.mode_var.set("\ud604\uc7ac \ubaa8\ub4dc: \uc5c6\uc74c")
             self.result_var.set("\ubaa8\ub4dc \uaebc\uc9d0")
+        self.save_recognition_settings()
 
     def update_mode_buttons(self):
         for mode_key, button in self.mode_buttons.items():
