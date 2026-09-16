@@ -52,3 +52,20 @@ def test_shutdown_command_closes_without_scheduling_another_poll():
 
     app.on_close.assert_called_once_with()
     app.root.after.assert_not_called()
+
+
+def test_stt_speech_event_updates_text_and_sequence():
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.root = Mock()
+    app.stt = Mock()
+    app.stt.drain_events.return_value = [("speech", "테스트 음성")]
+    app.latest_speech_text = ""
+    app.speech_sequence = 0
+    app.send_recognition_state = Mock()
+
+    app.poll_stt_events()
+
+    assert app.latest_speech_text == "테스트 음성"
+    assert app.speech_sequence == 1
+    app.send_recognition_state.assert_called_once_with()
+    app.root.after.assert_called_once_with(100, app.poll_stt_events)

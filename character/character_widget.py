@@ -68,11 +68,15 @@ class CharacterWidget(QLabel):
         screen_height=None,
         personality_preset=None,
         on_show_perception_console=None,
+        on_show_log_window=None,
+        on_close_log_window=None,
     ):
         super().__init__()
 
         # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
         self._show_perception_console_callback = on_show_perception_console
+        self._show_log_window_callback = on_show_log_window
+        self._close_log_window_callback = on_close_log_window
 
         # 배경창 투명화
         self.setWindowFlags(
@@ -309,6 +313,8 @@ class CharacterWidget(QLabel):
         # 수신 스레드와 8765 포트를 먼저 정리해야 앱을 바로 다시 실행할 수 있다.
         if hasattr(self, "perception_receiver"):
             self.perception_receiver.stop()
+        if self._close_log_window_callback is not None:
+            self._close_log_window_callback()
         super().closeEvent(event)
 
     # 애니메이션 신호 처리
@@ -981,6 +987,8 @@ class CharacterWidget(QLabel):
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
         console_action = menu.addAction("사용자인식 콘솔")
         console_action.triggered.connect(self.show_perception_console)
+        log_action = menu.addAction("로그창 보기")
+        log_action.triggered.connect(self.show_log_window)
         self._context_menu = menu
         menu.popup(global_pos)
 
@@ -995,6 +1003,13 @@ class CharacterWidget(QLabel):
         except Exception as exc:
             # 메뉴 콜백 오류가 캐릭터의 Qt 이벤트 루프까지 종료시키지 않게 한다.
             print(f"[사용자 인식 콘솔 오류] {exc}")
+
+    def show_log_window(self):
+        """별도 로그창을 표시하고 앞으로 가져온다."""
+        if self._show_log_window_callback is None:
+            print("[로그창] 로그창 관리자가 연결되지 않았습니다.")
+            return
+        self._show_log_window_callback()
     
     #  <캐릭터 감정 확인 버튼 누를 시 >
     def show_russell_dialog(self):

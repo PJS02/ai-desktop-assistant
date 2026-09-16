@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from io import StringIO
 from unittest.mock import Mock, patch
 
 import main as app_main
@@ -8,7 +9,7 @@ import main as app_main
 def test_mediapipe_manager_starts_hidden_with_current_python(tmp_path):
     script_path = tmp_path / "main.py"
     script_path.touch()
-    process = Mock(pid=1234, stdin=Mock())
+    process = Mock(pid=1234, stdin=Mock(), stdout=StringIO(""))
     process.poll.return_value = None
     manager = app_main.MediaPipeProcessManager(script_path)
 
@@ -17,14 +18,19 @@ def test_mediapipe_manager_starts_hidden_with_current_python(tmp_path):
 
     assert result is True
     assert manager.process is process
-    popen.assert_called_once_with(
-        [sys.executable, str(script_path), "--background"],
-        cwd=str(app_main.PROJECT_ROOT),
-        stdin=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
-    )
+    popen.assert_called_once()
+    args, kwargs = popen.call_args
+    assert args == ([sys.executable, str(script_path), "--background"],)
+    assert kwargs["cwd"] == str(app_main.PROJECT_ROOT)
+    assert kwargs["stdin"] is subprocess.PIPE
+    assert kwargs["stdout"] is subprocess.PIPE
+    assert kwargs["stderr"] is subprocess.STDOUT
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["bufsize"] == 1
+    assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert kwargs["env"]["PYTHONUNBUFFERED"] == "1"
 
 
 def test_mediapipe_manager_skips_missing_script(tmp_path):

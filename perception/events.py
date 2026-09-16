@@ -61,6 +61,7 @@ class PerceptionEvent:
     head_motion: str | None = None
     attention: str | None = None
     speech: str | None = None
+    speech_id: Any = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
@@ -147,6 +148,7 @@ def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
             if gesture is not None:
                 gestures.append(gesture)
 
+    speech, speech_id = _parse_speech_payload(payload.get("speech"))
     return PerceptionEvent(
         source=str(payload.get("source") or "external"),
         timestamp=_parse_timestamp(payload.get("timestamp")),
@@ -154,7 +156,8 @@ def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
         gestures=tuple(gestures),
         head_motion=_canonical_label(payload.get("head_motion")),
         attention=_canonical_label(payload.get("attention")),
-        speech=_parse_speech(payload.get("speech")),
+        speech=speech,
+        speech_id=speech_id,
         raw=dict(payload),
     )
 
@@ -187,9 +190,7 @@ def _parse_legacy_recognition_state(payload: Mapping[str, Any]) -> PerceptionEve
         )
 
     speech_group = payload.get("speech")
-    speech = None
-    if isinstance(speech_group, Mapping):
-        speech = _parse_speech(speech_group.get("latest_text"))
+    speech, speech_id = _parse_speech_payload(speech_group)
 
     return PerceptionEvent(
         source=str(payload.get("source") or "mediapipe_capstone"),
@@ -199,6 +200,7 @@ def _parse_legacy_recognition_state(payload: Mapping[str, Any]) -> PerceptionEve
         head_motion=head_motion,
         attention=attention,
         speech=speech,
+        speech_id=speech_id,
         raw=dict(payload),
     )
 
@@ -216,6 +218,14 @@ def _parse_speech(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _parse_speech_payload(value: Any) -> tuple[str | None, Any]:
+    if isinstance(value, Mapping):
+        text = _parse_speech(value.get("text") or value.get("latest_text"))
+        speech_id = value.get("id", value.get("sequence"))
+        return text, speech_id
+    return _parse_speech(value), None
 
 
 def parse_perception_event(payload: Mapping[str, Any]) -> PerceptionEvent:

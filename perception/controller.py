@@ -36,6 +36,7 @@ class PerceptionController:
         self._last_reaction_at: dict[str, float] = {}
         self._last_head_motion: str | None = None
         self._last_attention: str | None = None
+        self._last_speech_key = None
         self.last_event: PerceptionEvent | None = None
 
     def handle_payload(self, payload: dict) -> PerceptionEvent:
@@ -53,6 +54,7 @@ class PerceptionController:
         self._handle_gestures(event, now)
         self._handle_head_motion(event, now)
         self._handle_attention(event)
+        self._handle_speech(event)
 
     def _handle_emotion(self, event: PerceptionEvent, now: float) -> None:
         observation = event.emotion
@@ -126,6 +128,17 @@ class PerceptionController:
         if attention == "away":
             self.mood_system.on_idle()
             print("[외부 상태 인식] 사용자가 자리를 비움")
+
+    def _handle_speech(self, event: PerceptionEvent) -> None:
+        if event.speech is None:
+            return
+        # 발화 순번이 있으면 같은 문장을 다시 말해도 새로운 음성으로 처리한다.
+        identity = event.speech_id if event.speech_id is not None else event.speech
+        speech_key = (event.source, identity)
+        if speech_key == self._last_speech_key:
+            return
+        self._last_speech_key = speech_key
+        print(f"[외부 음성 인식] {event.speech} (출처: {event.source})")
 
     @staticmethod
     def _gesture_message(kind: str, label: str) -> str | None:

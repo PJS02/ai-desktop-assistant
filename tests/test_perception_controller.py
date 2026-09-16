@@ -19,7 +19,14 @@ class FakeMoodSystem:
         self.idles += 1
 
 
-def _legacy_payload(timestamp, emotion=None, wave="NONE", attention="SCREEN"):
+def _legacy_payload(
+    timestamp,
+    emotion=None,
+    wave="NONE",
+    attention="SCREEN",
+    speech="",
+    speech_sequence=0,
+):
     return {
         "type": "recognition_state",
         "timestamp": timestamp,
@@ -30,7 +37,7 @@ def _legacy_payload(timestamp, emotion=None, wave="NONE", attention="SCREEN"):
             "attention": {"value": attention},
             "emotion": emotion or {"label": None, "scores": {}},
         },
-        "speech": {"latest_text": ""},
+        "speech": {"latest_text": speech, "sequence": speech_sequence},
     }
 
 
@@ -88,3 +95,21 @@ def test_ignores_stale_events_and_tracks_attention_transition():
     controller.handle_payload(_legacy_payload(100.0, attention="AWAY"))
     controller.handle_payload(_legacy_payload(100.0, attention="AWAY"))
     assert mood.idles == 1
+
+
+def test_logs_each_speech_sequence_once(capsys):
+    mood = FakeMoodSystem()
+    controller = PerceptionController(mood, time_provider=lambda: 100.0)
+
+    controller.handle_payload(
+        _legacy_payload(100.0, speech="안녕하세요", speech_sequence=1)
+    )
+    controller.handle_payload(
+        _legacy_payload(100.0, speech="안녕하세요", speech_sequence=1)
+    )
+    controller.handle_payload(
+        _legacy_payload(100.0, speech="안녕하세요", speech_sequence=2)
+    )
+
+    output = capsys.readouterr().out
+    assert output.count("[외부 음성 인식] 안녕하세요") == 2

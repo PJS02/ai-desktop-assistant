@@ -108,6 +108,7 @@ class HolisticGuiApp:
         self.always_results = {}
         self.mode_result = {"active": None, "result": None}
         self.latest_speech_text = ""
+        self.speech_sequence = 0
         self.last_sent_interaction_events = {}
 
         self.camera_var = tk.StringVar()
@@ -666,8 +667,10 @@ class HolisticGuiApp:
             self.stt_mic_var.set(labels[0])
         self.stt_status_var.set(f"STT: \ub9c8\uc774\ud06c {len(labels)}\uac1c \uac10\uc9c0")
 
-    def start_stt(self):
+    def start_stt(self, show_error=True):
         try:
+            if not self.stt.audio_devices:
+                raise RuntimeError("사용 가능한 마이크를 찾지 못했습니다.")
             self.stt.start(
                 self.stt_mic_var.get(),
                 self.stt_provider_var.get(),
@@ -678,7 +681,9 @@ class HolisticGuiApp:
             )
         except Exception as exc:
             self.stt_status_var.set(f"STT \uc2dc\uc791 \uc2e4\ud328: {exc}")
-            messagebox.showerror("STT", str(exc))
+            print(f"[STT 오류] 시작 실패: {exc}")
+            if show_error:
+                messagebox.showerror("STT", str(exc))
             return
 
         self.stt_start_button.configure(state="disabled")
@@ -696,12 +701,18 @@ class HolisticGuiApp:
                 self.append_stt_text(value)
             elif kind == "speech":
                 self.latest_speech_text = value
+                # 같은 문장을 다시 말해도 별개의 발화로 전송되도록 순번을 증가시킨다.
+                self.speech_sequence += 1
+                # 카메라 프레임 처리 여부와 관계없이 완성된 음성을 즉시 전달한다.
+                self.send_recognition_state()
             elif kind == "status":
                 self.stt_status_var.set(value)
             elif kind == "error":
                 self.append_stt_text(f"\n[STT error] {value}\n")
                 self.stt_status_var.set(f"STT error: {value}")
-                messagebox.showerror("STT", value)
+                print(f"[STT 오류] {value}")
+                if not self.background_mode:
+                    messagebox.showerror("STT", value)
             elif kind == "running" and value == "false":
                 self.stt_start_button.configure(state="normal")
                 self.stt_stop_button.configure(state="disabled")
@@ -1011,6 +1022,7 @@ class HolisticGuiApp:
             "mode": self.mode_result,
             "speech": {
                 "latest_text": self.latest_speech_text,
+                "sequence": self.speech_sequence,
             },
         }
 

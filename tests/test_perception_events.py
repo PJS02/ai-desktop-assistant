@@ -18,7 +18,7 @@ def test_parses_existing_mediapipe_recognition_state():
                     "scores": {"Happy": 0.91, "Sadness": 0.09},
                 },
             },
-            "speech": {"latest_text": "안녕"},
+            "speech": {"latest_text": "안녕", "sequence": 3},
         }
     )
 
@@ -33,6 +33,7 @@ def test_parses_existing_mediapipe_recognition_state():
     assert event.head_motion == "agree"
     assert event.attention == "screen"
     assert event.speech == "안녕"
+    assert event.speech_id == 3
 
 
 def test_parses_source_independent_perception_event():

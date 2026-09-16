@@ -1,12 +1,15 @@
 import sys
 import subprocess
+import os
 from pathlib import Path
+import threading
 
 from PyQt6.QtWidgets import QApplication
 from dotenv import load_dotenv
 from character.character_widget import CharacterWidget
 from character.resolution_settings import ResolutionSettingsDialog
 from character.config_manager import load_config, save_config
+from character.log_console import AppLogManager, LogWindow
 
 
 load_dotenv()
@@ -35,13 +38,20 @@ class MediaPipeProcessManager:
 
         try:
             # PyQt와 Tkinter는 이벤트 루프가 다르므로 MediaPipe를 별도 프로세스로 실행한다.
+            child_env = os.environ.copy()
+            child_env["PYTHONIOENCODING"] = "utf-8"
+            child_env["PYTHONUNBUFFERED"] = "1"
             self.process = subprocess.Popen(
                 [sys.executable, str(self.script_path), "--background"],
                 cwd=str(PROJECT_ROOT),
                 stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 bufsize=1,
+                env=child_env,
             )
         except OSError as exc:
             self.process = None
@@ -49,7 +59,26 @@ class MediaPipeProcessManager:
             return False
 
         print(f"[MediaPipe 백그라운드 실행] PID={self.process.pid}")
+        self._start_output_reader()
         return True
+
+    def _start_output_reader(self) -> None:
+        if self.process is None or self.process.stdout is None:
+            return
+        threading.Thread(
+            target=self._forward_output,
+            args=(self.process,),
+            name="mediapipe-output-reader",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _forward_output(process) -> None:
+        """자식 프로세스 출력을 메인 로그 수집기가 읽을 수 있도록 전달한다."""
+        for line in process.stdout:
+            message = line.rstrip("\r\n")
+            if message:
+                print(f"[MediaPipe] {message}")
 
     def _send_command(self, command: str) -> bool:
         if not self.is_running or self.process.stdin is None:
@@ -89,6 +118,9 @@ class MediaPipeProcessManager:
 
 def main():
     app = QApplication(sys.argv)
+    log_manager = AppLogManager()
+    log_manager.install_capture()
+    log_window = LogWindow(log_manager)
     mediapipe_manager = MediaPipeProcessManager()
     
     # 저장된 설정 불러오기
@@ -117,6 +149,8 @@ def main():
         screen_height=height,
         personality_preset=personality,
         on_show_perception_console=mediapipe_manager.show_console,
+        on_show_log_window=log_window.show_and_raise,
+        on_close_log_window=log_window.shutdown,
     )
     character.show()
 
@@ -129,6 +163,8 @@ def main():
     finally:
         # 예외나 외부 종료로 aboutToQuit 신호가 누락되어도 자식 프로세스를 정리한다.
         mediapipe_manager.stop()
+        log_window.shutdown()
+        log_manager.restore_capture()
 
 
 if __name__ == "__main__":
