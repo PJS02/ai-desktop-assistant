@@ -1,5 +1,20 @@
 import math
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QWidget, QToolTip
+from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QProgressBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+)
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics
 from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
 
@@ -15,6 +30,7 @@ class RussellEmotionCanvas(QWidget):
         self.arousal_target = 0.0
         self.dominant = "idle"
         self._dragging = False
+        self.coordinate_history = []
         self.setMinimumSize(360, 360)
         self.setMouseTracking(True)  # 마우스 추적 활성화
         
@@ -56,7 +72,7 @@ class RussellEmotionCanvas(QWidget):
             self.arousal_current = self.arousal_target
 
     def _plot_geometry(self):
-        rect = self.rect().adjusted(20, 20, -20, -20)
+        rect = self.rect().adjusted(55, 45, -55, -45)
         radius = min(rect.width(), rect.height()) / 2
         center = QPointF(rect.center())
         return rect, radius, center
@@ -111,15 +127,31 @@ class RussellEmotionCanvas(QWidget):
         self.state_changed.emit(valence, arousal, dominant)
         self.update()
 
+    def set_history(self, points) -> None:
+        """최근 감정 좌표 궤적을 오래된 순서로 설정한다."""
+        self.coordinate_history = [
+            (max(-1.0, min(1.0, float(v))), max(-1.0, min(1.0, float(a))))
+            for v, a in (points or [])[-12:]
+        ]
+        self.update()
+
     def _dominant_color(self) -> QColor:
         color_map = {
-            "happy": QColor(255, 196, 0),
-            "sad": QColor(100, 150, 255),
-            "angry": QColor(255, 80, 80),
+            "joy": QColor(255, 196, 0),
+            "delight": QColor(255, 196, 0),
+            "excitement": QColor(255, 150, 40),
+            "interest": QColor(80, 190, 140),
+            "contentment": QColor(100, 200, 130),
+            "sadness": QColor(100, 150, 255),
+            "melancholy": QColor(90, 120, 200),
+            "despair": QColor(80, 90, 150),
+            "anger": QColor(255, 80, 80),
+            "disgust": QColor(170, 110, 80),
             "fear": QColor(180, 80, 255),
-            "bored": QColor(130, 130, 130),
             "anxiety": QColor(255, 150, 80),
-            "idle": QColor(80, 200, 200),
+            "calm": QColor(70, 180, 190),
+            "peaceful": QColor(80, 170, 220),
+            "neutral": QColor(80, 200, 200),
         }
         return color_map.get(self.dominant, QColor(80, 200, 200))
 
@@ -179,6 +211,34 @@ class RussellEmotionCanvas(QWidget):
             draw_label(text, x, y)
 
         draw_label("중립", center.x(), center.y())
+
+        # 최근 판단 사건의 Russell 좌표 궤적. 오래된 선은 옅고 최신 선은 진하다.
+        if len(self.coordinate_history) >= 2:
+            screen_points = [
+                QPointF(center.x() + value * radius, center.y() - arousal * radius)
+                for value, arousal in self.coordinate_history
+            ]
+            segment_count = len(screen_points) - 1
+            for index in range(segment_count):
+                alpha = 55 + int(170 * (index + 1) / segment_count)
+                painter.setPen(QPen(QColor(66, 133, 244, alpha), 2.5))
+                painter.drawLine(screen_points[index], screen_points[index + 1])
+
+            start = screen_points[-2]
+            end = screen_points[-1]
+            angle = math.atan2(end.y() - start.y(), end.x() - start.x())
+            arrow_size = 8.0
+            left = QPointF(
+                end.x() - arrow_size * math.cos(angle - math.pi / 6),
+                end.y() - arrow_size * math.sin(angle - math.pi / 6),
+            )
+            right = QPointF(
+                end.x() - arrow_size * math.cos(angle + math.pi / 6),
+                end.y() - arrow_size * math.sin(angle + math.pi / 6),
+            )
+            painter.setPen(QPen(QColor(66, 133, 244), 2.5))
+            painter.drawLine(end, left)
+            painter.drawLine(end, right)
 
         point_x = center.x() + self.valence_current * radius
         point_y = center.y() - self.arousal_current * radius
@@ -244,10 +304,23 @@ class RussellEmotionCanvas(QWidget):
 
 class RussellEmotionDialog(QDialog):
     closed = pyqtSignal()
+    EMOTION_NAMES = {
+        "joy": "기쁨", "delight": "즐거움", "excitement": "흥분",
+        "interest": "관심", "contentment": "만족", "anger": "분노",
+        "disgust": "불쾌", "fear": "두려움", "anxiety": "불안",
+        "calm": "차분함", "peaceful": "평온", "sadness": "슬픔",
+        "melancholy": "우울", "despair": "절망", "neutral": "중립",
+        "idle": "중립",
+    }
+    OCC_NAMES = {
+        "joy": "기쁨", "distress": "고통", "hope": "희망", "fear": "두려움",
+        "satisfaction": "만족", "relief": "안도", "pride": "자부심",
+        "shame": "수치심", "gratitude": "감사", "anger": "분노",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Russell 감정 상태")
+        self.setWindowTitle("Russell 감정 판단 근거 · Explainable Emotion AI")
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
         )
@@ -255,17 +328,22 @@ class RussellEmotionDialog(QDialog):
 
         self._state_provider = None
         self._manual_control_callback = None
+        self._explanation_provider = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_from_provider)
 
-        self.title_label = QLabel("Russell 감정 상태")
-        title_font = QFont("Malgun Gothic", 11)
+        self.title_label = QLabel("Russell 감정 판단 근거")
+        title_font = QFont("Malgun Gothic", 15)
         title_font.setBold(True)
         self.title_label.setFont(title_font)
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setObjectName("title")
 
-        self.value_label = QLabel("정서가: 0.00 | 각성도: 0.00 | 감정: idle")
+        self.subtitle_label = QLabel("OCC 사건 평가 → 성격 가중치 → Russell Valence/Arousal")
+        self.subtitle_label.setObjectName("subtitle")
+
+        self.value_label = QLabel("현재 감정: 중립 0%  ·  V +0.00  A +0.00")
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value_label.setObjectName("summary")
 
         # 설명 라벨 추가
         description_font = QFont("Malgun Gothic", 9)
@@ -277,19 +355,121 @@ class RussellEmotionDialog(QDialog):
         )
         self.description_label.setFont(description_font)
         self.description_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.description_label.setWordWrap(True)
         description_color = QColor(100, 100, 100)
         self.description_label.setStyleSheet(f"color: rgb({description_color.red()}, {description_color.green()}, {description_color.blue()});")
 
         self.canvas = RussellEmotionCanvas(self)
         self.canvas.state_changed.connect(self._on_canvas_state_changed)
 
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(self.value_label)
+        left_layout.addWidget(self.canvas, 1)
+        left_layout.addWidget(self.description_label)
+
+        left_panel = QWidget()
+        left_panel.setLayout(left_layout)
+        left_panel.setMinimumWidth(420)
+
+        self.change_label = QLabel("아직 기록된 감정 사건이 없습니다.")
+        self.change_label.setObjectName("changeCard")
+        self.change_label.setWordWrap(True)
+        self.change_label.setMinimumHeight(72)
+
+        self.influence_table = QTableWidget(0, 5)
+        self.influence_table.setHorizontalHeaderLabels(
+            ["시각", "영향 요인", "영향", "Valence", "Arousal"]
+        )
+        self.influence_table.verticalHeader().setVisible(False)
+        self.influence_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.influence_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.influence_table.setAlternatingRowColors(True)
+        self.influence_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.influence_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for column in (2, 3, 4):
+            self.influence_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.influence_table.setMinimumHeight(225)
+
+        influence_group = QGroupBox("최근 영향 요인")
+        influence_layout = QVBoxLayout()
+        influence_layout.addWidget(self.influence_table)
+        influence_group.setLayout(influence_layout)
+
+        self.personality_label = QLabel("성격 보정 기록을 기다리는 중입니다.")
+        self.personality_label.setWordWrap(True)
+        personality_group = QGroupBox("성격 기반 가중치")
+        personality_layout = QVBoxLayout()
+        personality_layout.addWidget(self.personality_label)
+        personality_group.setLayout(personality_layout)
+
+        self.recovery_bar = QProgressBar()
+        self.recovery_bar.setRange(0, 100)
+        self.recovery_bar.setValue(100)
+        self.recovery_bar.setFormat("중립 안정화 %p%")
+        self.recovery_label = QLabel("활성 감정이 없어 안정된 상태입니다.")
+        self.recovery_label.setWordWrap(True)
+        recovery_group = QGroupBox("감정 회복 과정")
+        recovery_layout = QVBoxLayout()
+        recovery_layout.addWidget(self.recovery_bar)
+        recovery_layout.addWidget(self.recovery_label)
+        recovery_group.setLayout(recovery_layout)
+
+        self.occ_rows = []
+        occ_group = QGroupBox("현재 활성 OCC 성분")
+        occ_layout = QVBoxLayout()
+        for _ in range(4):
+            row = QHBoxLayout()
+            label = QLabel("-")
+            label.setFixedWidth(60)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(True)
+            row.addWidget(label)
+            row.addWidget(bar)
+            occ_layout.addLayout(row)
+            self.occ_rows.append((label, bar))
+        occ_group.setLayout(occ_layout)
+
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(self.change_label)
+        right_layout.addWidget(influence_group, 1)
+        right_layout.addWidget(personality_group)
+        right_layout.addWidget(recovery_group)
+        right_layout.addWidget(occ_group)
+
+        right_panel = QWidget()
+        right_panel.setLayout(right_layout)
+
+        content_layout = QHBoxLayout()
+        content_layout.addWidget(left_panel, 5)
+        content_layout.addWidget(right_panel, 7)
+
         layout = QVBoxLayout()
         layout.addWidget(self.title_label)
-        layout.addWidget(self.value_label)
-        layout.addWidget(self.description_label)
-        layout.addWidget(self.canvas)
+        layout.addWidget(self.subtitle_label)
+        layout.addLayout(content_layout, 1)
         self.setLayout(layout)
-        self.setFixedSize(420, 560)
+        self.setMinimumSize(980, 700)
+        self.resize(1040, 740)
+        self.setStyleSheet("""
+            QDialog { background: #f6f8fb; color: #202124; }
+            QLabel#title { color: #202124; padding-left: 6px; }
+            QLabel#subtitle { color: #687386; padding: 0 0 8px 7px; }
+            QLabel#summary { background: #17223b; color: white; border-radius: 10px;
+                             padding: 12px; font-size: 14px; font-weight: 700; }
+            QLabel#changeCard { background: #eaf1ff; border: 1px solid #c8d9ff;
+                                border-radius: 9px; padding: 10px; color: #263b69; }
+            QGroupBox { font-weight: 700; border: 1px solid #d9dfe9; border-radius: 8px;
+                        margin-top: 10px; padding-top: 10px; background: white; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QTableWidget { border: none; gridline-color: #e7eaf0; alternate-background-color: #f7f9fc; }
+            QHeaderView::section { background: #eef2f8; color: #4b5568; border: none;
+                                   border-bottom: 1px solid #d9dfe9; padding: 6px; font-weight: 700; }
+            QProgressBar { border: 1px solid #d6dce7; border-radius: 5px; text-align: center;
+                           background: #edf0f5; min-height: 17px; }
+            QProgressBar::chunk { background: #5b8def; border-radius: 4px; }
+        """)
 
     def set_state_provider(self, provider):
         self._state_provider = provider
@@ -302,18 +482,104 @@ class RussellEmotionDialog(QDialog):
         if self._state_provider is not None:
             self.start_auto_refresh()
 
-    def update_state(self, valence: float, arousal: float, dominant: str) -> None:
+    def set_explanation_provider(self, provider):
+        self._explanation_provider = provider
+
+    def update_state(self, valence: float, arousal: float, dominant: str, intensity: float = 0.0) -> None:
         self.canvas.set_state(valence, arousal, dominant)
+        emotion_name = self.EMOTION_NAMES.get(dominant, dominant)
         self.value_label.setText(
-            f"정서가: {valence:+.2f} | 각성도: {arousal:+.2f} | 감정: {dominant}"
+            f"현재 감정: {emotion_name} {intensity * 100:.0f}%  ·  "
+            f"Valence {valence:+.2f}  ·  Arousal {arousal:+.2f}"
         )
 
     def _on_canvas_state_changed(self, valence: float, arousal: float, dominant: str) -> None:
-        self.value_label.setText(
-            f"정서가: {valence:+.2f} | 각성도: {arousal:+.2f} | 감정: {dominant}"
-        )
+        self.update_state(valence, arousal, dominant)
         if self._manual_control_callback is not None:
             self._manual_control_callback(valence, arousal, dominant)
+
+    def update_explanation(self, snapshot: dict) -> None:
+        """MoodSystem의 설명 스냅샷을 분석 패널 전체에 반영한다."""
+        self.update_state(
+            snapshot.get("valence", 0.0),
+            snapshot.get("arousal", 0.0),
+            snapshot.get("emotion", "neutral"),
+            snapshot.get("intensity", 0.0),
+        )
+        self.canvas.set_history(snapshot.get("coordinate_history", []))
+
+        latest = snapshot.get("latest_change")
+        if latest:
+            category = latest.get("category", "")
+            marker = {"positive": "+", "negative": "−", "recovery": "↺"}.get(category, "•")
+            score = abs(int(latest.get("impact_score", 0)))
+            self.change_label.setText(
+                f"{marker}  {latest.get('source', '감정 사건')}  ·  영향도 {score}\n"
+                f"Valence {latest.get('before_valence', 0):+.2f} → {latest.get('after_valence', 0):+.2f}   "
+                f"Arousal {latest.get('before_arousal', 0):+.2f} → {latest.get('after_arousal', 0):+.2f}\n"
+                f"{latest.get('details', '')}"
+            )
+        else:
+            self.change_label.setText("아직 기록된 감정 사건이 없습니다. 캐릭터와 상호작용해 보세요.")
+
+        events = snapshot.get("recent_events", [])[:7]
+        self.influence_table.setRowCount(len(events))
+        for row, item in enumerate(events):
+            category = item.get("category", "")
+            marker = {"positive": "+", "negative": "−", "recovery": "↺"}.get(category, "•")
+            score = abs(int(item.get("impact_score", 0)))
+            values = [
+                datetime.fromtimestamp(item.get("timestamp", 0)).strftime("%H:%M:%S"),
+                item.get("source", ""),
+                f"{marker}{score}",
+                f"{item.get('delta_valence', 0):+.3f}",
+                f"{item.get('delta_arousal', 0):+.3f}",
+            ]
+            color = {
+                "positive": QColor("#16804b"),
+                "negative": QColor("#c23b3b"),
+                "recovery": QColor("#4667a8"),
+            }.get(category, QColor("#4b5563"))
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column >= 2:
+                    cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if column == 2:
+                    cell.setForeground(color)
+                    font = cell.font()
+                    font.setBold(True)
+                    cell.setFont(font)
+                self.influence_table.setItem(row, column, cell)
+
+        personality = snapshot.get("personality", {})
+        preset = personality.get("preset", "미설정")
+        if latest:
+            factors = latest.get("personality_factors") or ["추가 성격 보정 없음"]
+            multiplier = latest.get("personality_multiplier", 1.0)
+            self.personality_label.setText(
+                f"프리셋: {preset}\n"
+                f"{' · '.join(factors)}\n"
+                f"기본 {latest.get('base_weight', 0):.2f} × 성격 {multiplier:.2f} "
+                f"= 최종 {latest.get('adjusted_weight', 0):.2f}"
+            )
+        else:
+            self.personality_label.setText(f"프리셋: {preset}\n감정 사건을 기다리는 중입니다.")
+
+        recovery = int(snapshot.get("recovery_percent", 100))
+        self.recovery_bar.setValue(recovery)
+        self.recovery_label.setText(
+            "OCC 감정 강도가 매초 감쇠하며 중립 좌표로 회복 중입니다."
+            if recovery < 98 else "활성 감정이 낮아 안정된 상태입니다."
+        )
+
+        components = snapshot.get("occ_components", [])
+        for index, (label, bar) in enumerate(self.occ_rows):
+            component = components[index] if index < len(components) else {"name": "", "value": 0.0}
+            name = component.get("name", "")
+            value = float(component.get("value", 0.0))
+            label.setText(self.OCC_NAMES.get(name, name or "-"))
+            bar.setValue(int(round(value * 100)))
+            bar.setFormat(f"{value * 100:.0f}%")
 
     def _refresh_from_provider(self):
         if self._state_provider is None:
@@ -321,8 +587,15 @@ class RussellEmotionDialog(QDialog):
         try:
             valence, arousal, dominant = self._state_provider()
         except Exception:
-            return
+            valence, arousal, dominant = 0.0, 0.0, "neutral"
         self.update_state(valence, arousal, dominant)
+        if self._explanation_provider is not None:
+            try:
+                snapshot = self._explanation_provider()
+            except Exception as exc:
+                print(f"[RussellEmotionDialog] 설명 데이터 갱신 실패: {exc}")
+            else:
+                self.update_explanation(snapshot)
 
     def start_auto_refresh(self, interval_ms: int = 250) -> None:
         if not self._refresh_timer.isActive():
@@ -341,4 +614,7 @@ class RussellEmotionDialog(QDialog):
 
     def showEvent(self, event):
         print("[RussellEmotionDialog] showEvent")
+        if not self.canvas.animation_timer.isActive():
+            self.canvas.animation_timer.start(16)
+        self._refresh_from_provider()
         super().showEvent(event)

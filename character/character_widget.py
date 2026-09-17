@@ -1048,7 +1048,7 @@ class CharacterWidget(QLabel):
         menu = QMenu(self)
         ball_action = menu.addAction("공 꺼내기")
         ball_action.triggered.connect(self.select_ball)
-        show_action = menu.addAction("캐릭터 감정 확인")
+        show_action = menu.addAction("감정 판단 근거 보기")
         show_action.triggered.connect(self.show_russell_dialog)
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
@@ -1113,6 +1113,10 @@ class CharacterWidget(QLabel):
 
         self.russell_dialog.set_state_provider(state_provider)
         self.russell_dialog.set_state_change_callback(apply_manual_state)
+        if hasattr(self.mood_system, "get_emotion_explanation"):
+            self.russell_dialog.set_explanation_provider(
+                self.mood_system.get_emotion_explanation
+            )
         self.russell_dialog.set_live_mode()
         valence, arousal, dominant = state_provider()
         self.russell_dialog.update_state(valence, arousal, dominant)
