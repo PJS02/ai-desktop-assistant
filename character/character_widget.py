@@ -10,13 +10,15 @@ from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIc
 from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
+from .rps_game import RpsGameDialog
+from .emotion_assets import resolve_animation_asset
+
 from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
-from .rps_game import RpsGameDialog
 
 # Context 모듈 import
 try:
@@ -665,24 +667,29 @@ class CharacterWidget(QLabel):
 
 
     # 행동 결정
-    @staticmethod
-    def _animation_for_emotion(emotion):
-        """Russell/OCC 감정명을 실제 에셋 폴더명으로 변환한다."""
-        if emotion in ["joy", "delight", "excitement", "interest", "contentment", "calm", "peaceful", "happy"]:
-            return "happy"
-        if emotion in ["anger", "disgust", "angry"]:
-            return "angry"
-        if emotion in ["fear", "anxiety"]:
-            return "fear"
-        if emotion in ["sadness", "melancholy", "despair", "sad"]:
-            return "sad"
-        return "idle"
+    def _get_emotion_animation(self, emotion):
+        """논리 감정을 실제로 존재하는 표정 애니메이션으로 변환한다."""
+        emotion_groups = {
+            "joy": "happy",
+            "delight": "happy",
+            "excitement": "happy",
+            "interest": "happy",
+            "contentment": "happy",
+            "calm": "idle",
+            "peaceful": "idle",
+            "anger": "angry",
+            "disgust": "angry",
+            "fear": "scared",
+            "anxiety": "scared",
+            "sadness": "sad",
+            "melancholy": "sad",
+            "despair": "sad",
+        }
+        return emotion_groups.get(emotion, "idle")
 
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
-        emotion = mood["emotion"]
-        self.current_action = self._animation_for_emotion(emotion)
-
+        self.current_action = self._get_emotion_animation(mood["emotion"])
         self.render()
 
     # 출력
@@ -691,6 +698,8 @@ class CharacterWidget(QLabel):
 
     def update_render(self, action):
         """애니메이션 폴더 또는 기존 PNG 파일 로드"""
+        # develop의 scared 이름과 기존 fear 에셋을 모두 지원한다.
+        action = resolve_animation_asset(self.assets_path, action)
         # 스프라이트 폴더가 있으면 애니메이션 재생
         animation_dir = self.assets_path / action
         if animation_dir.exists() and animation_dir.is_dir():
@@ -975,24 +984,7 @@ class CharacterWidget(QLabel):
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
     
-    #컨텍스트 메뉴 캐릭터 우클릭시 동작 
-    def _show_context_menu(self, global_pos, include_dialogue: bool = False):
-        print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
-        menu = QMenu(self)
-        show_action = menu.addAction("캐릭터 감정 확인")
-        show_action.triggered.connect(self.show_russell_dialog)
-        if include_dialogue:
-            talk_action = menu.addAction("대화하기")
-            talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
-        console_action = menu.addAction("사용자인식 콘솔")
-        console_action.triggered.connect(self.show_perception_console)
-        log_action = menu.addAction("로그창 보기")
-        log_action.triggered.connect(self.show_log_window)
-        rps_action = menu.addAction("가위바위보 하기")
-        rps_action.triggered.connect(self.show_rps_game)
-        self._context_menu = menu
-        menu.popup(global_pos)
-
+    # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
     def show_rps_game(self):
         if self.rps_game is None:
             self.rps_game = RpsGameDialog(self._rps_command_callback, self)
@@ -1020,6 +1012,24 @@ class CharacterWidget(QLabel):
             print("[로그창] 로그창 관리자가 연결되지 않았습니다.")
             return
         self._show_log_window_callback()
+    
+    #컨텍스트 메뉴 캐릭터 우클릭시 동작
+    def _show_context_menu(self, global_pos, include_dialogue: bool = False):
+        print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
+        menu = QMenu(self)
+        show_action = menu.addAction("캐릭터 감정 확인")
+        show_action.triggered.connect(self.show_russell_dialog)
+        if include_dialogue:
+            talk_action = menu.addAction("대화하기")
+            talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
+        console_action = menu.addAction("사용자인식 콘솔")
+        console_action.triggered.connect(self.show_perception_console)
+        log_action = menu.addAction("로그창 보기")
+        log_action.triggered.connect(self.show_log_window)
+        rps_action = menu.addAction("가위바위보 하기")
+        rps_action.triggered.connect(self.show_rps_game)
+        self._context_menu = menu
+        menu.popup(global_pos)
     
     #  <캐릭터 감정 확인 버튼 누를 시 >
     def show_russell_dialog(self):
@@ -1244,9 +1254,8 @@ class CharacterWidget(QLabel):
         # 지금은 현재 감정 상태로 표시
         mood = self.mood_system.decide_emotion()
         emotion = mood["emotion"]
-        action = self._animation_for_emotion(emotion)
-        self.current_action = action
-        self.update_render(action)
+        self.current_action = self._get_emotion_animation(emotion)
+        self.update_render(self.current_action)
         
         # 점프 직후 화면 업데이트 (다음 _apply_gravity 호출까지 기다리지 않음)
         self.move(self.x(), self.y() - 5)  # 즉시 5px 위로 이동
@@ -1466,10 +1475,26 @@ class CharacterWidget(QLabel):
     def _get_walk_animation(self, emotion):
         """
         기분에 맞는 walk 애니메이션 폴더명 반환
-        walk_happy/, walk_angry/ 등이 생기면 자동으로 사용되고, 없으면 기존 walk/ 폴더 사용하게 할겅ㅇ
+        현재 17개 감정은 기존 4개 감정별 걷기 에셋으로 매핑한다.
         """
-        action = self._animation_for_emotion(emotion)
-        emotion_walk = f"walk_{action}"
+        emotion_groups = {
+            "joy": "happy",
+            "delight": "happy",
+            "excitement": "happy",
+            "interest": "happy",
+            "contentment": "happy",
+            "calm": "happy",
+            "peaceful": "happy",
+            "anger": "angry",
+            "disgust": "angry",
+            "fear": "scared",
+            "anxiety": "scared",
+            "sadness": "sad",
+            "melancholy": "sad",
+            "despair": "sad",
+        }
+        animation_emotion = emotion_groups.get(emotion)
+        emotion_walk = f"walk_{animation_emotion}" if animation_emotion else "walk"
         emotion_walk_path = self.assets_path / emotion_walk
         
         if emotion_walk_path.exists() and emotion_walk_path.is_dir():
@@ -1507,8 +1532,8 @@ class CharacterWidget(QLabel):
         #     if fall_path.exists():
         #         return "fall"
         
-        # 임시: 현재 감정 상태에 대응하는 대표 애니메이션 유지
-        return self._animation_for_emotion(emotion)
+        # 임시: 현재 감정 상태를 실제 표정 애니메이션으로 표시
+        return self._get_emotion_animation(emotion)
     
     def _smooth_moving(self):
         """슬라이딩 이동 애니메이션"""
@@ -1520,11 +1545,7 @@ class CharacterWidget(QLabel):
             self.sprite_animator.stop()
             
             mood = self.mood_system.decide_emotion()
-            emotion = mood["emotion"]
-            
-            self.current_action = self._animation_for_emotion(emotion)
-            
-            self.update_render(self.current_action)
+            self.update_action(mood)
             
             self.animation_controller.update_base_pos(self.pos())
             self.animation_controller.start_idle()
@@ -1592,11 +1613,7 @@ class CharacterWidget(QLabel):
                 # 착지 후 현재 감정 상태로 복구 (이동 중이 아닐 때만)
                 if not self.is_moving:
                     mood = self.mood_system.decide_emotion()
-                    emotion = mood["emotion"]
-                    
-                    self.current_action = self._animation_for_emotion(emotion)
-                    
-                    self.update_render(self.current_action)
+                    self.update_action(mood)
                 
                 # 말풍선 위치 업데이트 (착지 후에도)
                 self.dialogue_system.update_dialogue_position()
