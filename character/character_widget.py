@@ -665,32 +665,23 @@ class CharacterWidget(QLabel):
 
 
     # 행동 결정
+    @staticmethod
+    def _animation_for_emotion(emotion):
+        """Russell/OCC 감정명을 실제 에셋 폴더명으로 변환한다."""
+        if emotion in ["joy", "delight", "excitement", "interest", "contentment", "calm", "peaceful", "happy"]:
+            return "happy"
+        if emotion in ["anger", "disgust", "angry"]:
+            return "angry"
+        if emotion in ["fear", "anxiety"]:
+            return "fear"
+        if emotion in ["sadness", "melancholy", "despair", "sad"]:
+            return "sad"
+        return "idle"
+
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
         emotion = mood["emotion"]
-        intensity = mood["intensity"]
-        
-        # 17개 감정을 기존 애니메이션으로 매핑
-        # 긍정-흥분: happy
-        if emotion in ["joy", "delight", "excitement", "interest"]:
-            self.current_action = "happy"
-        # 긍정-진정: calm, peaceful
-        elif emotion in ["calm", "peaceful", "contentment"]:
-            self.current_action = "happy"  # 긍정이면 happy로 매핑 .//변경 예정 아마 편하게 생긋 웃는 애니메이션 정도?
-        # 부정-흥분: anger, disgust
-        elif emotion in ["anger", "disgust"]: 
-            self.current_action = "angry"
-        # 부정-흥분: fear, anxiety
-        elif emotion in ["fear", "anxiety"]:
-            self.current_action = "angry"  # 공포/불안은 현재 애니메이션에 없어서 일단 angry로 매핑 (나중에 겁먹은 표정 애니메이션 추가 예정)
-        # 부정-진정: sadness, melancholy, despair
-        elif emotion in ["sadness", "melancholy", "despair"]:
-            self.current_action = "angry"  # 슬픔/우울도 일단 angry로 매핑 (나중에 슬픈 표정 애니메이션 추가 예정)
-        # 중립
-        elif emotion == "neutral":
-            self.current_action = "idle"
-        else:
-            self.current_action = "idle"
+        self.current_action = self._animation_for_emotion(emotion)
 
         self.render()
 
@@ -1253,8 +1244,9 @@ class CharacterWidget(QLabel):
         # 지금은 현재 감정 상태로 표시
         mood = self.mood_system.decide_emotion()
         emotion = mood["emotion"]
-        self.current_action = emotion
-        self.update_render(emotion)
+        action = self._animation_for_emotion(emotion)
+        self.current_action = action
+        self.update_render(action)
         
         # 점프 직후 화면 업데이트 (다음 _apply_gravity 호출까지 기다리지 않음)
         self.move(self.x(), self.y() - 5)  # 즉시 5px 위로 이동
@@ -1476,7 +1468,8 @@ class CharacterWidget(QLabel):
         기분에 맞는 walk 애니메이션 폴더명 반환
         walk_happy/, walk_angry/ 등이 생기면 자동으로 사용되고, 없으면 기존 walk/ 폴더 사용하게 할겅ㅇ
         """
-        emotion_walk = f"walk_{emotion}"
+        action = self._animation_for_emotion(emotion)
+        emotion_walk = f"walk_{action}"
         emotion_walk_path = self.assets_path / emotion_walk
         
         if emotion_walk_path.exists() and emotion_walk_path.is_dir():
@@ -1514,8 +1507,8 @@ class CharacterWidget(QLabel):
         #     if fall_path.exists():
         #         return "fall"
         
-        # 임시: 현재 감정 상태 유지
-        return emotion
+        # 임시: 현재 감정 상태에 대응하는 대표 애니메이션 유지
+        return self._animation_for_emotion(emotion)
     
     def _smooth_moving(self):
         """슬라이딩 이동 애니메이션"""
@@ -1529,14 +1522,7 @@ class CharacterWidget(QLabel):
             mood = self.mood_system.decide_emotion()
             emotion = mood["emotion"]
             
-            if emotion == "happy":
-                self.current_action = "happy"
-            elif emotion == "angry":
-                self.current_action = "angry"
-            elif emotion == "bored":
-                self.current_action = "idle"  #*****임시********
-            else:
-                self.current_action = "idle"
+            self.current_action = self._animation_for_emotion(emotion)
             
             self.update_render(self.current_action)
             
@@ -1608,14 +1594,7 @@ class CharacterWidget(QLabel):
                     mood = self.mood_system.decide_emotion()
                     emotion = mood["emotion"]
                     
-                    if emotion == "happy":
-                        self.current_action = "happy"
-                    elif emotion == "angry":
-                        self.current_action = "angry"
-                    elif emotion == "bored":
-                        self.current_action = "idle"
-                    else:
-                        self.current_action = "idle"
+                    self.current_action = self._animation_for_emotion(emotion)
                     
                     self.update_render(self.current_action)
                 
