@@ -1,0 +1,13 @@
+{
+  "source": "Built-in image_gen; background removal and slicing approved by user",
+  "size": [
+    273,
+    402
+  ],
+  "fps": 24,
+  "frame_count": 36,
+  "distinct_poses": 12,
+  "hold_frames_per_pose": 3,
+  "duration_seconds": 1.5,
+  "runtime_enabled": false
+}
