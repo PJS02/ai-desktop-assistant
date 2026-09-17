@@ -729,12 +729,25 @@ def try_open_webcam(index, backend, backend_label, width, height):
     }
 
 
-def discover_webcams(args):
+def discover_webcams(
+    args,
+    stop_after_first=False,
+    preferred_index=None,
+    preferred_backend_label=None,
+):
     candidates = []
     seen_indices = set()
 
-    for backend_label, backend in webcam_backends(args.camera_backend):
-        for index in range(6):
+    backends = webcam_backends(args.camera_backend)
+    if preferred_backend_label:
+        backends.sort(key=lambda item: item[0] != preferred_backend_label)
+    indices = list(range(6))
+    if preferred_index in indices:
+        indices.remove(preferred_index)
+        indices.insert(0, preferred_index)
+
+    for backend_label, backend in backends:
+        for index in indices:
             if index in seen_indices:
                 continue
 
@@ -753,6 +766,8 @@ def discover_webcams(args):
             del result["frame"]
             candidates.append(result)
             seen_indices.add(index)
+            if stop_after_first:
+                return candidates
 
     return candidates
 

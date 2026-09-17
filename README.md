@@ -46,3 +46,16 @@ python main.py
   - 순차 대화 큐 시스템
   - 다양한 대사 템플릿
 - AI 인사 응답 (준비 중)
+
+## 외부 감정·동작 인식 연결
+
+`medeapipe_capstone` 또는 외부 모델의 인식 결과는 로컬 TCP JSON 브리지를 통해
+캐릭터에 전달할 수 있습니다. 이벤트 형식과 실행 방법은
+[`perception/README.md`](perception/README.md)를 참고하세요.
+
+자동 테스트는 개발 의존성을 설치한 뒤 실행합니다.
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```

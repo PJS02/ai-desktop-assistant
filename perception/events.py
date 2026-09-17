@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import time
+from typing import Any, Mapping
+
+
+SCHEMA_VERSION = 1
+
+# 인식 중이 아니거나 대기 상태임을 뜻하는 값은 실제 인식 결과에서 제외한다.
+_INACTIVE_LABELS = {
+    "",
+    "-",
+    "none",
+    "null",
+    "wait",
+    "waiting",
+    "unknown",
+    "recognition_waiting",
+    "searching_face",
+}
+
+_EMOTION_ALIASES = {
+    "angry": "anger",
+    "anger": "anger",
+    "contempt": "contempt",
+    "disgust": "disgust",
+    "fear": "fear",
+    "happy": "happy",
+    "happiness": "happy",
+    "joy": "happy",
+    "sad": "sadness",
+    "sadness": "sadness",
+    "surprised": "surprise",
+    "surprise": "surprise",
+    "neutral": "neutral",
+}
+
+
+@dataclass(frozen=True)
+class EmotionObservation:
+    label: str
+    confidence: float
+    scores: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GestureObservation:
+    kind: str
+    label: str
+    side: str | None = None
+    confidence: float | None = None
+
+
+@dataclass(frozen=True)
+class PerceptionEvent:
+    source: str
+    timestamp: float
+    emotion: EmotionObservation | None = None
+    gestures: tuple[GestureObservation, ...] = ()
+    head_motion: str | None = None
+    attention: str | None = None
+    speech: str | None = None
+    speech_id: Any = None
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+
+def _canonical_label(value: Any) -> str | None:
+    """모델마다 다른 대소문자와 구분자를 내부 표준 형태로 맞춘다."""
+    if value is None:
+        return None
+    label = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    if label in _INACTIVE_LABELS:
+        return None
+    return label
+
+
+def _canonical_emotion(value: Any) -> str | None:
+    """동의어로 표현된 감정 이름을 캐릭터가 사용하는 이름으로 통일한다."""
+    label = _canonical_label(value)
+    if label is None:
+        return None
+    return _EMOTION_ALIASES.get(label, label)
+
+
+def _clamp_confidence(value: Any, default: float = 0.0) -> float:
+    """잘못된 모델 출력이 들어와도 신뢰도는 항상 0~1 범위를 유지한다."""
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = default
+    return max(0.0, min(1.0, confidence))
+
+
+def _normalise_scores(value: Any) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        return {}
+    scores: dict[str, float] = {}
+    for raw_label, raw_score in value.items():
+        label = _canonical_emotion(raw_label)
+        if label is not None:
+            scores[label] = _clamp_confidence(raw_score)
+    return scores
+
+
+def _parse_emotion(value: Any) -> EmotionObservation | None:
+    if not isinstance(value, Mapping):
+        return None
+    label = _canonical_emotion(value.get("label"))
+    if label is None:
+        return None
+    scores = _normalise_scores(value.get("scores"))
+    confidence = value.get("confidence")
+    if confidence is None:
+        confidence = scores.get(label, max(scores.values(), default=0.0))
+    return EmotionObservation(
+        label=label,
+        confidence=_clamp_confidence(confidence),
+        scores=scores,
+    )
+
+
+def _parse_gesture_item(value: Any, default_kind: str = "motion") -> GestureObservation | None:
+    if isinstance(value, str):
+        label = _canonical_label(value)
+        return GestureObservation(default_kind, label) if label else None
+    if not isinstance(value, Mapping):
+        return None
+    label = _canonical_label(value.get("label") or value.get("value"))
+    if label is None:
+        return None
+    kind = _canonical_label(value.get("kind")) or default_kind
+    side = _canonical_label(value.get("side"))
+    confidence_value = value.get("confidence")
+    confidence = None if confidence_value is None else _clamp_confidence(confidence_value)
+    return GestureObservation(kind=kind, label=label, side=side, confidence=confidence)
+
+
+def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
+    """공통 perception 스키마로 전송된 이벤트를 파싱한다."""
+    gestures: list[GestureObservation] = []
+    raw_motions = payload.get("motions", payload.get("motion", []))
+    if isinstance(raw_motions, (str, Mapping)):
+        raw_motions = [raw_motions]
+    if isinstance(raw_motions, list):
+        for item in raw_motions:
+            gesture = _parse_gesture_item(item)
+            if gesture is not None:
+                gestures.append(gesture)
+
+    speech, speech_id = _parse_speech_payload(payload.get("speech"))
+    return PerceptionEvent(
+        source=str(payload.get("source") or "external"),
+        timestamp=_parse_timestamp(payload.get("timestamp")),
+        emotion=_parse_emotion(payload.get("emotion")),
+        gestures=tuple(gestures),
+        head_motion=_canonical_label(payload.get("head_motion")),
+        attention=_canonical_label(payload.get("attention")),
+        speech=speech,
+        speech_id=speech_id,
+        raw=dict(payload),
+    )
+
+
+def _parse_legacy_recognition_state(payload: Mapping[str, Any]) -> PerceptionEvent:
+    """기존 MediaPipe GUI의 recognition_state 형식을 공통 이벤트로 변환한다."""
+    always = payload.get("always")
+    always = always if isinstance(always, Mapping) else {}
+    gestures: list[GestureObservation] = []
+
+    for key, kind in (("wave", "wave"), ("hand_gesture", "hand_gesture")):
+        group = always.get(key)
+        if not isinstance(group, Mapping):
+            continue
+        for side in ("left", "right"):
+            label = _canonical_label(group.get(side))
+            if label is not None:
+                gestures.append(GestureObservation(kind=kind, label=label, side=side))
+
+    head = always.get("head")
+    head_motion = None
+    if isinstance(head, Mapping):
+        head_motion = _canonical_label(head.get("value") or head.get("overlay"))
+
+    attention_group = always.get("attention")
+    attention = None
+    if isinstance(attention_group, Mapping):
+        attention = _canonical_label(
+            attention_group.get("value") or attention_group.get("overlay")
+        )
+
+    speech_group = payload.get("speech")
+    speech, speech_id = _parse_speech_payload(speech_group)
+
+    return PerceptionEvent(
+        source=str(payload.get("source") or "mediapipe_capstone"),
+        timestamp=_parse_timestamp(payload.get("timestamp")),
+        emotion=_parse_emotion(always.get("emotion")),
+        gestures=tuple(gestures),
+        head_motion=head_motion,
+        attention=attention,
+        speech=speech,
+        speech_id=speech_id,
+        raw=dict(payload),
+    )
+
+
+def _parse_timestamp(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        # 타임스탬프가 없는 기존 송신기와도 호환되도록 수신 시각을 사용한다.
+        return time.time()
+
+
+def _parse_speech(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_speech_payload(value: Any) -> tuple[str | None, Any]:
+    if isinstance(value, Mapping):
+        text = _parse_speech(value.get("text") or value.get("latest_text"))
+        speech_id = value.get("id", value.get("sequence"))
+        return text, speech_id
+    return _parse_speech(value), None
+
+
+def parse_perception_event(payload: Mapping[str, Any]) -> PerceptionEvent:
+    """지원하는 모델 출력 형식을 하나의 공통 인식 이벤트로 변환한다."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("perception payload must be a JSON object")
+
+    event_type = _canonical_label(payload.get("type"))
+    if event_type == "recognition_state":
+        # MediaPipe 쪽 형식을 즉시 바꾸지 않아도 연동되도록 이전 형식을 함께 지원한다.
+        return _parse_legacy_recognition_state(payload)
+    if event_type in {"perception", "perception_event"}:
+        version = payload.get("version", SCHEMA_VERSION)
+        if version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported perception schema version: {version}")
+        return _parse_native_event(payload)
+    raise ValueError(f"unsupported perception event type: {payload.get('type')!r}")

@@ -7,7 +7,12 @@ import time
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
 from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence
-from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
+from perception.controller import PerceptionController
+from perception.receiver import QtPerceptionReceiver
+from .rps_game import RpsGameDialog
+from .emotion_assets import resolve_animation_asset
+
 from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
@@ -63,8 +68,24 @@ class CharacterWidget(QLabel):
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     
-    def __init__(self, screen_width=None, screen_height=None, personality_preset=None):
+    def __init__(
+        self,
+        screen_width=None,
+        screen_height=None,
+        personality_preset=None,
+        on_show_perception_console=None,
+        on_show_log_window=None,
+        on_close_log_window=None,
+        on_rps_command=None,
+    ):
         super().__init__()
+
+        # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
+        self._show_perception_console_callback = on_show_perception_console
+        self._show_log_window_callback = on_show_log_window
+        self._close_log_window_callback = on_close_log_window
+        self._rps_command_callback = on_rps_command
+        self.rps_game = None
 
         # 배경창 투명화
         self.setWindowFlags(
@@ -264,6 +285,26 @@ class CharacterWidget(QLabel):
         
         # 신호 연결
         self.show_ai_response.connect(self.dialogue_system.show_ai_response)
+
+        # ====== 외부 감정/동작 인식 수신 ======
+        # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
+        self.perception_controller = PerceptionController(
+            mood_system=self.mood_system,
+            on_dialogue=self._show_perception_dialogue,
+        )
+        self.perception_receiver = QtPerceptionReceiver(parent=self)
+        # TCP 콜백은 백그라운드 스레드에서 실행되므로 UI 처리는 Qt 메인 스레드에 예약한다.
+        self.perception_receiver.event_received.connect(
+            self._handle_perception_payload,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.perception_receiver.status_changed.connect(self._on_perception_status)
+        self.perception_receiver.error_occurred.connect(self._on_perception_error)
+        if not self.perception_receiver.start():
+            print(
+                "[외부 인식 수신기 비활성화] "
+                f"{self.perception_receiver.startup_error or '알 수 없는 오류'}"
+            )
     
     def _get_screen_dimensions(self):
         """
@@ -276,6 +317,36 @@ class CharacterWidget(QLabel):
             # 커스텀 해상도가 없으면 실시간으로 가져옴 (해상도 변경 반영)
             screen = QApplication.primaryScreen()
             return screen.geometry().width(), screen.geometry().height()
+
+    @pyqtSlot(object)
+    def _handle_perception_payload(self, payload):
+        if self.rps_game is not None and self.rps_game.isVisible():
+            self.rps_game.handle_payload(payload)
+        try:
+            self.perception_controller.handle_payload(payload)
+        except ValueError as exc:
+            print(f"[외부 인식 이벤트 무시] {exc}")
+
+    @pyqtSlot(str)
+    def _on_perception_status(self, status):
+        print(f"[외부 인식 수신기] {status}")
+
+    @pyqtSlot(str)
+    def _on_perception_error(self, message):
+        print(f"[외부 인식 수신기 오류] {message}")
+
+    def _show_perception_dialogue(self, text):
+        self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
+
+    def closeEvent(self, event):
+        if self.rps_game is not None:
+            self.rps_game.close()
+        # 수신 스레드와 8765 포트를 먼저 정리해야 앱을 바로 다시 실행할 수 있다.
+        if hasattr(self, "perception_receiver"):
+            self.perception_receiver.stop()
+        if self._close_log_window_callback is not None:
+            self._close_log_window_callback()
+        super().closeEvent(event)
 
     # 애니메이션 신호 처리
     def on_animation_position_changed(self, new_pos):
@@ -650,6 +721,8 @@ class CharacterWidget(QLabel):
 
     def update_render(self, action):
         """애니메이션 폴더 또는 기존 PNG 파일 로드"""
+        # develop의 scared 이름과 기존 fear 에셋을 모두 지원한다.
+        action = resolve_animation_asset(self.assets_path, action)
         # 스프라이트 폴더가 있으면 애니메이션 재생
         animation_dir = self.assets_path / action
         if animation_dir.exists() and animation_dir.is_dir():
@@ -940,7 +1013,36 @@ class CharacterWidget(QLabel):
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
     
-    #컨텍스트 메뉴 캐릭터 우클릭시 동작 
+    # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
+    def show_rps_game(self):
+        if self.rps_game is None:
+            self.rps_game = RpsGameDialog(self._rps_command_callback, self)
+        if not self.rps_game.isVisible():
+            self.rps_game.show()
+            self.rps_game.start_game()
+        self.rps_game.raise_()
+        self.rps_game.activateWindow()
+
+    def show_perception_console(self):
+        """백그라운드에서 실행 중인 사용자 인식 창의 표시를 요청한다."""
+        if self._show_perception_console_callback is None:
+            print("[사용자 인식 콘솔] 실행 관리자가 연결되지 않았습니다.")
+            return
+        try:
+            if not self._show_perception_console_callback():
+                print("[사용자 인식 콘솔] 창을 표시하지 못했습니다.")
+        except Exception as exc:
+            # 메뉴 콜백 오류가 캐릭터의 Qt 이벤트 루프까지 종료시키지 않게 한다.
+            print(f"[사용자 인식 콘솔 오류] {exc}")
+
+    def show_log_window(self):
+        """별도 로그창을 표시하고 앞으로 가져온다."""
+        if self._show_log_window_callback is None:
+            print("[로그창] 로그창 관리자가 연결되지 않았습니다.")
+            return
+        self._show_log_window_callback()
+    
+    #컨텍스트 메뉴 캐릭터 우클릭시 동작
     def _show_context_menu(self, global_pos, include_dialogue: bool = False):
         print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
         menu = QMenu(self)
@@ -951,6 +1053,12 @@ class CharacterWidget(QLabel):
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
+        console_action = menu.addAction("사용자인식 콘솔")
+        console_action.triggered.connect(self.show_perception_console)
+        log_action = menu.addAction("로그창 보기")
+        log_action.triggered.connect(self.show_log_window)
+        rps_action = menu.addAction("가위바위보 하기")
+        rps_action.triggered.connect(self.show_rps_game)
         self._context_menu = menu
         menu.popup(global_pos)
 
