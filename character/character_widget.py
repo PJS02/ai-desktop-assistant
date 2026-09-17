@@ -16,6 +16,7 @@ from .sprite_animator import SpriteAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
+from .rps_game import RpsGameDialog
 
 # Context 모듈 import
 try:
@@ -70,6 +71,7 @@ class CharacterWidget(QLabel):
         on_show_perception_console=None,
         on_show_log_window=None,
         on_close_log_window=None,
+        on_rps_command=None,
     ):
         super().__init__()
 
@@ -77,6 +79,8 @@ class CharacterWidget(QLabel):
         self._show_perception_console_callback = on_show_perception_console
         self._show_log_window_callback = on_show_log_window
         self._close_log_window_callback = on_close_log_window
+        self._rps_command_callback = on_rps_command
+        self.rps_game = None
 
         # 배경창 투명화
         self.setWindowFlags(
@@ -293,6 +297,8 @@ class CharacterWidget(QLabel):
 
     @pyqtSlot(object)
     def _handle_perception_payload(self, payload):
+        if self.rps_game is not None and self.rps_game.isVisible():
+            self.rps_game.handle_payload(payload)
         try:
             self.perception_controller.handle_payload(payload)
         except ValueError as exc:
@@ -310,6 +316,8 @@ class CharacterWidget(QLabel):
         self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
 
     def closeEvent(self, event):
+        if self.rps_game is not None:
+            self.rps_game.close()
         # 수신 스레드와 8765 포트를 먼저 정리해야 앱을 바로 다시 실행할 수 있다.
         if hasattr(self, "perception_receiver"):
             self.perception_receiver.stop()
@@ -989,8 +997,19 @@ class CharacterWidget(QLabel):
         console_action.triggered.connect(self.show_perception_console)
         log_action = menu.addAction("로그창 보기")
         log_action.triggered.connect(self.show_log_window)
+        rps_action = menu.addAction("가위바위보 하기")
+        rps_action.triggered.connect(self.show_rps_game)
         self._context_menu = menu
         menu.popup(global_pos)
+
+    def show_rps_game(self):
+        if self.rps_game is None:
+            self.rps_game = RpsGameDialog(self._rps_command_callback, self)
+        if not self.rps_game.isVisible():
+            self.rps_game.show()
+            self.rps_game.start_game()
+        self.rps_game.raise_()
+        self.rps_game.activateWindow()
 
     def show_perception_console(self):
         """백그라운드에서 실행 중인 사용자 인식 창의 표시를 요청한다."""

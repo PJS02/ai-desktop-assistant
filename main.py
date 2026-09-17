@@ -97,6 +97,12 @@ class MediaPipeProcessManager:
             return False
         return self._send_command("show")
 
+    def send_game_command(self, command: str) -> bool:
+        if command.startswith("rps_begin ") and not self.is_running:
+            if not self.start():
+                return False
+        return self._send_command(command)
+
     def stop(self, wait_timeout: float = 3.0) -> None:
         if not self.is_running:
             return
@@ -151,6 +157,7 @@ def main():
         on_show_perception_console=mediapipe_manager.show_console,
         on_show_log_window=log_window.show_and_raise,
         on_close_log_window=log_window.shutdown,
+        on_rps_command=mediapipe_manager.send_game_command,
     )
     character.show()
 

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from types import SimpleNamespace
@@ -110,6 +111,9 @@ class HolisticGuiApp:
         self.camera_discovery_queue = queue.Queue()
         self.camera_discovery_thread = None
         self.restart_camera_after_discovery = False
+        self.rps_session = None
+        self.rps_previous_mode = None
+        self.rps_sample = None
         saved_recognition = self.device_settings.get("recognition", {})
         saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
         saved_mode = saved_recognition.get("mode", "rps")
@@ -275,10 +279,35 @@ class HolisticGuiApp:
                 self.show_console()
             elif command == "hide":
                 self.hide_console()
+            elif command.startswith("rps_begin "):
+                self.begin_rps_game(command.split(" ", 1)[1])
+            elif command.startswith("rps_end "):
+                self.end_rps_game(command.split(" ", 1)[1])
             elif command == "shutdown":
                 self.on_close()
                 return
         self.root.after(100, self.poll_control_commands)
+
+    def begin_rps_game(self, session):
+        # 임시 게임 모드는 저장된 사용자 모드를 덮어쓰지 않는다.
+        if self.rps_session is None:
+            self.rps_previous_mode = self.active_mode
+        self.rps_session = session
+        self.rps_sample = None
+        self.active_mode = "rps"
+        self.update_mode_status()
+        if self.cap is None:
+            self.start_selected_camera()
+        print("[가위바위보] 게임 인식 시작")
+
+    def end_rps_game(self, session):
+        if session != self.rps_session:
+            return
+        self.active_mode = self.rps_previous_mode
+        self.rps_session = None
+        self.rps_sample = None
+        self.update_mode_status()
+        print("[가위바위보] 이전 인식 모드 복원")
 
     def show_console(self):
         """숨겨진 사용자 인식 콘솔을 복원해 화면 앞으로 가져온다."""
@@ -978,7 +1007,7 @@ class HolisticGuiApp:
     def save_recognition_settings(self):
         """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
         self.device_settings["recognition"] = {
-            "mode": self.active_mode,
+            "mode": self.rps_previous_mode if self.rps_session else self.active_mode,
             "tracking": bool(self.tracking_var.get()),
             "marker_only": bool(self.marker_only_var.get()),
             "mirror": bool(self.mirror_var.get()),
@@ -996,11 +1025,18 @@ class HolisticGuiApp:
             print(f"[장치 설정 오류] 저장 실패: {exc}")
 
     def set_mode(self, mode_key):
+        if self.rps_session is not None:
+            self.status_var.set("가위바위보 게임을 닫으면 모드를 변경할 수 있습니다.")
+            return
         if self.active_mode == mode_key:
             self.active_mode = None
         else:
             self.active_mode = mode_key
 
+        self.update_mode_status()
+        self.save_recognition_settings()
+
+    def update_mode_status(self):
         self.clear_air_paths()
         self.reset_motion_states()
         self.update_mode_buttons()
@@ -1010,7 +1046,6 @@ class HolisticGuiApp:
         else:
             self.mode_var.set("\ud604\uc7ac \ubaa8\ub4dc: \uc5c6\uc74c")
             self.result_var.set("\ubaa8\ub4dc \uaebc\uc9d0")
-        self.save_recognition_settings()
 
     def update_mode_buttons(self):
         for mode_key, button in self.mode_buttons.items():
@@ -1094,6 +1129,14 @@ class HolisticGuiApp:
 
         self.apply_always_recognition_overlay(annotated)
         self.apply_mode_overlay(annotated, frame_record)
+        if self.rps_session is not None:
+            # 프레임 시각을 별도로 넣어 같은 손을 유지해도 전송하고,
+            # STT 이벤트 재전송이나 카메라 중단 시 과거 손으로 판정하지 않게 한다.
+            self.rps_sample = {
+                "session": self.rps_session,
+                "captured_at": time.time(),
+                "hands": dict(self.mode_result.get("result") or {}),
+            }
         self.apply_emotion_overlay(annotated)
         self.send_recognition_state()
         self.render_frame(annotated)
@@ -1226,6 +1269,7 @@ class HolisticGuiApp:
                 "emotion": self.build_emotion_state(),
             },
             "mode": self.mode_result,
+            "rps_game": self.rps_sample,
             "speech": {
                 "latest_text": self.latest_speech_text,
                 "sequence": self.speech_sequence,

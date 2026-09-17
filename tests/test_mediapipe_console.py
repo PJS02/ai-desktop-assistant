@@ -102,6 +102,7 @@ def test_recognition_mode_and_tools_are_saved_together():
     app = HolisticGuiApp.__new__(HolisticGuiApp)
     app.device_settings = {}
     app.active_mode = "air"
+    app.rps_session = None
     app.tracking_var = Mock(**{"get.return_value": True})
     app.marker_only_var = Mock(**{"get.return_value": False})
     app.mirror_var = Mock(**{"get.return_value": True})
@@ -122,3 +123,61 @@ def test_recognition_mode_and_tools_are_saved_together():
         "always_recognition": True,
     }
     app.save_device_settings_safely.assert_called_once_with()
+
+
+def test_game_commands_restore_previous_mode_without_saving_override():
+    app = make_console_app()
+    app.active_mode = None
+    app.rps_session = None
+    app.cap = Mock()
+    app.update_mode_status = Mock()
+    app.save_recognition_settings = Mock()
+    app.control_commands.put("rps_begin session1")
+    app.poll_control_commands()
+    assert app.active_mode == "rps"
+    # 다시 하기와 지연된 이전 세션 종료 명령에도 원래 모드를 유지한다.
+    app.begin_rps_game("session1")
+    app.end_rps_game("old-session")
+    assert app.active_mode == "rps"
+    app.end_rps_game("session1")
+    assert app.active_mode is None
+    assert app.rps_session is None
+    app.save_recognition_settings.assert_not_called()
+
+
+def test_rps_frames_reach_tracker_through_existing_tcp_bridge():
+    from bridge.interaction_event_client import InteractionEventClient
+    from perception.receiver import JsonLineTcpReceiver
+    from character.rps_game import HandTracker
+
+    received = queue.Queue()
+    receiver = JsonLineTcpReceiver(received.put, port=0)
+    assert receiver.start()
+    client = InteractionEventClient(port=receiver.bound_port)
+    client.start()
+    sender = HolisticGuiApp.__new__(HolisticGuiApp)
+    sender.always_results = {}
+    sender.emotion_result = None
+    sender.latest_speech_text = ""
+    sender.speech_sequence = 0
+    sender.event_client = client
+    sender.last_sent_interaction_events = {}
+    sender.mode_result = {"active": "rps", "result": {"left": "PAPER", "right": "NONE"}}
+    tracker = HandTracker("integration", 100)
+    try:
+        # 같은 손이어도 매 프레임 시각이 바뀌므로 변경 감지 필터를 통과해야 한다.
+        for stamp in (100.1, 100.4):
+            sender.rps_sample = {"session": "integration", "captured_at": stamp,
+                                 "hands": sender.mode_result["result"]}
+            sender.send_recognition_state()
+            payload = received.get(timeout=2)
+            assert tracker.feed(payload, stamp)
+        assert tracker.stable_hand(100.4) == "PAPER"
+        # STT가 같은 프레임을 다시 보내더라도 게임에서는 새 관측으로 세지 않는다.
+        sender.speech_sequence += 1
+        sender.send_recognition_state()
+        assert not tracker.feed(received.get(timeout=2), 100.5)
+        assert tracker.count == 2
+    finally:
+        client.stop()
+        receiver.stop()
