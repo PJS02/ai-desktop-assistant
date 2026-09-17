@@ -1,6 +1,7 @@
 # 캐릭터의 현재 상태 mood를 조정, 화면 상 캐릭터의 감정의 로직
 # Russell 2D 감정 모델(Valence × Arousal) 기반
 import math
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, Tuple
@@ -71,6 +72,7 @@ class MoodSystem:
         self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
         
         # Russell 공간에서 17개 감정의 위치 (Valence, Arousal)
+        # 코드 상 감정을 정의하는 구간
         self._russell_emotions = {
             # 긍정-흥분 (Right-Up)
             "joy": (0.80, 0.70),
@@ -99,9 +101,23 @@ class MoodSystem:
         }
         
         self._last_dominant_emotion = "neutral"  # 이전 감정 상태 추적
+
+        # 강한 상호작용 직후 감정이 즉시 사라지지 않도록 유지하는 시각
+        self._emotion_hold_until = 0.0
+        self._manual_russell_override = False
+        self._event_valence_bias = 0.0
+        self._event_arousal_bias = 0.0
         
         # 히스테리시스 (감정 전환의 관성)
         self._hysteresis_bonus = 0.15  # 현재 감정 유지 시 거리 추가 보너스
+
+    def _clamp_russell_to_circle(self) -> None:
+        """Russell 좌표를 단위원 내부로 정규화한다."""
+        self.russell.clamp()
+        distance = math.hypot(self.russell.valence, self.russell.arousal)
+        if distance > 1.0:
+            self.russell.valence /= distance
+            self.russell.arousal /= distance
 
     # ========================
     # 이벤트에 대한 반응
@@ -138,7 +154,7 @@ class MoodSystem:
             self_attribution=0.2,
             agent_benevolence=-0.4,   # 부정적 의도
         )
-        self.appraise_event(event, weight=0.6)
+        self.appraise_event(event, weight=0.6, valence_bias=-0.08, arousal_bias=-0.08)
 
     def on_neglected(self):
         """오래 동안 상호작용이 없을 때 - 심각한 방치"""
@@ -149,7 +165,7 @@ class MoodSystem:
             self_attribution=0.5,     # 강한 자책
             agent_benevolence=-0.8,   # 강한 부정적 의도
         )
-        self.appraise_event(event, weight=1.5)
+        self.appraise_event(event, weight=1.5, valence_bias=-0.25, arousal_bias=0.2)
 
     def on_drag_hard(self):
         """강하게/빠르게 드래그할 때 - 거친 다루기"""
@@ -160,7 +176,7 @@ class MoodSystem:
             self_attribution=0.1,
             agent_benevolence=-0.6,   # 중간 정도 부정적 의도
         )
-        self.appraise_event(event, weight=0.7)
+        self.appraise_event(event, weight=0.7, valence_bias=-0.5, arousal_bias=0.8)
 
     def on_sudden_move(self):
         """갑작스러운 위치 변화 - 놀람/공포"""
@@ -171,7 +187,7 @@ class MoodSystem:
             self_attribution=0.0,
             agent_benevolence=-0.6,
         )
-        self.appraise_event(event, weight=1.4)
+        self.appraise_event(event, weight=1.4, valence_bias=-0.15, arousal_bias=0.45)
 
     def on_long_idle(self):
         """오래 기다릴 때 / 로딩 중 - 불안"""
@@ -182,7 +198,7 @@ class MoodSystem:
             self_attribution=0.1,
             agent_benevolence=-0.3,
         )
-        self.appraise_event(event, weight=0.8)
+        self.appraise_event(event, weight=0.8, valence_bias=-0.2, arousal_bias=0.35)
 
     def on_task_complex(self):
         """복잡한 작업 감지 - 생각함"""
@@ -193,7 +209,7 @@ class MoodSystem:
             self_attribution=0.7,     # 높은 집중
             agent_benevolence=0.3,
         )
-        self.appraise_event(event, weight=0.9)
+        self.appraise_event(event, weight=0.9, valence_bias=0.25, arousal_bias=0.45)
 
     def on_item_acquired(self):
         """파일/폴더를 들었을 때 - 큰 기쁨"""
@@ -204,7 +220,7 @@ class MoodSystem:
             self_attribution=0.7,     # 높은 성취감
             agent_benevolence=0.8,    # 매우 긍정적 의도
         )
-        self.appraise_event(event, weight=2.0)
+        self.appraise_event(event, weight=2.0, valence_bias=0.2, arousal_bias=0.25)
 
     def on_item_dropped(self):
         """물건을 떨어뜨렸을 때 - 실패감"""
@@ -215,7 +231,36 @@ class MoodSystem:
             self_attribution=0.8,     # 강한 자책
             agent_benevolence=-0.3,
         )
-        self.appraise_event(event, weight=1.0)
+        self.appraise_event(event, weight=1.0, valence_bias=-0.3, arousal_bias=-0.15)
+
+    def on_ball_play(self):
+        """공을 찼을 때 - 작은 즐거움과 각성도 상승"""
+        recovery = {
+            OccEmotionToMood.DISTRESS: 0.85,
+            OccEmotionToMood.FEAR: 0.88,
+            OccEmotionToMood.ANGER: 0.9,
+            OccEmotionToMood.SHAME: 0.92,
+        }
+        for emotion, factor in recovery.items():
+            self.occ_intensities[emotion] *= factor
+
+        event = EmotionEvent(
+            goal_relevance=0.55,
+            expectedness=0.7,
+            controllability=0.8,
+            self_attribution=0.2,
+            agent_benevolence=0.5,
+        )
+        self.appraise_event(
+            event,
+            weight=0.65,
+            valence_bias=0.05,
+            arousal_bias=0.04,
+        )
+        self._emotion_hold_until = max(
+            self._emotion_hold_until,
+            time.monotonic() + 2.0,
+        )
 
     def apply_drag_displeasure(self, elapsed_seconds: float) -> None:
         """드래그 지속 시간에 비례해 불쾌감(ANGER/DISTRESS) 누적"""
@@ -235,7 +280,13 @@ class MoodSystem:
     # ========================
     # 감정 평가 및 계산
     # ========================
-    def appraise_event(self, event: EmotionEvent, weight: float = 1.0) -> None:
+    def appraise_event(
+        self,
+        event: EmotionEvent,
+        weight: float = 1.0,
+        valence_bias: float = 0.0,
+        arousal_bias: float = 0.0,
+    ) -> None:
         """EmotionEvent 평가: OCC 기반 감정 업데이트 (성격 가중치 적용)"""
         # ======== 성격 기반 가중치 조정 ========
         # 성격이 있다면 이벤트 타입에 따라 가중치 조정
@@ -277,7 +328,26 @@ class MoodSystem:
             self.occ_intensities[emotion] = max(0.0, min(1.0, self.occ_intensities[emotion]))
 
         # OCC 강도를 Russell 좌표로 변환
+        self._event_valence_bias = max(
+            -1.0,
+            min(1.0, self._event_valence_bias + valence_bias),
+        )
+        self._event_arousal_bias = max(
+            -1.0,
+            min(1.0, self._event_arousal_bias + arousal_bias),
+        )
         self._apply_occ_to_mood()
+
+        # 사건 직후에는 감정이 바로 사라지지 않도록 잠시 유지한다.
+        event_strength = abs(event.goal_relevance) * max(1.0, weight)
+        if event_strength >= 0.5:
+            hold_seconds = 4.0 + min(6.0, event_strength * 4.0)
+            if event.goal_relevance < 0:
+                hold_seconds += 2.0
+            self._emotion_hold_until = max(
+                self._emotion_hold_until,
+                time.monotonic() + hold_seconds,
+            )
 
     def _apply_occ_to_mood(self) -> None:
         """OCC 강도를 Russell 좌표(Valence × Arousal)로 변환"""
@@ -309,6 +379,7 @@ class MoodSystem:
         
         # Valence: 긍정(+) vs 부정(-) 
         self.russell.valence = (positive_occ - negative_occ)
+        self.russell.valence += self._event_valence_bias
         
         # Arousal: 강한 활성 감정(분노, 공포, 기쁨 등) vs 약한 감정(진정, 만족, 안도 등)
         high_arousal_occ = (
@@ -327,21 +398,26 @@ class MoodSystem:
         
         # 전반적 감정 강도 (모든 OCC의 평균)
         total_occ = sum(self.occ_intensities.values()) / len(self.occ_intensities)
+
+        # 감정이 약할수록 차분해지되, 고각성 감정이 있으면 그 기준을 부드럽게 줄인다.
+        calm_baseline = -0.3 * max(0.0, 1.0 - total_occ / 0.4)
+        activation = min(1.0, high_arousal_occ / 0.25)
+        self.russell.arousal = (
+            (high_arousal_occ - low_arousal_occ) * 0.8
+            + calm_baseline * (1.0 - activation)
+            + self._event_arousal_bias
+        )
         
-        # Arousal: 높은 활성 - 낮은 활성 (범위 -1 ~ 1)
-        # 추가: 전반적 감정이 약할수록 arousal이 자동으로 낮아짐
-        self.russell.arousal = (high_arousal_occ - low_arousal_occ) * 0.8
-        
-        # 무감정 상태에서 arousal을 낮춤 (깊은 진정 상태로)
-        if total_occ < 0.2:
-            self.russell.arousal = min(self.russell.arousal, -0.3)
-        elif total_occ < 0.4:
-            self.russell.arousal = min(self.russell.arousal, -0.1)
-        
-        self.russell.clamp()
+        self._clamp_russell_to_circle()
 
     def decay(self):
         """시간에 따른 감정 자연 감소"""
+        if self._manual_russell_override:
+            return
+
+        if time.monotonic() < self._emotion_hold_until:
+            return
+
         # OCC 강도 감소 (부정 감정을 더 천천히 감소)
         negative_emotions = [OccEmotionToMood.DISTRESS, OccEmotionToMood.FEAR, 
                             OccEmotionToMood.ANGER, OccEmotionToMood.SHAME]
@@ -351,24 +427,17 @@ class MoodSystem:
         
         for emotion in self.occ_intensities:
             if emotion in negative_emotions:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.82)  # 더 천천히 감소
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.95)
             elif emotion in positive_emotions:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.88)  # 더 빠르게 감소
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.94)
             else:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.85)
+                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.94)
+
+        self._event_valence_bias *= 0.92
+        self._event_arousal_bias *= 0.92
         
-        # OCC 감소에 따라 Russell 좌표 업데이트
+        # OCC가 Russell의 원천 상태이므로 여기서 좌표를 한 번만 재계산한다.
         self._apply_occ_to_mood()
-        
-        # Russell 좌표 중앙으로 수렴 (지수감쇠) - 더 천천히 수렴
-        self.russell.decay(factor=0.97)
-        
-        # Arousal이 높을 때(흥분/활동적)는 더 빠르게 진정되도록
-        # 이를 통해 시간이 지나면서 자연스럽게 "조용한 상태"로 변함
-        if self.russell.arousal > 0.3:
-            self.russell.arousal *= 0.94  # 흥분 상태 → 더 빠르게 감소
-        else:
-            self.russell.arousal *= 0.96  # 진정 상태 → 천천히 감소
 
     # ========================
     # 감정 결정 (Russell 기반)
@@ -397,7 +466,7 @@ class MoodSystem:
         intensity = max(0.0, 1.0 - min_distance / 1.8)
         
         return closest_emotion, intensity
-    
+    # 감정 최종 결정 함수
     def decide_emotion(self) -> Dict:
         """Russell 좌표 기반으로 표시할 감정 결정 (히스테리시스 적용)
         
@@ -452,6 +521,20 @@ class MoodSystem:
             "valence": self.russell.valence,
             "arousal": self.russell.arousal
         }
+
+    def set_russell_state(self, valence: float, arousal: float, dominant: Optional[str] = None) -> None:
+        """Russell 좌표를 직접 설정한다.
+
+        디버그 UI에서 감정을 직접 드래그해 조정할 때 사용한다.
+        """
+        self.russell.valence = float(valence)
+        self.russell.arousal = float(arousal)
+        self._clamp_russell_to_circle()
+        self._manual_russell_override = True
+
+    def clear_manual_russell_state(self) -> None:
+        """수동 Russell 조작을 종료하고 자동 감정 갱신을 재개한다."""
+        self._manual_russell_override = False
 
     def has_emotion_changed(self) -> Tuple[bool, str, str]:
         """감정이 변경되었는지 확인
