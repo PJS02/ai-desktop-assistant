@@ -13,6 +13,8 @@ from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
+from .personality_system import PersonalitySystem
+from .sandbox_manager import SandboxManager
 
 # Context 모듈 import
 try:
@@ -58,8 +60,10 @@ class Surface:
 class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
+    CHARACTER_WIDTH = 150
+    CHARACTER_HEIGHT = 200
     
-    def __init__(self, screen_width=None, screen_height=None):
+    def __init__(self, screen_width=None, screen_height=None, personality_preset=None):
         super().__init__()
 
         # 배경창 투명화
@@ -73,7 +77,8 @@ class CharacterWidget(QLabel):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # 기본 설정
-        self.mood_system = MoodSystem()
+        self.personality_system = PersonalitySystem(personality_preset or "Russell (기본)")
+        self.mood_system = MoodSystem(self.personality_system)  # 성격을 mood_system에 전달
         self.russell_dialog = None
         self.current_action = "idle"
         self.drag_pos = None
@@ -89,6 +94,10 @@ class CharacterWidget(QLabel):
         # 디버그 단축키: 다이얼로그 직접 열기
         self._russell_shortcut = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
         self._russell_shortcut.activated.connect(self.show_russell_dialog)
+        self._ball_shortcut = QShortcut(QKeySequence("Ctrl+Shift+B"), self)
+        self._ball_shortcut.activated.connect(self.select_ball)
+
+        self.sandbox_manager = SandboxManager(self)
         
         # 아이템 반환 타이머 (순차 배치용)
         self._release_timer = None
@@ -112,7 +121,7 @@ class CharacterWidget(QLabel):
         self.sprite_animator.animation_finished.connect(self.on_animation_finished)
         
         # 이미지 별도로 축소 대응
-        self.setFixedSize(300, 400)
+        self.setFixedSize(self.CHARACTER_WIDTH, self.CHARACTER_HEIGHT)
         self.update_render("idle")
         
         # 애니메이션 컨트롤러
@@ -155,11 +164,25 @@ class CharacterWidget(QLabel):
         # 기본 표면: 작업표시줄 위 (화면 최하단)
         # 다양한 해상도 대응을 위해 동적 계산
         
-        # 커스텀 해상도가 없으면 실제 화면 해상도 사용
-        if screen_width is None or screen_height is None:
-            screen = QApplication.primaryScreen()
-            screen_height = screen.geometry().height()
-            screen_width = screen.geometry().width()
+        # 작업표시줄을 제외한 실제 작업 영역을 기준으로 사용
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available_geometry = screen.availableGeometry()
+            available_width = available_geometry.width()
+            available_height = available_geometry.height()
+        else:
+            available_width = screen_width or 1920
+            available_height = screen_height or 1080
+
+        if screen_width is None:
+            screen_width = available_width
+        else:
+            screen_width = min(screen_width, available_width)
+
+        if screen_height is None:
+            screen_height = available_height
+        else:
+            screen_height = min(screen_height, available_height)
         
         # 커스텀 해상도 저장 (나중에 경계 확인 시 사용)
         self.custom_screen_width = screen_width
@@ -324,7 +347,8 @@ class CharacterWidget(QLabel):
             "Program Manager",
             "Magnifier", "OnScreen Keyboard",
             "NVIDIA GeForce Overlay",
-            "Windows 입력 환경"
+            "Windows 입력 환경",
+            "XBOX"
         ]
         for exact_name in system_exact_names:
             if window.title.strip() == exact_name or exact_name in window.title and len(window.title) < 50:
@@ -335,7 +359,8 @@ class CharacterWidget(QLabel):
         # 유해한 서브스트링만 필터링
         harmful_substrings = [
             "Program Manager", "Magnifier", "OnScreen Keyboard", "NVIDIA",
-            "Windows 입력", "Narrator", "Peek", "Widgets", "Cortana", "Action Center"
+            "Windows 입력", "Narrator", "Peek", "Widgets", "Cortana", "Action Center",
+            "Xbox Game Bar", "Game Bar"
         ]
         for substring in harmful_substrings:
             if substring.lower() in window.title.lower():
@@ -511,11 +536,8 @@ class CharacterWidget(QLabel):
                 if dialogue_text:
                     print(f"[대사 생성] {dialogue_text}")
                     
-                    # 감정 기반 필터 적용
-                    filtered_dialogue = self.dialogue_system._apply_emotion_filter(dialogue_text, mood_system)
-                    
                     # 신호를 통해 메인 스레드에서 대사 표시
-                    self.show_ai_response.emit(filtered_dialogue)
+                    self.show_ai_response.emit(dialogue_text)
                 else:
                     print(f"[경고] 응답에서 대사를 추출하지 못함: {response[:100]}")
             elif response:
@@ -597,33 +619,29 @@ class CharacterWidget(QLabel):
 
 
     # 행동 결정
+    def _get_emotion_animation(self, emotion):
+        """논리 감정을 실제로 존재하는 표정 애니메이션으로 변환한다."""
+        emotion_groups = {
+            "joy": "happy",
+            "delight": "happy",
+            "excitement": "happy",
+            "interest": "happy",
+            "contentment": "happy",
+            "calm": "idle",
+            "peaceful": "idle",
+            "anger": "angry",
+            "disgust": "angry",
+            "fear": "scared",
+            "anxiety": "scared",
+            "sadness": "sad",
+            "melancholy": "sad",
+            "despair": "sad",
+        }
+        return emotion_groups.get(emotion, "idle")
+
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
-        emotion = mood["emotion"]
-        intensity = mood["intensity"]
-        
-        # 17개 감정을 기존 애니메이션으로 매핑
-        # 긍정-흥분: happy
-        if emotion in ["joy", "delight", "excitement", "interest"]:
-            self.current_action = "happy"
-        # 긍정-진정: calm, peaceful
-        elif emotion in ["calm", "peaceful", "contentment"]:
-            self.current_action = "happy"  # 긍정이면 happy로 매핑
-        # 부정-흥분: anger, disgust
-        elif emotion in ["anger", "disgust"]:
-            self.current_action = "angry"
-        # 부정-흥분: fear, anxiety
-        elif emotion in ["fear", "anxiety"]:
-            self.current_action = "angry"  # fear/anxiety도 angry로 표현
-        # 부정-진정: sadness, melancholy, despair
-        elif emotion in ["sadness", "melancholy", "despair"]:
-            self.current_action = "sad"
-        # 중립
-        elif emotion == "neutral":
-            self.current_action = "idle"
-        else:
-            self.current_action = "idle"
-
+        self.current_action = self._get_emotion_animation(mood["emotion"])
         self.render()
 
     # 출력
@@ -670,9 +688,9 @@ class CharacterWidget(QLabel):
             print("pixmap: NONE!")
             return
         
-        # 일관된 크기로 스케일링 (300x400)
-        target_width = 300
-        target_height = 400
+        # 일관된 크기로 스케일링 (150x200)
+        target_width = self.CHARACTER_WIDTH
+        target_height = self.CHARACTER_HEIGHT
         scaled_pixmap = pixmap.scaledToWidth(target_width, Qt.TransformationMode.SmoothTransformation)
         # 높이도 맞춰서 조정
         if scaled_pixmap.height() != target_height:
@@ -770,16 +788,16 @@ class CharacterWidget(QLabel):
             painter = QPainter(result)
             
             # 여러 아이콘을 순차적으로 표시 (최대 3개, 겹쳐서 배치)
-            base_icon_x = 180 if not self.is_flipped else 20  # 우측 또는 좌측
-            base_icon_y = 100  # 위쪽
+            base_icon_x = 90 if not self.is_flipped else 10  # 우측 또는 좌측
+            base_icon_y = 50  # 위쪽
             
             for idx, item_path in enumerate(self.held_items[:3]):  # 최대 3개만 표시
                 if idx >= 3:
                     break
                 
                 # 각 아이콘 위치 설정 (약간 겹쳐서 배치)
-                offset_x = idx * 20
-                offset_y = idx * 15
+                offset_x = idx * 10
+                offset_y = idx * 8
                 icon_x = base_icon_x + offset_x
                 icon_y = base_icon_y + offset_y
                 
@@ -798,7 +816,7 @@ class CharacterWidget(QLabel):
                 font.setPointSize(12)
                 font.setBold(True)
                 painter.setFont(font)
-                painter.drawText(base_icon_x + 60, base_icon_y + 60, 
+                painter.drawText(base_icon_x + 30, base_icon_y + 30,
                                 f"+{len(self.held_items) - 3}")
             
             painter.end()
@@ -816,6 +834,12 @@ class CharacterWidget(QLabel):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            sandbox_response = self.sandbox_manager.use_selected_item()
+            if sandbox_response:
+                self.dialogue_system.show_dialogue(sandbox_response, duration=2500)
+                event.accept()
+                return
+
             self.mood_system.on_click()
             self.idle_counter = 0  # 상호작용 카운터 리셋
             self.drag_pos = event.globalPosition().toPoint()
@@ -920,6 +944,8 @@ class CharacterWidget(QLabel):
     def _show_context_menu(self, global_pos, include_dialogue: bool = False):
         print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
         menu = QMenu(self)
+        ball_action = menu.addAction("공 꺼내기")
+        ball_action.triggered.connect(self.select_ball)
         show_action = menu.addAction("캐릭터 감정 확인")
         show_action.triggered.connect(self.show_russell_dialog)
         if include_dialogue:
@@ -927,6 +953,12 @@ class CharacterWidget(QLabel):
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
         self._context_menu = menu
         menu.popup(global_pos)
+
+    def select_ball(self):
+        """Select the sandbox ball for the next character click."""
+        message = self.sandbox_manager.select_ball()
+        if message:
+            self.dialogue_system.show_dialogue(message, duration=3000)
     
     #  <캐릭터 감정 확인 버튼 누를 시 >
     def show_russell_dialog(self):
@@ -934,6 +966,10 @@ class CharacterWidget(QLabel):
         print("[show_russell_dialog] called")
         if self.russell_dialog is None:
             self.russell_dialog = RussellEmotionDialog(self)
+            if hasattr(self.mood_system, "clear_manual_russell_state"):
+                self.russell_dialog.closed.connect(
+                    self.mood_system.clear_manual_russell_state
+                )
 
         def state_provider():
             if hasattr(self.mood_system, "get_russell_state"):
@@ -953,7 +989,23 @@ class CharacterWidget(QLabel):
 
             return state["valence"], state["arousal"], dominant
 
+        def apply_manual_state(valence: float, arousal: float, dominant: str):
+            if hasattr(self.mood_system, "set_russell_state"):
+                self.mood_system.set_russell_state(valence, arousal, dominant)
+            elif hasattr(self.mood_system, "russell"):
+                self.mood_system.russell.valence = max(-1.0, min(1.0, float(valence)))
+                self.mood_system.russell.arousal = max(-1.0, min(1.0, float(arousal)))
+
+            mood = self.mood_system.decide_emotion()
+            self.update_action(mood)
+
+            print(
+                f"[Russell 수동 조작] Valence={valence:+.2f}, Arousal={arousal:+.2f}, Emotion={dominant}"
+            )
+
         self.russell_dialog.set_state_provider(state_provider)
+        self.russell_dialog.set_state_change_callback(apply_manual_state)
+        self.russell_dialog.set_live_mode()
         valence, arousal, dominant = state_provider()
         self.russell_dialog.update_state(valence, arousal, dominant)
         self.russell_dialog.start_auto_refresh()
@@ -1151,8 +1203,8 @@ class CharacterWidget(QLabel):
         # 지금은 현재 감정 상태로 표시
         mood = self.mood_system.decide_emotion()
         emotion = mood["emotion"]
-        self.current_action = emotion
-        self.update_render(emotion)
+        self.current_action = self._get_emotion_animation(emotion)
+        self.update_render(self.current_action)
         
         # 점프 직후 화면 업데이트 (다음 _apply_gravity 호출까지 기다리지 않음)
         self.move(self.x(), self.y() - 5)  # 즉시 5px 위로 이동
@@ -1171,29 +1223,6 @@ class CharacterWidget(QLabel):
         painter = QPainter(self)
         
         # 1. 빨간색 collision box 그리기
-        red_pen = QPen(QColor(255, 0, 0), 3)  # 빨강, 두께 3px
-        rect = self.rect()  # 위젯 기준 좌표 (0, 0)에서 width×height
-        painter.setPen(red_pen)
-        painter.drawRect(rect)
-        
-        # 2. 초록색 ground indicator 그리기 (지면에 닿아있을 때만)
-        if self.on_ground and self.current_surface:
-            green_pen = QPen(QColor(0, 255, 0), 3)  # 초록, 두께 3px
-            green_brush = QBrush(QColor(0, 255, 0, 100))  # 반투명 초록
-            
-            # 지면을 나타내는 수평선 (캐릭터 밑 10px 높이의 사각형)
-            ground_rect = QRect(0, self.height() - 10, self.width(), 10)
-            
-            painter.setPen(green_pen)
-            painter.setBrush(green_brush)
-            painter.drawRect(ground_rect)
-        
-        # 3. 점프 중일 때 상태 표시
-        if self.is_jumping:
-            blue_pen = QPen(QColor(0, 150, 255), 2)
-            painter.setPen(blue_pen)
-            painter.drawEllipse(self.width() // 2 - 20, 10, 40, 40)
-        
         # 4. 스크린 좌표 기반 디버그 정보 표시
         # 절대 위치를 스크린 좌표로 표시
         screen_pos = self.mapToGlobal(self.rect().topLeft())
@@ -1270,6 +1299,8 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
+        if getattr(self, "_ball_session_active", False):
+            return
         
         # Long idle 감지 (30초 이상 상호작용 없음) → on_long_idle 트리거
         if self.idle_counter > 30 and self.idle_counter % 30 == 0:
@@ -1305,6 +1336,12 @@ class CharacterWidget(QLabel):
             dy = 0  # 수직 이동 없음 (중력만 작용)
         elif emotion == "angry":
             dx = random.randint(-50, 50)
+            dy = 0
+        elif emotion == "scared":
+            dx = random.randint(-70, 70)
+            dy = 0
+        elif emotion == "sad":
+            dx = random.randint(-40, 40)
             dy = 0
         elif emotion == "bored":
             dx = random.randint(-30, 30)
@@ -1368,13 +1405,74 @@ class CharacterWidget(QLabel):
         self.animation_controller.idle.stop()
         # 이동 타이머 간격 증가 (20 → 50ms) //너무 빨리 움직이더라
         self._move_timer.start(50)
+
+    def move_toward_ball(self, ball_x: int) -> None:
+        """Move toward the ball at a speed shaped by the current emotion."""
+        if self.is_dragging or self.is_jumping:
+            return
+
+        self._ball_chasing = True
+        target_x = ball_x - self.width() // 2
+        screen_width, _ = self._get_screen_dimensions()
+        target_x = max(0, min(target_x, screen_width - self.width()))
+        delta_x = target_x - self.x()
+        if abs(delta_x) < 4:
+            return
+
+        emotion_info = self.mood_system.decide_emotion()
+        emotion = emotion_info.get("emotion", "neutral")
+        intensity = max(0.0, min(1.0, emotion_info.get("intensity", 0.0)))
+        base_speed = {
+            "neutral": 4.0,
+            "calm": 3.0,
+            "peaceful": 2.5,
+            "contentment": 3.5,
+            "sadness": 2.5,
+            "melancholy": 2.0,
+            "despair": 1.5,
+            "anxiety": 6.0,
+            "fear": 7.0,
+            "interest": 8.0,
+            "joy": 10.0,
+            "delight": 9.0,
+            "excitement": 12.0,
+            "anger": 10.0,
+            "disgust": 8.0,
+        }.get(emotion, 4.0)
+        chase_speed = base_speed * (0.7 + intensity * 0.3)
+        step = max(-chase_speed, min(chase_speed, delta_x))
+        self.is_flipped = step > 0
+        self.move(int(self.x() + step), self.y())
+        self.animation_controller.update_base_pos(self.pos())
+
+        walk_animation = self._get_walk_animation(emotion)
+        if self.current_action != walk_animation:
+            self.current_action = walk_animation
+            self.sprite_animator.play(walk_animation, fps=24, loop=True)
     
     def _get_walk_animation(self, emotion):
         """
         기분에 맞는 walk 애니메이션 폴더명 반환
-        walk_happy/, walk_angry/ 등이 생기면 자동으로 사용되고, 없으면 기존 walk/ 폴더 사용하게 할겅ㅇ
+        현재 17개 감정은 기존 4개 감정별 걷기 에셋으로 매핑한다.
         """
-        emotion_walk = f"walk_{emotion}"
+        emotion_groups = {
+            "joy": "happy",
+            "delight": "happy",
+            "excitement": "happy",
+            "interest": "happy",
+            "contentment": "happy",
+            "calm": "happy",
+            "peaceful": "happy",
+            "anger": "angry",
+            "disgust": "angry",
+            "fear": "scared",
+            "anxiety": "scared",
+            "sadness": "sad",
+            "melancholy": "sad",
+            "despair": "sad",
+        }
+        animation_emotion = emotion_groups.get(emotion)
+        emotion_walk = f"walk_{animation_emotion}" if animation_emotion else "walk"
         emotion_walk_path = self.assets_path / emotion_walk
         
         if emotion_walk_path.exists() and emotion_walk_path.is_dir():
@@ -1412,8 +1510,8 @@ class CharacterWidget(QLabel):
         #     if fall_path.exists():
         #         return "fall"
         
-        # 임시: 현재 감정 상태 유지
-        return emotion
+        # 임시: 현재 감정 상태를 실제 표정 애니메이션으로 표시
+        return self._get_emotion_animation(emotion)
     
     def _smooth_moving(self):
         """슬라이딩 이동 애니메이션"""
@@ -1425,18 +1523,7 @@ class CharacterWidget(QLabel):
             self.sprite_animator.stop()
             
             mood = self.mood_system.decide_emotion()
-            emotion = mood["emotion"]
-            
-            if emotion == "happy":
-                self.current_action = "happy"
-            elif emotion == "angry":
-                self.current_action = "angry"
-            elif emotion == "bored":
-                self.current_action = "idle"  #*****임시********
-            else:
-                self.current_action = "idle"
-            
-            self.update_render(self.current_action)
+            self.update_action(mood)
             
             self.animation_controller.update_base_pos(self.pos())
             self.animation_controller.start_idle()
@@ -1504,18 +1591,7 @@ class CharacterWidget(QLabel):
                 # 착지 후 현재 감정 상태로 복구 (이동 중이 아닐 때만)
                 if not self.is_moving:
                     mood = self.mood_system.decide_emotion()
-                    emotion = mood["emotion"]
-                    
-                    if emotion == "happy":
-                        self.current_action = "happy"
-                    elif emotion == "angry":
-                        self.current_action = "angry"
-                    elif emotion == "bored":
-                        self.current_action = "idle"
-                    else:
-                        self.current_action = "idle"
-                    
-                    self.update_render(self.current_action)
+                    self.update_action(mood)
                 
                 # 말풍선 위치 업데이트 (착지 후에도)
                 self.dialogue_system.update_dialogue_position()
