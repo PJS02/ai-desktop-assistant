@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
-from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence
+from PyQt6.QtGui import QActionGroup, QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence
 from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
@@ -17,6 +17,7 @@ from .mood_system import MoodSystem
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
+from .tts_service import available_voices
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
@@ -339,6 +340,7 @@ class CharacterWidget(QLabel):
         self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
 
     def closeEvent(self, event):
+        self.dialogue_system.tts.close()
         if self.rps_game is not None:
             self.rps_game.close()
         # 수신 스레드와 8765 포트를 먼저 정리해야 앱을 바로 다시 실행할 수 있다.
@@ -1053,6 +1055,27 @@ class CharacterWidget(QLabel):
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
+        tts_action = menu.addAction("AI 답변 음성으로 읽기")
+        tts_action.setCheckable(True)
+        tts_action.setChecked(self.dialogue_system.tts.enabled)
+        tts_action.toggled.connect(self.dialogue_system.tts.set_enabled)
+        voice_menu = menu.addMenu("목소리 선택")
+        voices = available_voices()
+        if voices:
+            voice_group = QActionGroup(voice_menu)
+            voice_group.setExclusive(True)
+            selected_id = self.dialogue_system.tts.voice_id
+            for voice in voices:
+                voice_action = voice_menu.addAction(voice.name)
+                voice_action.setCheckable(True)
+                voice_action.setChecked(voice.id == selected_id)
+                voice_action.triggered.connect(
+                    lambda checked, voice_id=voice.id: self.dialogue_system.tts.set_voice(voice_id)
+                )
+                voice_group.addAction(voice_action)
+        else:
+            no_voice_action = voice_menu.addAction("사용 가능한 목소리가 없습니다")
+            no_voice_action.setEnabled(False)
         console_action = menu.addAction("사용자인식 콘솔")
         console_action.triggered.connect(self.show_perception_console)
         log_action = menu.addAction("로그창 보기")

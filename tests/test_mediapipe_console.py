@@ -108,6 +108,7 @@ def test_recognition_mode_and_tools_are_saved_together():
     app.mirror_var = Mock(**{"get.return_value": True})
     app.info_overlay_var = Mock(**{"get.return_value": False})
     app.emotion_var = Mock(**{"get.return_value": True})
+    app.emotion_model_var = Mock(**{"get.return_value": "EmotiEffNet B2"})
     app.always_recognition_var = Mock(**{"get.return_value": True})
     app.save_device_settings_safely = Mock()
 
@@ -120,9 +121,67 @@ def test_recognition_mode_and_tools_are_saved_together():
         "mirror": True,
         "info_overlay": False,
         "emotion": True,
+        "emotion_model": "emotieff_b2",
         "always_recognition": True,
     }
     app.save_device_settings_safely.assert_called_once_with()
+
+
+def test_emotion_model_selection_loads_both_models_and_saves_choice(monkeypatch):
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.emotion_model_var = Mock()
+    app.status_var = Mock()
+    app.save_recognition_settings = Mock()
+    old_model = Mock()
+    new_model = Mock()
+    monkeypatch.setattr("app.holistic_gui_app.EmotionRecognizer", Mock(return_value=old_model))
+    monkeypatch.setattr("app.holistic_gui_app.EmotiEffNetB2Recognizer", Mock(return_value=new_model))
+
+    app.emotion_model_var.get.return_value = "EmotiEffNet B2"
+    app.change_emotion_model(None)
+    assert app.emotion_recognizer is new_model
+    assert app.loaded_emotion_model_key == "emotieff_b2"
+
+    app.emotion_model_var.get.return_value = "MobileNetV3 (기존)"
+    app.change_emotion_model(None)
+    assert app.emotion_recognizer is old_model
+    assert app.loaded_emotion_model_key == "mobilenet_v3"
+    assert app.save_recognition_settings.call_count == 2
+
+
+def test_failed_emotion_model_change_keeps_previous_model(monkeypatch):
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.emotion_model_var = Mock()
+    app.emotion_model_var.get.return_value = "EmotiEffNet B2"
+    app.status_var = Mock()
+    app.emotion_recognizer = Mock()
+    app.loaded_emotion_model_label = "MobileNetV3 (기존)"
+    app.loaded_emotion_model_key = "mobilenet_v3"
+    monkeypatch.setattr(
+        "app.holistic_gui_app.EmotiEffNetB2Recognizer",
+        Mock(side_effect=FileNotFoundError("model weights")),
+    )
+
+    previous_model = app.emotion_recognizer
+    app.load_emotion_model()
+
+    assert app.emotion_recognizer is previous_model
+    assert app.loaded_emotion_model_key == "mobilenet_v3"
+    app.emotion_model_var.set.assert_called_once_with("MobileNetV3 (기존)")
+
+
+def test_b2_keeps_its_top_class_while_legacy_model_uses_neutral_correction():
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    scores = {"Happiness": 0.42, "Neutral": 0.37, "Sadness": 0.21}
+
+    app.loaded_emotion_model_key = "emotieff_b2"
+    assert app.get_emotion_display_label(scores) == "Happiness"
+    assert app.get_emotion_display_label({"Happiness": 0.54, "Sadness": 0.45}) == "Happiness"
+    assert app.get_emotion_display_label({"Neutral": 0.37, "Happiness": 0.22}) == "Neutral"
+
+    app.loaded_emotion_model_key = "mobilenet_v3"
+    assert app.get_emotion_display_label(scores) == "Neutral"
+    assert app.get_emotion_display_label({"Happiness": 0.54, "Sadness": 0.45}) == "Neutral"
 
 
 def test_game_commands_restore_previous_mode_without_saving_override():

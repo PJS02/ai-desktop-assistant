@@ -3,5 +3,6 @@ numpy==2.2.6
 opencv-python==4.13.0.92
 pillow==12.1.1
 torch==2.5.1
+emotiefflib[torch]==1.1.1
 sounddevice>=0.5.1
 SpeechRecognition>=3.10.4

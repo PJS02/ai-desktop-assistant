@@ -1,6 +1,7 @@
 # 캐릭터 대화 시스템
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject, QThread
 from .dialogue_widget import DialogueBubble, DialogueNarrationBox, DialogueInputWidget
+from .tts_service import SupertonicTTS
 from typing import Optional, List
 import threading
 import json
@@ -23,6 +24,7 @@ class DialogueSystem(QObject):
         self.current_dialogue: Optional[DialogueBubble] = None
         self.current_narration: Optional[DialogueNarrationBox] = None
         self.current_input_widget: Optional[DialogueInputWidget] = None
+        self.tts = SupertonicTTS()
         
         # 대화 큐
         self.dialogue_queue: List[dict] = []
@@ -308,6 +310,7 @@ class DialogueSystem(QObject):
     def show_ai_response(self, response_text: str):
         """AI 응답 표시"""
         self.show_dialogue(response_text, duration=5000)
+        self.tts.speak(response_text)
     
     def open_input_dialog(self):
         """대화 입력 창 열기"""

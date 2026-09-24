@@ -25,6 +25,7 @@ from app.project_version import __version__
 from bridge.interaction_event_client import InteractionEventClient
 from recognition import holistic_tracker as core
 from recognition.emotion_recognizer import EmotionRecognizer
+from recognition.emotieff_recognizer import EmotiEffNetB2Recognizer
 from recognition.stt_engine import (
     LANGUAGE_OPTIONS,
     PROVIDER_OPTIONS,
@@ -38,6 +39,11 @@ DISPLAY_WIDTH = 960
 DISPLAY_HEIGHT = 540
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EMOTION_MODEL_PATH = PROJECT_ROOT / "models" / "epoch72_best_acc_0.8664.pth"
+EMOTIEFF_MODEL_PATH = PROJECT_ROOT / "models" / "enet_b2_8.pt"
+EMOTION_MODEL_OPTIONS = {
+    "EmotiEffNet B2": "emotieff_b2",
+    "MobileNetV3 (기존)": "mobilenet_v3",
+}
 EMOTION_INFERENCE_INTERVAL_MS = 150
 EMOTION_NEUTRAL_CONFIDENCE_THRESHOLD = 0.50
 EMOTION_NEUTRAL_MARGIN_THRESHOLD = 0.15
@@ -191,6 +197,11 @@ class HolisticGuiApp:
         self.emotion_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "emotion", background_mode)
         )
+        saved_emotion_model = saved_recognition.get("emotion_model", "emotieff_b2")
+        self.emotion_model_var = tk.StringVar(value=next(
+            (label for label, key in EMOTION_MODEL_OPTIONS.items() if key == saved_emotion_model),
+            next(iter(EMOTION_MODEL_OPTIONS)),
+        ))
         self.always_recognition_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "always_recognition", True)
         )
@@ -475,6 +486,14 @@ class HolisticGuiApp:
         self.make_toggle(toggle_frame, LABEL_MIRROR, self.mirror_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_INFO_OVERLAY, self.info_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_EMOTION, self.emotion_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.emotion_model_menu = tk.OptionMenu(
+            toggle_frame,
+            self.emotion_model_var,
+            *EMOTION_MODEL_OPTIONS,
+            command=self.change_emotion_model,
+        )
+        self.style_option_menu(self.emotion_model_menu)
+        self.emotion_model_menu.pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_ALWAYS_RECOGNITION, self.always_recognition_var, self.save_recognition_settings).pack(fill="x")
 
         self.add_section_label(control_panel, LABEL_STT)
@@ -920,11 +939,26 @@ class HolisticGuiApp:
         self.stt_status_var.set(f"STT \uc800\uc7a5 \uc644\ub8cc: {Path(path).name}")
 
     def load_emotion_model(self):
+        model_key = EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()]
         try:
-            self.emotion_recognizer = EmotionRecognizer(EMOTION_MODEL_PATH)
+            if model_key == "emotieff_b2":
+                recognizer = EmotiEffNetB2Recognizer(EMOTIEFF_MODEL_PATH)
+            else:
+                recognizer = EmotionRecognizer(EMOTION_MODEL_PATH)
         except Exception as exc:
-            self.emotion_recognizer = None
+            previous_label = getattr(self, "loaded_emotion_model_label", None)
+            if previous_label is not None:
+                self.emotion_model_var.set(previous_label)
             self.status_var.set(f"\uac10\uc815 \ubaa8\ub378 \ub85c\ub4dc \uc2e4\ud328: {exc}")
+            return
+        self.emotion_recognizer = recognizer
+        self.loaded_emotion_model_label = self.emotion_model_var.get()
+        self.loaded_emotion_model_key = model_key
+
+    def change_emotion_model(self, _selection):
+        self.load_emotion_model()
+        self.emotion_result = None
+        self.save_recognition_settings()
 
     def start_selected_camera(self):
         if not self.camera_candidates:
@@ -1013,6 +1047,7 @@ class HolisticGuiApp:
             "mirror": bool(self.mirror_var.get()),
             "info_overlay": bool(self.info_overlay_var.get()),
             "emotion": bool(self.emotion_var.get()),
+            "emotion_model": EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()],
             "always_recognition": bool(self.always_recognition_var.get()),
         }
         self.save_device_settings_safely()
@@ -1367,6 +1402,9 @@ class HolisticGuiApp:
             return "Neutral"
 
         top_label, top_score = ranked_scores[0]
+        if getattr(self, "loaded_emotion_model_key", None) == "emotieff_b2":
+            return top_label
+
         second_score = ranked_scores[1][1] if len(ranked_scores) > 1 else 0.0
         if top_score < EMOTION_NEUTRAL_CONFIDENCE_THRESHOLD:
             return "Neutral"
