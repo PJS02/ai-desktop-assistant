@@ -7,7 +7,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, pyqtSignal
-from PyQt6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
+from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 
 _VOICE_IDS = tuple(f"F{index}" for index in range(1, 6)) + tuple(
@@ -49,6 +49,7 @@ class SupertonicTTS(QObject):
     """최신 AI 답변만 재생하고 합성 중에도 Qt 화면을 계속 반응하게 한다."""
 
     audio_ready = pyqtSignal(int, bytes, int)  # 요청 번호, 16비트 PCM, 샘플레이트
+    speaking_changed = pyqtSignal(bool)  # 실제 오디오 재생 상태 (합성 대기 제외)
 
     def __init__(self, settings=None, model_factory=None):
         super().__init__()
@@ -63,6 +64,7 @@ class SupertonicTTS(QObject):
         self._closed = False
         self._audio_sink: QAudioSink | None = None
         self._audio_buffer: QBuffer | None = None
+        self._speaking = False
         self.audio_ready.connect(self._play_audio)
 
     @property
@@ -160,6 +162,8 @@ class SupertonicTTS(QObject):
         if self._closed or not self._enabled or generation != self._generation:
             return
         self._stop_playback()
+        if not pcm:
+            return
         audio_format = QAudioFormat()
         audio_format.setSampleRate(sample_rate)
         audio_format.setChannelCount(1)
@@ -172,15 +176,46 @@ class SupertonicTTS(QObject):
         self._audio_buffer = QBuffer(self)
         self._audio_buffer.setData(QByteArray(pcm))
         self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
-        self._audio_sink = QAudioSink(device, audio_format, self)
-        self._audio_sink.start(self._audio_buffer)
+        sink = QAudioSink(device, audio_format, self)
+        self._audio_sink = sink
+        sink.stateChanged.connect(
+            lambda state: self._audio_state_changed(generation, sink, state)
+        )
+        try:
+            sink.start(self._audio_buffer)
+            # 일부 출력 장치는 start 안에서 이미 상태를 바꾼다. 현재 상태도
+            # 확인하되, 중복 신호는 _set_speaking에서 제외한다.
+            self._audio_state_changed(generation, sink, sink.state())
+        except Exception as exc:
+            self._stop_playback()
+            print(f"[TTS] 오디오 재생을 시작하지 못했습니다: {exc}")
+
+    def _audio_state_changed(self, generation: int, sink: QAudioSink, state) -> None:
+        # 취소된 요청이나 교체/삭제된 출력 장치의 지연 콜백은 새 발화를
+        # 켜거나 끄지 못한다. 합성/텍스트 요청만으로는 True를 내보내지 않는다.
+        if generation != self._generation or sink is not self._audio_sink:
+            return
+        self._set_speaking(
+            not self._closed
+            and self._enabled
+            and state == QAudio.State.ActiveState
+            and sink.error() == QAudio.Error.NoError
+        )
+
+    def _set_speaking(self, speaking: bool) -> None:
+        speaking = bool(speaking)
+        if speaking != self._speaking:
+            self._speaking = speaking
+            self.speaking_changed.emit(speaking)
 
     def _stop_playback(self) -> None:
-        if self._audio_sink is not None:
-            self._audio_sink.stop()
-            self._audio_sink.deleteLater()
-            self._audio_sink = None
-        if self._audio_buffer is not None:
-            self._audio_buffer.close()
-            self._audio_buffer.deleteLater()
-            self._audio_buffer = None
+        # 참조를 먼저 해제해 stop 중 발생하는 옛 stateChanged도 무시한다.
+        sink, self._audio_sink = self._audio_sink, None
+        buffer, self._audio_buffer = self._audio_buffer, None
+        self._set_speaking(False)
+        if sink is not None:
+            sink.stop()
+            sink.deleteLater()
+        if buffer is not None:
+            buffer.close()
+            buffer.deleteLater()
