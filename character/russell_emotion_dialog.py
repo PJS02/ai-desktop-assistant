@@ -4,18 +4,20 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QProgressBar,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QToolTip,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics, QPainterPath
 from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
 
 
@@ -302,6 +304,80 @@ class RussellEmotionCanvas(QWidget):
         super().leaveEvent(event)
 
 
+class RussellHistoryCanvas(QWidget):
+    """Russell 정서가와 각성도의 최근 변화를 주식 차트처럼 표시한다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.samples = []
+        self.max_samples = 180
+        self.setMinimumHeight(210)
+
+    def add_sample(self, valence: float, arousal: float) -> None:
+        self.samples.append((float(valence), float(arousal)))
+        if len(self.samples) > self.max_samples:
+            self.samples = self.samples[-self.max_samples:]
+        self.update()
+
+    def _plot_rect(self):
+        return self.rect().adjusted(42, 18, -14, -30)
+
+    @staticmethod
+    def _y_for_value(value: float, rect) -> float:
+        return rect.bottom() - ((value + 1.0) / 2.0) * rect.height()
+
+    def _draw_series(self, painter: QPainter, values, color: QColor, rect) -> None:
+        if len(values) < 2:
+            return
+        path = QPainterPath()
+        for index, value in enumerate(values):
+            x = rect.left() + index * rect.width() / max(1, self.max_samples - 1)
+            y = self._y_for_value(value, rect)
+            if index == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        painter.setPen(QPen(color, 2))
+        painter.drawPath(path)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(248, 250, 252))
+        rect = self._plot_rect()
+
+        painter.setFont(QFont("Malgun Gothic", 8))
+        painter.setPen(QPen(QColor(205, 211, 218), 1))
+        for value in (-1.0, -0.5, 0.0, 0.5, 1.0):
+            y = self._y_for_value(value, rect)
+            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+            painter.setPen(QColor(100, 108, 118))
+            painter.drawText(4, int(y + 4), f"{value:+.1f}")
+            painter.setPen(QPen(QColor(205, 211, 218), 1))
+
+        painter.setPen(QPen(QColor(150, 158, 168), 1))
+        painter.drawRect(rect)
+        painter.setPen(QColor(80, 88, 98))
+        painter.drawText(rect.left(), self.height() - 8, "과거")
+        painter.drawText(rect.right() - 22, self.height() - 8, "현재")
+
+        if self.samples:
+            self._draw_series(
+                painter,
+                [sample[0] for sample in self.samples],
+                QColor(30, 125, 215),
+                rect,
+            )
+            self._draw_series(
+                painter,
+                [sample[1] for sample in self.samples],
+                QColor(225, 118, 45),
+                rect,
+            )
+
+        painter.end()
+
+
 class RussellEmotionDialog(QDialog):
     closed = pyqtSignal()
     EMOTION_NAMES = {
@@ -360,12 +436,23 @@ class RussellEmotionDialog(QDialog):
         self.description_label.setStyleSheet(f"color: rgb({description_color.red()}, {description_color.green()}, {description_color.blue()});")
 
         self.canvas = RussellEmotionCanvas(self)
+        self.history_canvas = RussellHistoryCanvas(self)
         self.canvas.state_changed.connect(self._on_canvas_state_changed)
 
         left_layout = QVBoxLayout()
         left_layout.addWidget(self.value_label)
         left_layout.addWidget(self.canvas, 1)
         left_layout.addWidget(self.description_label)
+
+        self.chart_title = QLabel("최근 감정 흐름 · 약 45초")
+        self.chart_title.setFont(description_font)
+        self.chart_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.chart_legend = QLabel("● 정서가(Valence)    ● 각성도(Arousal)")
+        self.chart_legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.chart_legend.setStyleSheet("color: rgb(75, 84, 95);")
+        left_layout.addWidget(self.chart_title)
+        left_layout.addWidget(self.chart_legend)
+        left_layout.addWidget(self.history_canvas)
 
         left_panel = QWidget()
         left_panel.setLayout(left_layout)
@@ -445,13 +532,21 @@ class RussellEmotionDialog(QDialog):
         content_layout.addWidget(left_panel, 5)
         content_layout.addWidget(right_panel, 7)
 
+        content_panel = QWidget()
+        content_panel.setLayout(content_layout)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(content_panel)
+
         layout = QVBoxLayout()
         layout.addWidget(self.title_label)
         layout.addWidget(self.subtitle_label)
-        layout.addLayout(content_layout, 1)
+        layout.addWidget(self.content_scroll, 1)
         self.setLayout(layout)
         self.setMinimumSize(980, 700)
-        self.resize(1040, 740)
+        self.resize(1040, min(900, max(700, self.screen().availableGeometry().height() - 80)))
         self.setStyleSheet("""
             QDialog { background: #f6f8fb; color: #202124; }
             QLabel#title { color: #202124; padding-left: 6px; }
@@ -487,6 +582,7 @@ class RussellEmotionDialog(QDialog):
 
     def update_state(self, valence: float, arousal: float, dominant: str, intensity: float = 0.0) -> None:
         self.canvas.set_state(valence, arousal, dominant)
+        self.history_canvas.add_sample(valence, arousal)
         emotion_name = self.EMOTION_NAMES.get(dominant, dominant)
         self.value_label.setText(
             f"현재 감정: {emotion_name} {intensity * 100:.0f}%  ·  "
@@ -582,6 +678,16 @@ class RussellEmotionDialog(QDialog):
             bar.setFormat(f"{value * 100:.0f}%")
 
     def _refresh_from_provider(self):
+        if self._explanation_provider is not None:
+            try:
+                snapshot = self._explanation_provider()
+            except Exception as exc:
+                print(f"[RussellEmotionDialog] 설명 데이터 갱신 실패: {exc}")
+            else:
+                # The explanation already contains coordinates and intensity.
+                # Record one graph sample per refresh, preserving the 45s span.
+                self.update_explanation(snapshot)
+                return
         if self._state_provider is None:
             return
         try:
@@ -589,13 +695,6 @@ class RussellEmotionDialog(QDialog):
         except Exception:
             valence, arousal, dominant = 0.0, 0.0, "neutral"
         self.update_state(valence, arousal, dominant)
-        if self._explanation_provider is not None:
-            try:
-                snapshot = self._explanation_provider()
-            except Exception as exc:
-                print(f"[RussellEmotionDialog] 설명 데이터 갱신 실패: {exc}")
-            else:
-                self.update_explanation(snapshot)
 
     def start_auto_refresh(self, interval_ms: int = 250) -> None:
         if not self._refresh_timer.isActive():

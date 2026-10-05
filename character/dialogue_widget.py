@@ -29,6 +29,7 @@ class DialogueBubble(QWidget):
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         
         # 색상 및 스타일
         self.bubble_color = QColor(50, 50, 60)  # 어두운 회색

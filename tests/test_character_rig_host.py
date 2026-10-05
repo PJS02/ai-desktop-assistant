@@ -1,6 +1,7 @@
 """Exercise real host state methods with a windowless physics harness."""
 from pathlib import Path
 from types import SimpleNamespace
+import time
 
 import pytest
 from PyQt6.QtCore import QPoint, QRect
@@ -29,6 +30,12 @@ class Mood:
     def decay(self):
         pass
 
+    def update_idle_pressure(self, seconds):
+        self.idle_seconds = seconds
+
+    def advance_emotion(self, seconds):
+        self.advance_seconds = seconds
+
     def has_emotion_changed(self):
         return False, self.emotion, self.emotion
 
@@ -48,13 +55,18 @@ class LegacyAnimator:
 
 
 class HostHarness:
+    EMOTION_RESPONSE_PROFILES = CharacterWidget.EMOTION_RESPONSE_PROFILES
+    _get_emotion_response_profile = classmethod(CharacterWidget._get_emotion_response_profile.__func__)
+    _animation_for_emotion = staticmethod(CharacterWidget._animation_for_emotion)
     # Bind actual production transitions, while substituting only drawing/UI.
     for _name in ("update_action", "update_mood", "_play_rig_action",
                   "_set_rig_direction", "_rig_landed", "on_animation_finished",
                   "_get_walk_animation", "_get_falling_action", "_get_emotion_animation",
                   "_apply_gravity", "random_move", "move_toward_ball", "_smooth_moving",
                   "mouseReleaseEvent", "_queue_sprite_fallback", "_use_sprite_renderer",
-                  "_on_speaking_changed", "_shutdown_character_renderer", "jump"):
+                  "_on_speaking_changed", "_shutdown_character_renderer", "jump",
+                  "get_character_idle_time", "_mark_character_interaction",
+                  "_maybe_run_autonomous_event", "advance_emotion"):
         locals()[_name] = getattr(CharacterWidget, _name)
 
     def __init__(self, native=True):
@@ -76,6 +88,11 @@ class HostHarness:
         self.assets_path = Path("unused-test-assets")
         self.mood_system = Mood()
         self.idle_counter = 1
+        self._last_character_interaction_time = time.monotonic()
+        self._last_autonomous_event_time = time.monotonic()
+        self._autonomous_event_cooldown = 60
+        self._cursor_over_character = False
+        self._last_pet_time = float('-inf')
         self._move_timer = Timer()
         self._remaining_steps = 0
         self.animation_controller = SimpleNamespace(
@@ -270,6 +287,7 @@ def test_runtime_fallback_releases_native_resources_and_preserves_activity(activ
 def test_closing_ignores_queued_fallback_and_late_audio():
     host = HostHarness()
     host.timer = Timer()
+    host.emotion_timer = Timer()
     host._gravity_timer = Timer()
     host._shutdown_character_renderer()
     host._shutdown_character_renderer()
@@ -279,6 +297,38 @@ def test_closing_ignores_queued_fallback_and_late_audio():
     assert host.rig_view.releases == 1
     assert not host._rig_fallback_pending and not host.rig_view.speaking
     assert host.timer.stopped and host._gravity_timer.stopped and host._move_timer.stopped
+    assert host.emotion_timer.stopped
+
+
+@pytest.mark.parametrize("native", [True, False])
+@pytest.mark.parametrize("interaction", ["cursor", "pet"])
+def test_interacting_prevents_jump_without_changing_position_or_animation(native, interaction):
+    host = HostHarness(native)
+    host._cursor_over_character = interaction == "cursor"
+    host._last_pet_time = time.monotonic() if interaction == "pet" else float('-inf')
+    original = (host.x(), host.y(), host.velocity_y, host.current_action, host.on_ground)
+    host.jump()
+    assert (host.x(), host.y(), host.velocity_y, host.current_action, host.on_ground) == original
+    assert host.sprite_animator.current_action == "idle"
+
+
+def test_smooth_emotion_refresh_keeps_wave_while_updating_face():
+    host = HostHarness()
+    host._play_rig_action("wave")
+    host.mood_system.emotion = "sadness"
+    host.advance_emotion()
+    assert host.rig_view.actions == [("wave", False)]
+    assert host.sprite_animator.current_emotion == "sad"
+    assert host.mood_system.advance_seconds == .1
+
+
+def test_emotion_refresh_during_jump_does_not_replace_jump_pose():
+    host = HostHarness()
+    host.jump()
+    host.mood_system.emotion = "anger"
+    host.advance_emotion()
+    assert host.rig_view.actions == [("jump", True)]
+    assert host.sprite_animator.current_emotion == "angry"
 
 
 def test_keyboard_context_menu_anchors_to_character_and_mouse_menu_is_not_duplicated():
