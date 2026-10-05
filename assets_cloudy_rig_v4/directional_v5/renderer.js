@@ -65,7 +65,9 @@ class Renderer{
      await new Promise(resolve=>setTimeout(resolve,150*(attempt+1)));
     }
    }
-   this.images[name]=im;const gl=this.gl,tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);this.textures[name]=tex;
+   this.images[name]=im;const gl=this.gl,tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
+   if(part.drawnTearFrame){gl.generateMipmap(gl.TEXTURE_2D);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);}
+   this.textures[name]=tex;
   }));
   const emotionSprites=root.CloudyEmotionFX?root.CloudyEmotionFX.createSprites(this.images,this.parts):{};
   for(const [name,im] of Object.entries(emotionSprites)){
@@ -77,11 +79,32 @@ class Renderer{
    this.parts[name]={bbox:[0,0,128,128]};const gl=this.gl,tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);this.textures[name]=tex;
   }
   return this;}
- mesh(name,map,opacity=1,cols=1,rows=1,blendName=null,blendAmount=0,baseTextureName=null,bodyBlend=null,sourceClip=null){
+ mesh(name,map,opacity=1,cols=1,rows=1,blendName=null,blendAmount=0,baseTextureName=null,bodyBlend=null,sourceClip=null,sourceRect=null){
   if(!this.textures[name]||opacity<.001)return;
   const gl=this.gl,part=this.parts[name],[bx,by,w,h]=part.bbox,data=[];
   const grid=[];for(let y=0;y<=rows;y++)for(let x=0;x<=cols;x++){let u=x/cols,v=y/rows,p=map({x:bx+w*u,y:by+h*v});grid.push([180+(p.x-180)*this.viewZoom,535+(p.y-535)*this.viewZoom,u,v]);}
   for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){let a=y*(cols+1)+x,b=a+1,c=a+cols+1,d=c+1;for(let i of [a,b,c,b,d,c])data.push(...grid[i]);}
+  if(sourceRect){
+   // Cut existing triangles in UV space. Interpolate their existing positions
+   // at the cuts, rather than remapping a smaller grid and moving face art.
+   const [rx,ry,rw,rh]=sourceRect,edges=[[2,(rx-bx)/w,true],[2,(rx+rw-bx)/w,false],
+    [3,(ry-by)/h,true],[3,(ry+rh-by)/h,false]],clipped=[];
+   for(let offset=0;offset<data.length;offset+=12){
+    let polygon=[data.slice(offset,offset+4),data.slice(offset+4,offset+8),data.slice(offset+8,offset+12)];
+    for(const [axis,bound,lower]of edges){
+     const input=polygon;polygon=[];if(!input.length)break;
+     let previous=input[input.length-1],priorInside=lower?previous[axis]>=bound:previous[axis]<=bound;
+     for(const current of input){
+      const inside=lower?current[axis]>=bound:current[axis]<=bound;
+      if(inside!==priorInside){const t=(bound-previous[axis])/(current[axis]-previous[axis]);
+       polygon.push(previous.map((value,index)=>index===axis?bound:value+(current[index]-value)*t));}
+      if(inside)polygon.push(current);previous=current;priorInside=inside;
+     }
+    }
+    for(let i=1;i+1<polygon.length;i++)clipped.push(...polygon[0],...polygon[i],...polygon[i+1]);
+   }
+   data.length=0;for(const value of clipped)data.push(value);
+  }
   const baseTexture=this.textures[baseTextureName]||this.textures[name];
   // A folded sleeve is two painted surfaces meeting at an opaque overlap.
   // Clipping in atlas space keeps the original ink; no elbow crossfade can
@@ -414,7 +437,51 @@ class Renderer{
   // A pause is exactly the original expression, including its painted mouth.
   // Mix the two head textures in one premultiplied-alpha draw so the identical
   // eyes, hair and silhouette never fade or gain opacity as speech starts.
-  this.mesh(faceTexture,mapping,opacity,24,28,speechBlend>0?cleanSpeech:genericBlend>0?genericClean:null,speechBlend||genericBlend);
+  const faceReplacement=speechBlend>0?cleanSpeech:genericBlend>0?genericClean:null;
+  // Two distressed resting paintings contain a second jaw edge below the
+  // mouth. Keep their original lips, eyes and expression; the aligned talking
+  // painting already has the correct jaw and the same atlas coordinates.
+  // The right lip ends before the sloped cheek edge. A sloped source band
+  // keeps its entire white outline while replacing the old jaw above it.
+  const rightJawRepair=cfg.prefix==='right'&&
+   ((emotion==='distressed'&&faceTexture===restingFace)||
+    (emotion==='happy'&&(faceTexture===restingFace||faceTexture===cleanSpeech)));
+  const jawRepair=emotion==='distressed'&&faceTexture===restingFace&&cfg.prefix==='front'
+   ?{axis:{x:0,y:1},cut:270}:undefined;
+  const jawSource=name+'_russell_talk_distressed';
+  const rightJawSource=name+'_russell_talk_'+emotion;
+  if(rightJawRepair&&this.textures[rightJawSource]){
+   // The old drawn jaw reaches above a single sloped cut at its outside tip.
+   // The L-shaped atlas partition follows clear skin beside and below the lip;
+   // every lip-colour/white-edge pixel remains in the original middle region.
+   const [bx,by,width,height]=P[faceTexture].bbox,right=bx+width,bottom=by+height,
+    outside=264,top=231,belowLip=emotion==='happy'?253:247;
+   for(const rect of [[bx,by,width,top-by],[bx,top,outside-bx,belowLip-top]]){
+    this.mesh(faceTexture,mapping,opacity,24,28,faceReplacement,speechBlend||genericBlend,
+     null,null,null,rect);
+   }
+   for(const rect of [[outside,top,right-outside,belowLip-top],
+    [bx,belowLip,width,bottom-belowLip]]){
+    this.mesh(rightJawSource,mapping,opacity,24,28,null,0,null,null,null,rect);
+   }
+  }else if(jawRepair&&this.textures[jawSource]){
+   const band={origin:{x:0,y:0},axis:jawRepair.axis,scale:1},jawCut=jawRepair.cut;
+   this.mesh(faceTexture,mapping,opacity,24,28,faceReplacement,speechBlend||genericBlend,
+    null,null,{...band,min:-10000,max:jawCut});
+   this.mesh(jawSource,mapping,opacity,24,28,null,0,null,null,
+    {...band,min:jawCut,max:10000});
+  }else if(cfg.prefix==='right'&&emotion==='angry'&&speaking>.001&&this.textures[name+'_talk_angry']){
+   // The former clenched mouth left one isolated grey corner in both talking
+   // bases. Reuse the already clean cheek only in that measured rectangle;
+   // the actual painted closed lip and its speech crossfade stay outside it.
+   const [bx,by,width,height]=P[faceTexture].bbox,rx=227,ry=229,rw=18,rh=11;
+   for(const rect of [[bx,by,width,ry-by],[bx,ry+rh,width,by+height-ry-rh],
+    [bx,ry,rx-bx,rh],[rx+rw,ry,bx+width-rx-rw,rh]]){
+    this.mesh(faceTexture,mapping,opacity,24,28,faceReplacement,speechBlend||genericBlend,
+     null,null,null,rect);
+   }
+   this.mesh(name+'_talk_angry',mapping,opacity,24,28,null,0,null,null,null,[rx,ry,rw,rh]);
+  }else this.mesh(faceTexture,mapping,opacity,24,28,faceReplacement,speechBlend||genericBlend);
   if(gaze){
    // Short eye movements separated by uneven holds: the painted irises move,
    // while the lids, brows and head stay exactly where the expression put them.
@@ -468,7 +535,7 @@ class Renderer{
    const blinkTexture=this.textures[name+'_russell_expression_blink']?name+'_russell_expression_blink':name+'_expression_blink';
    draw(blinkTexture,opacity*expressive*blink);
   }
-  if(root.CloudyEmotionFX&&this.emotionEffects!==false)root.CloudyEmotionFX.draw(this,cfg,pose,time,mapping,opacity);
+  if(root.CloudyEmotionFX&&this.emotionEffects!==false)root.CloudyEmotionFX.draw(this,cfg,pose,time,mapping,opacity,emotion);
  }
  renderView(cfg,pose,opacity,time=0){
   // Air poses keep the near arm fully in front of the head, including its hair.

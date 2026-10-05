@@ -47,6 +47,16 @@ _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
 _ACTIONS = {"idle", "walk", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land"}
 
 
+def _texture_storage_bytes(part):
+    width, height = map(int, part.get("size", part["bbox"][2:]))
+    total = width * height * 4
+    if part.get("drawnTearFrame"):
+        while width > 1 or height > 1:
+            width, height = max(1, width // 2), max(1, height // 2)
+            total += width * height * 4
+    return total
+
+
 class CloudyRigView(QOpenGLWidget):
     animation_finished = pyqtSignal()
     failed = pyqtSignal(str)
@@ -250,17 +260,25 @@ class CloudyRigView(QOpenGLWidget):
         if image.isNull():
             raise RuntimeError(f"Cannot decode rig texture: {name}")
         image = image.convertToFormat(QImage.Format.Format_RGBA8888_Premultiplied)
-        size = image.width() * image.height() * 4
+        size = _texture_storage_bytes(part)
         self._peak_decode_bytes = max(self._peak_decode_bytes, image.sizeInBytes())
         texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
         texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
         texture.setSize(image.width(), image.height())
-        texture.setMipLevels(1)
+        # Painted tear cels shrink substantially on the cheek. Prefilter them
+        # instead of sparsely sampling the high-resolution ink and highlights.
+        painted_tear = bool(part.get("drawnTearFrame"))
+        texture.setMipLevels(max(image.width(), image.height()).bit_length() if painted_tear else 1)
+        texture.setAutoMipMapGenerationEnabled(False)
         texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
-        texture.setMinMagFilters(QOpenGLTexture.Filter.Linear, QOpenGLTexture.Filter.Linear)
+        texture.setMinMagFilters(QOpenGLTexture.Filter.LinearMipMapLinear if painted_tear
+                                 else QOpenGLTexture.Filter.Linear,
+                                 QOpenGLTexture.Filter.Linear)
         texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
         texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8,
                         image.constBits())
+        if painted_tear:
+            texture.generateMipMaps()
         return texture, size
 
     def paintGL(self):
@@ -278,8 +296,7 @@ class CloudyRigView(QOpenGLWidget):
             sizes = {}
             for name in plan["requiredTextures"]:
                 part = self._parts[name]
-                width, height = part.get("size", part["bbox"][2:])
-                sizes[self._identities[name]] = int(width * height * 4)
+                sizes[self._identities[name]] = _texture_storage_bytes(part)
             self._cache.prepare(sizes)
             # Keep the authored 2:3 stage, centered inside the existing host box.
             dpr = self.devicePixelRatioF()

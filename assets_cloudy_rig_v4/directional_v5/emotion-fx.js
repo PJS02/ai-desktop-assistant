@@ -1,14 +1,16 @@
 /* Comic emotion marks in the head's own coordinate space. */
 (function(root){
 'use strict';
+// Separately painted PNG cels, registered before the original renderer loads.
+Object.assign(root.CLOUDY_PARTS,{"fx_tear_front_0_0":{"file":"textures/tears-v34/front-0-0.png","bbox":[108.555806228799,231.5339123275479,24.12565445026178,48.25130890052356],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":0,"stage":0},"fx_tear_front_0_1":{"file":"textures/tears-v34/front-0-1.png","bbox":[108.5753960772734,231.52738526535757,24.12565445026178,48.25130890052356],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":0,"stage":1},"fx_tear_front_0_2":{"file":"textures/tears-v34/front-0-2.png","bbox":[108.6583885421222,231.53309512481917,24.12565445026178,48.25130890052356],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":0,"stage":2},"fx_tear_front_0_3":{"file":"textures/tears-v34/front-0-3.png","bbox":[108.5559473218018,231.52941083687475,24.12565445026178,48.25130890052356],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":0,"stage":3},"fx_tear_front_0_4":{"file":"textures/tears-v34/front-0-4.png","bbox":[108.60576490102508,231.46472537353932,24.12565445026178,48.25130890052356],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":0,"stage":4},"fx_tear_front_0_5":{"file":"textures/tears-v34/front-0-5.png","bbox":[108.64782772079555,231.46848379637635,24.12565445026178,48.25130890052356],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":0,"stage":5},"fx_tear_front_1_0":{"file":"textures/tears-v34/front-1-0.png","bbox":[205.72957902195833,233.863699896226,24.641711229946523,49.283422459893046],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":1,"stage":0},"fx_tear_front_1_1":{"file":"textures/tears-v34/front-1-1.png","bbox":[205.69757456487847,233.86259037312882,24.641711229946523,49.283422459893046],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":1,"stage":1},"fx_tear_front_1_2":{"file":"textures/tears-v34/front-1-2.png","bbox":[205.8108957744564,233.86715595981605,24.641711229946523,49.283422459893046],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":1,"stage":2},"fx_tear_front_1_3":{"file":"textures/tears-v34/front-1-3.png","bbox":[205.7635657469219,233.86348658161342,24.641711229946523,49.283422459893046],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":1,"stage":3},"fx_tear_front_1_4":{"file":"textures/tears-v34/front-1-4.png","bbox":[205.76671165529166,233.86272259857103,24.641711229946523,49.283422459893046],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":1,"stage":4},"fx_tear_front_1_5":{"file":"textures/tears-v34/front-1-5.png","bbox":[205.84862734122558,233.86035342765837,24.641711229946523,49.283422459893046],"size":[256,512],"drawnTearFrame":true,"direction":"front","eye":1,"stage":5},"fx_tear_left_0_0":{"file":"textures/tears-v34/left-0-0.png","bbox":[84.14037069186114,230.43184861743174,19.2,38.4],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":0,"stage":0},"fx_tear_left_0_1":{"file":"textures/tears-v34/left-0-1.png","bbox":[84.29049309214929,230.43475067789637,19.2,38.4],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":0,"stage":1},"fx_tear_left_0_2":{"file":"textures/tears-v34/left-0-2.png","bbox":[84.42149156508246,230.43525401420774,19.2,38.4],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":0,"stage":2},"fx_tear_left_0_3":{"file":"textures/tears-v34/left-0-3.png","bbox":[84.39803763056584,230.43582901605487,19.2,38.4],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":0,"stage":3},"fx_tear_left_0_4":{"file":"textures/tears-v34/left-0-4.png","bbox":[84.4534701193445,230.43579110260063,19.2,38.4],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":0,"stage":4},"fx_tear_left_0_5":{"file":"textures/tears-v34/left-0-5.png","bbox":[84.52825778125371,230.43473857066488,19.2,38.4],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":0,"stage":5},"fx_tear_left_1_0":{"file":"textures/tears-v34/left-1-0.png","bbox":[140.5912400942386,225.7141747409049,26.482758620689655,52.96551724137931],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":1,"stage":0},"fx_tear_left_1_1":{"file":"textures/tears-v34/left-1-1.png","bbox":[140.97465314429127,225.70209802553214,26.482758620689655,52.96551724137931],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":1,"stage":1},"fx_tear_left_1_2":{"file":"textures/tears-v34/left-1-2.png","bbox":[141.3114264985576,225.63795585971818,26.482758620689655,52.96551724137931],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":1,"stage":2},"fx_tear_left_1_3":{"file":"textures/tears-v34/left-1-3.png","bbox":[141.31182273670763,225.64030718522915,26.482758620689655,52.96551724137931],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":1,"stage":3},"fx_tear_left_1_4":{"file":"textures/tears-v34/left-1-4.png","bbox":[141.42002749855567,225.6405546897607,26.482758620689655,52.96551724137931],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":1,"stage":4},"fx_tear_left_1_5":{"file":"textures/tears-v34/left-1-5.png","bbox":[141.67822350552282,225.64176017642225,26.482758620689655,52.96551724137931],"size":[256,512],"drawnTearFrame":true,"direction":"left","eye":1,"stage":5},"fx_tear_right_0_0":{"file":"textures/tears-v34/right-0-0.png","bbox":[198.99428194110007,216.25442565358333,26.33142857142857,52.66285714285714],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":0,"stage":0},"fx_tear_right_0_1":{"file":"textures/tears-v34/right-0-1.png","bbox":[199.13124668461361,216.26221154896837,26.33142857142857,52.66285714285714],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":0,"stage":1},"fx_tear_right_0_2":{"file":"textures/tears-v34/right-0-2.png","bbox":[199.3156963126799,216.26427098924404,26.33142857142857,52.66285714285714],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":0,"stage":2},"fx_tear_right_0_3":{"file":"textures/tears-v34/right-0-3.png","bbox":[199.15324982263903,216.25670807678566,26.33142857142857,52.66285714285714],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":0,"stage":3},"fx_tear_right_0_4":{"file":"textures/tears-v34/right-0-4.png","bbox":[199.24634052152783,216.25493942337084,26.33142857142857,52.66285714285714],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":0,"stage":4},"fx_tear_right_0_5":{"file":"textures/tears-v34/right-0-5.png","bbox":[199.6012807595226,216.35224584765922,26.33142857142857,52.66285714285714],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":0,"stage":5},"fx_tear_right_1_0":{"file":"textures/tears-v34/right-1-0.png","bbox":[254.2916420010065,208.78246243220744,25.18032786885246,50.36065573770492],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":1,"stage":0},"fx_tear_right_1_1":{"file":"textures/tears-v34/right-1-1.png","bbox":[254.63639351285798,208.9969678949799,25.18032786885246,50.36065573770492],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":1,"stage":1},"fx_tear_right_1_2":{"file":"textures/tears-v34/right-1-2.png","bbox":[254.71040295771238,209.2025365284881,25.18032786885246,50.36065573770492],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":1,"stage":2},"fx_tear_right_1_3":{"file":"textures/tears-v34/right-1-3.png","bbox":[255.4877772465229,209.26339142960686,25.18032786885246,50.36065573770492],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":1,"stage":3},"fx_tear_right_1_4":{"file":"textures/tears-v34/right-1-4.png","bbox":[254.91332528429996,209.176343451617,25.18032786885246,50.36065573770492],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":1,"stage":4},"fx_tear_right_1_5":{"file":"textures/tears-v34/right-1-5.png","bbox":[255.62943470646923,209.18609406287138,25.18032786885246,50.36065573770492],"size":[256,512],"drawnTearFrame":true,"direction":"right","eye":1,"stage":5}});
 const clamp=x=>Math.max(0,Math.min(1,Number.isFinite(x)?x:0));
 const smooth=x=>{x=clamp(x);return x*x*(3-2*x);};
 const mix=(a,b,t)=>a+(b-a)*t;
 const mod=x=>((x%1)+1)%1;
 const anchors={
  front:{tear:[[130,239,32,-2],[210,239,32,2]],mark:[246,109],gloom:[65,60],sweat:[242,216],spark:[284,72],sigh:[270,264],shock:[61,91],tremble:[80,204],shade:[170,202,124,57],stress:[171,191,53,43]},
- left:{tear:[[89,232,27,2],[149,232,29,-3]],mark:[202,101],gloom:[58,59],sweat:[174,213],spark:[58,83],sigh:[61,252],shock:[48,105],tremble:[67,183],shade:[122,198,97,55],stress:[121,187,35,42]},
- right:{tear:[[219,231,27,3],[277,225,24,-2]],mark:[244,100],gloom:[74,62],sweat:[199,207],spark:[70,88],sigh:[310,244],shock:[303,112],tremble:[299,186],shade:[245,195,87,56],stress:[245,182,36,42]}
+ left:{tear:[[89,232,27,8],[149,232,29,-3]],mark:[202,101],gloom:[58,59],sweat:[174,213],spark:[58,83],sigh:[61,252],shock:[48,105],tremble:[67,183],shade:[122,198,97,55],stress:[121,187,35,42]},
+ right:{tear:[[219,231,27,3],[277,225,24,-8]],mark:[244,100],gloom:[74,62],sweat:[199,207],spark:[70,88],sigh:[310,244],shock:[303,112],tremble:[299,186],shade:[245,195,87,56],stress:[245,182,36,42]}
 };
 
 // A continuous band crosses the bangs and upper face. Deriving coverage only
@@ -23,29 +25,18 @@ function shadeCoverage(direction,x,y,sourceAlpha=1){
  return clamp(sourceAlpha)*side*rise*fall*.38;
 }
 
-// Formation, descent and disappearance all have zero endpoint velocity. The
-// loop resets only after the pool and the separate rounded beads are invisible.
-function sampleTear(time,period=4.2,offset=0,travel=32){
- const phase=mod(time/period+offset),form=smooth(phase/.14),fade=1-smooth((phase-.77)/.17);
- const descent=smooth((phase-.18)/.56),distance=travel*descent;
- return{phase,distance,poolAlpha:form*fade*(1-.54*smooth((phase-.23)/.4)),
-  dropAlpha:smooth((phase-.13)/.13)*fade,trailAlpha:smooth((phase-.19)/.18)*fade,
-  trailLength:distance,scale:.7+.3*smooth((phase-.1)/.14)};
-}
-function tearCurve(progress,drift){
- const q=clamp(progress),sign=drift<0?-1:1;
- // A cheek is rounded: the water first bows outward, then turns in toward the
- // chin. The beads share this path, rather than hanging in a vertical column.
- return drift*smooth(q)+sign*(3.1*Math.sin(Math.PI*q)+1.15*Math.sin(Math.PI*2*q));
-}
-function sampleTearBeads(time,period=4.2,offset=0,travel=32,drift=2){
- const t=sampleTear(time,period,offset,travel),growth=smooth(t.distance/(travel*.34));
- return [.23,.54,.79].map((fraction,i)=>{
-  const distance=t.distance*fraction,q=distance/travel;
-  const size=[7.6,9.1,7.3][i]*(.45+.55*growth);
-  return {x:tearCurve(q,drift),y:distance,width:size,
-   height:size*[.91,1.08,1.02][i],alpha:t.trailAlpha*growth*[.78,.94,.84][i]};
- });
+// Each stage is a separately painted PNG. Only opacity changes between cels;
+// the artwork's shape, reflections, size and cheek path are never morphed.
+const tearPaintStages=[0,.16,.32,.49,.65,.82];
+function samplePaintedTear(time,period=4.2,offset=0){
+ const phase=mod(time/period+offset);let frame=0;
+ while(frame<tearPaintStages.length-1&&phase>=tearPaintStages[frame+1])frame++;
+ const nextFrame=(frame+1)%tearPaintStages.length;
+ const end=nextFrame===0?1:tearPaintStages[nextFrame];
+ const blend=smooth((phase-tearPaintStages[frame])/(end-tearPaintStages[frame]));
+ // Every painted cel contains the attached pool; only the smaller drops flow.
+ // Refill through the first cel without fading the whole pool out each cycle.
+ return{phase,frame,nextFrame,mix:blend,alpha:1};
 }
 function weights(pose){
  const awake=1-clamp(pose.exprSleep||0),out={};
@@ -81,28 +72,6 @@ function createSprites(images={},parts={}){
   c.beginPath();c.ellipse(74,102,6,2.7,-.3,0,Math.PI*2);c.fillStyle='rgba(255,255,255,.76)';c.fill();
  }
  make('fx_sweat',c=>droplet(c,true));
- function tearBead(c,tip=false){
-  c.beginPath();
-  if(tip){
-   c.moveTo(62,14);c.bezierCurveTo(57,34,25,49,23,78);c.bezierCurveTo(20,120,101,127,106,82);c.bezierCurveTo(110,55,72,35,62,14);
-  }else{
-   c.moveTo(59,19);c.bezierCurveTo(26,13,12,41,17,70);c.bezierCurveTo(10,105,48,121,78,111);c.bezierCurveTo(113,108,120,75,107,46);c.bezierCurveTo(100,24,79,15,59,19);
-  }
-  c.closePath();
-  const g=c.createLinearGradient(27,27,87,116);g.addColorStop(0,'rgba(244,255,255,.93)');g.addColorStop(.5,'rgba(180,231,247,.79)');g.addColorStop(1,'rgba(139,209,233,.92)');
-  c.fillStyle=g;c.fill();c.strokeStyle='rgba(96,177,207,.91)';c.lineWidth=4.5;c.stroke();
-  c.beginPath();c.ellipse(40,51,9,18,.45,0,Math.PI*2);c.fillStyle='rgba(255,255,255,.98)';c.fill();
-  c.beginPath();c.ellipse(76,101,13,3.8,-.2,0,Math.PI*2);c.fillStyle='rgba(247,255,255,.88)';c.fill();
- }
- make('fx_teardrop',c=>tearBead(c,true));
- make('fx_tearbead',c=>tearBead(c));
- make('fx_tearpool',c=>{
-  // Unequal scallops read as water gathering on the lid, not an eye underline.
-  c.beginPath();c.moveTo(12,58);c.bezierCurveTo(25,36,43,39,54,48);c.bezierCurveTo(72,34,101,36,115,53);c.bezierCurveTo(123,72,99,84,85,80);c.bezierCurveTo(68,105,43,97,35,80);c.bezierCurveTo(16,84,5,72,12,58);c.closePath();
-  c.fillStyle='rgba(182,232,247,.89)';c.fill();c.strokeStyle='rgba(103,181,210,.88)';c.lineWidth=3.5;c.stroke();
-  c.beginPath();c.ellipse(32,55,12,5,-.2,0,Math.PI*2);c.ellipse(86,50,16,4,.05,0,Math.PI*2);c.fillStyle='rgba(255,255,255,.98)';c.fill();
-  c.beginPath();c.ellipse(64,84,12,3,.12,0,Math.PI*2);c.fillStyle='rgba(249,255,255,.91)';c.fill();
- });
  make('fx_spark',c=>{
   c.beginPath();c.moveTo(64,10);c.quadraticCurveTo(70,53,112,64);c.quadraticCurveTo(70,72,64,118);c.quadraticCurveTo(57,73,16,64);c.quadraticCurveTo(57,53,64,10);c.closePath();c.fillStyle='#fff3b6';c.fill();c.strokeStyle='#d0b976';c.lineWidth=4;c.stroke();
   c.beginPath();c.moveTo(64,29);c.lineTo(64,91);c.strokeStyle='rgba(255,255,255,.95)';c.lineWidth=4;c.stroke();
@@ -150,7 +119,7 @@ function createSprites(images={},parts={}){
  return sprites;
 }
 
-function draw(renderer,cfg,pose,time,faceMapping,opacity=1){
+function draw(renderer,cfg,pose,time,faceMapping,opacity=1,selectedEmotion=null){
  const a=anchors[cfg.prefix];if(!a||cfg.head[0]!==0)return;
  const w=weights(pose),base=clamp(opacity);if(!base)return;
  function sprite(name,x,y,width,height,alpha,angle=0){
@@ -184,16 +153,20 @@ function draw(renderer,cfg,pose,time,faceMapping,opacity=1){
   // Hurt sheds only the more visible tear and does so less often. Sadness
   // sheds tears from both eyes at separate times, rather than a mirrored loop.
   const strength=Math.max(w.sad,i===(cfg.prefix==='right'?0:1)?w.hurt*.84:0);if(strength<.001)continue;
-  const [x,y,travel,drift]=a.tear[i],period=w.hurt>w.sad?6.8:4.3+i*.47;
-  const t=sampleTear(time,period,i*.43,travel);
-  sprite('fx_tearpool',x,y,21,12,strength*t.poolAlpha*.95,i===0?.06:-.06);
-  for(const bead of sampleTearBeads(time,period,i*.43,travel,drift)){
-   sprite('fx_tearbead',x+bead.x,y+bead.y,bead.width,bead.height,strength*bead.alpha,i===0?.12:-.12);
-  }
-  sprite('fx_teardrop',x+tearCurve(t.distance/travel,drift),y+t.distance,9.6*t.scale,12*t.scale,strength*t.dropAlpha*.94);
+  const period=w.hurt>w.sad?6.8:4.3+i*.47,t=samplePaintedTear(time,period,i*.43);
+  const name='fx_tear_'+cfg.prefix+'_'+i+'_';
+  // Follow the eyelid of the actual painted expression chosen by the head.
+  // Hurt's lower lids sit higher than sadness; this is a rigid placement,
+  // not a change to the painted water shape or to the original head motion.
+  const tearEmotion=selectedEmotion||(pose.exprHurt>.5?'hurt':'sad');
+  const hurtShift={front:[1,0],left:[-5,-7],right:[-5,-4]};
+  const dy=tearEmotion==='hurt'?hurtShift[cfg.prefix][i]:0;
+  const tearMapping=dy?p=>faceMapping({x:p.x,y:p.y+dy}):faceMapping;
+  renderer.mesh(name+t.frame,tearMapping,base*strength*t.alpha*(1-t.mix),4,8);
+  if(t.nextFrame!==t.frame)renderer.mesh(name+t.nextFrame,tearMapping,base*strength*t.alpha*t.mix,4,8);
  }
 }
-const api={createSprites,draw,sampleTear,sampleTearBeads,weights,anchors,shadeCoverage};
+const api={createSprites,draw,samplePaintedTear,weights,anchors,shadeCoverage};
 if(typeof module==='object'&&module.exports)module.exports=api;
 if(root)root.CloudyEmotionFX=api;
 })(typeof window!=='undefined'?window:globalThis);

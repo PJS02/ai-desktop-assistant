@@ -74,7 +74,7 @@ function updateGalleryDirection(){
   img.width=180;img.height=241;img.loading='lazy';img.decoding='async';img.alt=entry.label+' 표정';
   text.textContent=entry.label;b.append(img,text);grid.append(b);
  }
- grid.querySelectorAll('button').forEach(b=>{const img=b.querySelector('img'),src='exports/previews/'+direction+'-'+b.dataset.emotion+'.webp?v=beaded-v3';if(img.getAttribute('src')!==src)img.src=src;});
+ grid.querySelectorAll('button').forEach(b=>{const img=b.querySelector('img'),src='exports/previews-v35/'+direction+'-'+b.dataset.emotion+'.webp?v=face-gallery-v35-20261004';if(img.getAttribute('src')!==src)img.src=src;});
  updateGallerySelection();
 }
 if($('#emotionGallery'))$('#emotionGallery').ontoggle=updateGalleryDirection;
