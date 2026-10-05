@@ -95,6 +95,10 @@ def classify_log_message(message: str, is_error: bool = False) -> str:
             "on_",
             "random skip",
             "드래그",
+            "자율 이벤트",
+            "self_play",
+            "self_rest",
+            "self_curiosity",
         )
     ):
         return "캐릭터 상태"
