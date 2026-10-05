@@ -92,7 +92,12 @@ class PerceptionController:
             message = self._gesture_message(kind, label)
             if message is None:
                 continue
-            self.mood_system.on_click()
+            # 실제 MoodSystem은 제스처 이름까지 XAI 판단 근거로 남기고,
+            # 단순 테스트/외부 구현체는 기존 on_click 계약을 그대로 사용한다.
+            if hasattr(self.mood_system, "on_positive_gesture"):
+                self.mood_system.on_positive_gesture(label)
+            else:
+                self.mood_system.on_click()
             self.on_dialogue(message)
             self._last_reaction_at[reaction_key] = now
             print(f"[외부 동작 인식] {kind}/{label} ({side or 'unknown'})")

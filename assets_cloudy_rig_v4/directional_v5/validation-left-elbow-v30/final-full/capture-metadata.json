@@ -1,0 +1,37 @@
+{
+  "variant": "current",
+  "url": "http://127.0.0.1:1365/validation-left-elbow-v30/capture.html?variant=current&extra=",
+  "capturedAtUTC": "2026-10-03T08:03:10.194Z",
+  "width": 720,
+  "height": 1080,
+  "fps": 20,
+  "engine": "Chromium Headless WebGL SwiftShader",
+  "target": "Side greeting elbow joint location and fixed-size cloth reveal",
+  "status": "captured; visual review required",
+  "errors": [],
+  "hashes": {
+    "renderer.js": "cef10f8e093d03d8ac12059691a86170a92b160f8d99d524da236ba576b03861",
+    "side-wave-skinning.js": "bfa7263c414c4ac5892326a874dfac9c342d6c7fc6bd68450b2d99d15845606a",
+    "motion.js": "f7ee6cab57f749e1aae138412a81e65cc4e66729caafd0a44bf94dc5e365cc28",
+    "side-cuff-fit.js": "adabce4ef80132fba1dfb26f1c40c3c7bd6b3e37dc448250ada1e15bbea467f8",
+    "side-cuff-surface.js": "6913cf3b5e440aa4b091dc616a7a0bd4f954c03c33a8c5cd1af32e66e28abdbf",
+    "side-sleeve-tag.js": "0d76cd04d3cd0da9039d1213a34fbd2dc95e9400bf1aedc3d637a92cbc8df2d4",
+    "textures/parts.js": "dcaebfd6810f02b3f137419c93e4e08d31735bfc661af85ddb6c0246267b9bb9"
+  },
+  "harnessHashes": {
+    "capture.cjs": "a9905ff6e7d732fab9de2cf2cf032c1a1f442c887386b51cc591c31b6fd8c15e",
+    "capture.html": "20fcc3d7e07af07daf3d8d4407bda7d5e99ddf2779b61a6f706ddfdd7c7933a8"
+  },
+  "retained_keyframe_times": [
+    0,
+    0.34,
+    0.38,
+    0.63,
+    0.76,
+    0.91,
+    1.25,
+    1.8,
+    3.5
+  ],
+  "raw_capture_metadata": "Full original metadata and continuous captures are preserved in the local Cloudy archive under commit-preparation/."
+}
