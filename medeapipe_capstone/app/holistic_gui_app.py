@@ -22,6 +22,7 @@ from app.device_settings import (
     select_saved_microphone,
 )
 from app.project_version import __version__
+from app.settings_bridge import SettingsBridge
 from bridge.interaction_event_client import InteractionEventClient
 from recognition import holistic_tracker as core
 from recognition.emotion_recognizer import EmotionRecognizer
@@ -88,7 +89,7 @@ MODE_LABELS = {
 }
 
 
-class HolisticGuiApp:
+class HolisticGuiApp(SettingsBridge):
     def __init__(self, root, background_mode=False, command_stream=None):
         self.root = root
         self.background_mode = background_mode
@@ -269,7 +270,7 @@ class HolisticGuiApp:
     def read_control_commands(self):
         try:
             for line in self.command_stream:
-                command = line.strip().lower()
+                command = line.strip()
                 if command:
                     self.control_commands.put(command)
         except (OSError, ValueError):
@@ -294,6 +295,8 @@ class HolisticGuiApp:
                 self.begin_rps_game(command.split(" ", 1)[1])
             elif command.startswith("rps_end "):
                 self.end_rps_game(command.split(" ", 1)[1])
+            elif command.startswith('settings '):
+                self.handle_settings_command(command[len('settings '):])
             elif command == "shutdown":
                 self.on_close()
                 return
@@ -815,6 +818,9 @@ class HolisticGuiApp:
                 if self.restart_camera_after_discovery:
                     self.restart_camera_after_discovery = False
                     self.start_selected_camera()
+                if getattr(self, 'settings_refresh_pending', False):
+                    self.settings_refresh_pending = False
+                    self.emit_settings_state()
                 continue
             candidates = merge_camera_candidates(value, self.active_camera_candidate)
             self.apply_camera_candidates(candidates, preserve_current=True)
@@ -822,6 +828,9 @@ class HolisticGuiApp:
             if self.restart_camera_after_discovery:
                 self.restart_camera_after_discovery = False
                 self.start_selected_camera()
+            if getattr(self, 'settings_refresh_pending', False):
+                self.settings_refresh_pending = False
+                self.emit_settings_state()
         self.root.after(200, self.poll_camera_discovery)
 
     def refresh_stt_microphones(self, show_error=True):
@@ -1054,6 +1063,8 @@ class HolisticGuiApp:
         print(f"[설정 저장] 사용자 인식 모드/도구: {self.active_mode or '없음'}")
 
     def save_device_settings_safely(self):
+        if getattr(self, 'settings_collecting', False):
+            return
         try:
             save_device_settings(self.device_settings)
         except OSError as exc:

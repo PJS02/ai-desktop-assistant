@@ -45,13 +45,10 @@ class DialogueSystem(QObject):
     
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
-        from pathlib import Path
+        from .ai_settings import load_ai_settings
         try:
-            config_path = Path(__file__).resolve().parent.parent / "context" / "gemini_config.json"
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self.gemini_config = json.load(f)
-                print("[대화 시스템] Gemini 설정 로드 완료")
+            self.gemini_config = load_ai_settings()
+            print("[대화 시스템] Gemini 설정 로드 완료")
         except Exception as e:
             print(f"[경고] Gemini 설정 로드 실패: {e}")
     

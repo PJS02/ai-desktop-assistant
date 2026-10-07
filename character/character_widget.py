@@ -17,7 +17,6 @@ from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .rig_state import RigAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
-from .tts_service import available_voices
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
@@ -108,6 +107,7 @@ class CharacterWidget(QLabel):
         on_show_log_window=None,
         on_close_log_window=None,
         on_rps_command=None,
+        on_show_settings=None,
     ):
         super().__init__()
 
@@ -116,6 +116,7 @@ class CharacterWidget(QLabel):
         self._show_log_window_callback = on_show_log_window
         self._close_log_window_callback = on_close_log_window
         self._rps_command_callback = on_rps_command
+        self._show_settings_callback = on_show_settings
         self.rps_game = None
 
         # 배경창 투명화
@@ -711,14 +712,10 @@ class CharacterWidget(QLabel):
     # ====== 자동 대사 생성 시스템 ======
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
-        config_path = Path(__file__).resolve().parent.parent / "context" / "gemini_config.json"
+        from .ai_settings import load_ai_settings
         try:
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self.gemini_config = json.load(f)
-                print(f"[Gemini 설정 로드] API 키: {'설정됨' if self.gemini_config.get('api_key') else '미설정'}")
-            else:
-                print(f"[경고] Gemini 설정 파일 없음: {config_path}")
+            self.gemini_config = load_ai_settings()
+            print(f"[Gemini 설정 로드] API 키: {'설정됨' if self.gemini_config.get('api_key') else '미설정'}")
         except Exception as e:
             print(f"[오류] Gemini 설정 로드 실패: {e}")
     
@@ -1398,6 +1395,9 @@ class CharacterWidget(QLabel):
     def _show_context_menu(self, global_pos, include_dialogue: bool = False):
         print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
         menu = QMenu(self)
+        settings_action = menu.addAction("설정")
+        settings_action.triggered.connect(self.show_settings)
+        menu.addSeparator()
         ball_action = menu.addAction("공 꺼내기")
         ball_action.triggered.connect(self.select_ball)
         show_action = menu.addAction("감정 판단 근거 보기")
@@ -1405,27 +1405,6 @@ class CharacterWidget(QLabel):
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
-        tts_action = menu.addAction("AI 답변 음성으로 읽기")
-        tts_action.setCheckable(True)
-        tts_action.setChecked(self.dialogue_system.tts.enabled)
-        tts_action.toggled.connect(self.dialogue_system.tts.set_enabled)
-        voice_menu = menu.addMenu("목소리 선택")
-        voices = available_voices()
-        if voices:
-            voice_group = QActionGroup(voice_menu)
-            voice_group.setExclusive(True)
-            selected_id = self.dialogue_system.tts.voice_id
-            for voice in voices:
-                voice_action = voice_menu.addAction(voice.name)
-                voice_action.setCheckable(True)
-                voice_action.setChecked(voice.id == selected_id)
-                voice_action.triggered.connect(
-                    lambda checked, voice_id=voice.id: self.dialogue_system.tts.set_voice(voice_id)
-                )
-                voice_group.addAction(voice_action)
-        else:
-            no_voice_action = voice_menu.addAction("사용 가능한 목소리가 없습니다")
-            no_voice_action.setEnabled(False)
         console_action = menu.addAction("사용자인식 콘솔")
         console_action.triggered.connect(self.show_perception_console)
         log_action = menu.addAction("로그창 보기")
@@ -1451,6 +1430,43 @@ class CharacterWidget(QLabel):
                 direction_group.addAction(item)
         self._context_menu = menu
         menu.popup(global_pos)
+
+
+    def show_settings(self):
+        if self._show_settings_callback is not None:
+            self._show_settings_callback()
+
+
+    def apply_character_settings(self, width, height, personality):
+        """Update bounds and personality without resetting the current mood."""
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            bounds = screen.availableGeometry()
+            width, height = min(width, bounds.width()), min(height, bounds.height())
+        self.personality_system.load_preset(personality)
+        old_width, old_height = self.width(), self.height()
+        was_grounded, standing_surface = self.on_ground, self.current_surface
+        center_x, foot_y = self.x() + old_width / 2, self.y() + old_height
+        bounds_changed = (self.custom_screen_width, self.custom_screen_height) != (width, height)
+        self.custom_screen_width, self.custom_screen_height = width, height
+        if not bounds_changed:
+            return
+        self._move_timer.stop()
+        self.is_moving = False
+        if self.current_surface is not None and self.on_ground:
+            foot_y = self.current_surface.y_level
+        for surface in self.surfaces:
+            if surface.name == 'ground':
+                surface.y_level, surface.x_max = height, width
+        self.move(round(max(0, min(center_x - self.width() / 2, width - self.width()))),
+                  round(max(0, min(foot_y - self.height(), height - self.height()))))
+        self.velocity_x = self.velocity_y = 0
+        self.on_ground = bool(was_grounded and standing_surface is not None
+                              and self.y() + self.height() == standing_surface.y_level)
+        self.is_jumping = False
+        self.current_surface = standing_surface if self.on_ground else None
+        self.animation_controller.update_base_pos(self.pos())
+        self.dialogue_system.update_dialogue_position()
 
 
     def select_ball(self):

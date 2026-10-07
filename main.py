@@ -3,12 +3,14 @@ import subprocess
 import os
 from pathlib import Path
 import threading
+import json
 
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QObject, pyqtSignal
 from dotenv import load_dotenv
 from character.character_widget import CharacterWidget
-from character.resolution_settings import ResolutionSettingsDialog
-from character.config_manager import load_config, save_config
+from character.config_manager import load_config
+from character.settings_controller import SettingsController
 from character.log_console import AppLogManager, LogWindow
 
 
@@ -18,10 +20,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 MEDIAPIPE_MAIN = PROJECT_ROOT / "medeapipe_capstone" / "main.py"
 
 
-class MediaPipeProcessManager:
+class MediaPipeProcessManager(QObject):
     """숨겨진 MediaPipe GUI 프로세스의 실행, 표시, 종료를 관리한다."""
 
+    settings_message = pyqtSignal(dict)
+
     def __init__(self, script_path: Path = MEDIAPIPE_MAIN) -> None:
+        super().__init__()
         self.script_path = script_path
         self.process = None
 
@@ -72,13 +77,21 @@ class MediaPipeProcessManager:
             daemon=True,
         ).start()
 
-    @staticmethod
-    def _forward_output(process) -> None:
+    def _forward_output(self, process) -> None:
         """자식 프로세스 출력을 메인 로그 수집기가 읽을 수 있도록 전달한다."""
         for line in process.stdout:
             message = line.rstrip("\r\n")
+            if message.startswith('APP_SETTINGS '):
+                try:
+                    payload = json.loads(message[len('APP_SETTINGS '):])
+                    if isinstance(payload, dict):
+                        self.settings_message.emit(payload)
+                except ValueError:
+                    print('[통합 설정] 인식 기능 응답 형식 오류')
+                continue
             if message:
                 print(f"[MediaPipe] {message}")
+        self.settings_message.emit({'kind': 'unavailable'})
 
     def _send_command(self, command: str) -> bool:
         if not self.is_running or self.process.stdin is None:
@@ -102,6 +115,14 @@ class MediaPipeProcessManager:
             if not self.start():
                 return False
         return self._send_command(command)
+
+    def request_settings(self, refresh_devices=False):
+        if not self.is_running and not self.start():
+            return False
+        return self._send_command('settings ' + json.dumps({'action': 'refresh' if refresh_devices else 'get'}))
+
+    def apply_settings(self, request_id, values):
+        return self._send_command('settings ' + json.dumps({'action': 'apply', 'request_id': request_id, 'values': values}, ensure_ascii=False))
 
     def stop(self, wait_timeout: float = 3.0) -> None:
         if not self.is_running:
@@ -134,20 +155,7 @@ def main():
     print(f"[설정] 저장된 해상도: {saved_width} × {saved_height}px")
     print(f"[설정] 저장된 성격: {saved_personality}")
     
-    # 설정 다이얼로그 띄우기 (저장된 값으로 초기화)
-    settings_dialog = ResolutionSettingsDialog(saved_width, saved_height, saved_personality)
-    if settings_dialog.exec() == ResolutionSettingsDialog.DialogCode.Accepted:
-        width, height = settings_dialog.get_resolution()
-        personality = settings_dialog.get_personality()
-        print(f"[설정] 선택된 해상도: {width} × {height}px")
-        print(f"[설정] 선택된 성격: {personality}")
-        save_config(width, height, personality)  # 설정 저장
-    else:
-        # 취소 버튼 클릭 시 저장된 설정 사용
-        width, height = saved_width, saved_height
-        personality = saved_personality
-        print(f"[설정] 저장된 해상도 사용: {width} × {height}px")
-        print(f"[설정] 저장된 성격 사용: {personality}")
+    width, height, personality = saved_width, saved_height, saved_personality
     
     # 캐릭터 위젯에 해상도 전달
     character = CharacterWidget(
@@ -159,6 +167,8 @@ def main():
         on_close_log_window=log_window.shutdown,
         on_rps_command=mediapipe_manager.send_game_command,
     )
+    settings_controller = SettingsController(character, mediapipe_manager)
+    character._show_settings_callback = settings_controller.show
     character.show()
 
     # 캐릭터의 인식 수신기가 준비된 다음 MediaPipe GUI를 실행한다.

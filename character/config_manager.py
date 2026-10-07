@@ -36,14 +36,15 @@ def load_config():
 def save_config(width, height, personality='Russell (기본)'):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config = {
-        'resolution': {'width': width, 'height': height},
-        'personality': personality
-    }
-    
     try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        config = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+        if not isinstance(config, dict):
+            raise ValueError('설정 파일 형식이 올바르지 않습니다.')
+        config.update(resolution={'width': width, 'height': height}, personality=personality)
+        temporary = CONFIG_FILE.with_suffix('.json.tmp')
+        temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
+        temporary.replace(CONFIG_FILE)
         print(f"[설정 저장] {width}x{height}px, 성격: {personality} → {CONFIG_FILE}")
     except Exception as e:
         print(f"[설정 저장 오류] {e}")
+        raise

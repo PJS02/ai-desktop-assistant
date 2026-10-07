@@ -90,6 +90,11 @@ class SupertonicTTS(QObject):
         self._voice_id = voice_id
         self._settings.setValue("tts/voice_id", voice_id)
 
+    def sync_settings(self):
+        self._settings.sync()
+        if self._settings.status() != QSettings.Status.NoError:
+            raise OSError('음성 설정을 저장하지 못했습니다.')
+
     def speak(self, text: str) -> None:
         if self._closed or not self._enabled:
             return
