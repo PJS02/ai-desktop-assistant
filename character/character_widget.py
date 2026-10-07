@@ -1726,6 +1726,8 @@ class CharacterWidget(QLabel):
         """들고있던 아이템을 바탕화면으로 순차적 반환 (1초 간격)"""
         if not self.held_items:
             return
+        if self._release_timer is not None and self._release_timer.isActive():
+            return
         
         # 반환 대기 리스트 설정
         self._remaining_items_to_release = list(self.held_items)
@@ -1733,14 +1735,14 @@ class CharacterWidget(QLabel):
         print(f"\n[아이템 반환 시작] {len(self._remaining_items_to_release)}개 아이템")
         print(f"   캐릭터 위치: ({self.x()}, {self.y()})")
         
-        # 첫 번째 아이템 즉시 반환
-        self._release_single_item()
-        
-        # 이후 아이템들 순차 반환 (1초 간격)
+        # 즉시 반환 뒤에도 마지막 항목까지 타이머로 처리한다.
         if len(self._remaining_items_to_release) > 1:
             self._release_timer = QTimer()
             self._release_timer.timeout.connect(self._release_single_item)
             self._release_timer.start(1000)  # 1초 간격
+
+        # 첫 번째 아이템 즉시 반환 (한 개라면 완료 처리까지 실행)
+        self._release_single_item()
 
     def _release_single_item(self):
         """단일 아이템을 바탕화면으로 반환"""
@@ -1749,11 +1751,10 @@ class CharacterWidget(QLabel):
                 self._release_timer.stop()
                 self._release_timer = None
             
-            # 모든 아이템 반환 완료
-            self.held_items = []
-            self.held_items_icons = {}
-            
-            self.mood_system.on_item_dropped()
+            # 반환 도중 새로 받은 아이템은 보관 목록에 남겨 둔다.
+            if not self.held_items:
+                self.held_items_icons = {}
+                self.mood_system.on_item_dropped()
             
             print(f"\n[모든 아이템 반환 완료]")
             print(self.mood_system.get_formatted_mood_log())
@@ -1773,7 +1774,7 @@ class CharacterWidget(QLabel):
                 return
             
             # 반환할 아이템 선택
-            item_path = self._remaining_items_to_release.pop(0)
+            item_path = self._remaining_items_to_release[0]
             held_item_path = Path(item_path)
             item_name = held_item_path.name
             
@@ -1791,6 +1792,7 @@ class CharacterWidget(QLabel):
             
             # 바탕화면으로 이동
             shutil.move(str(held_item_path), str(dest_path))
+            self._remaining_items_to_release.pop(0)
             
             # held_items에서도 제거
             self.held_items.remove(item_path)
@@ -1804,8 +1806,13 @@ class CharacterWidget(QLabel):
             
             # 아이콘 업데이트 (제거된 아이템을 반영)
             self.render()
+            if not self._remaining_items_to_release:
+                self._release_single_item()
             
         except Exception as e:
+            if self._release_timer is not None:
+                self._release_timer.stop()
+                self._release_timer = None
             print(f"[오류] 아이템 반환 실패: {e}")
 
     # ====== 점프 시스템 ======
