@@ -14,6 +14,10 @@
   const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
   const mix = (a, b, t) => a + (b - a) * t;
   const cycle = (t, duration) => ((t / duration) % 1 + 1) % 1;
+  // One full left/right running stride. A duty factor below half leaves two
+  // short flight intervals; speed follows the planted foot's linear travel.
+  const runProfile = Object.freeze({duration: .8, stride: 56, stance: .34,
+    lift: 38, fps: 60, frameCount: 48, speed: 56 / (.8 * .34)});
   // Valence/arousal positions are art-direction coordinates, not measurements.
   const emotions = {
     neutral:{label:'중립',valence:0,arousal:0},
@@ -111,6 +115,21 @@
     };
   }
 
+  /** C1 run cycle: brief support, then a folded recovery with no foot snap. */
+  function runGait(phase, stride = runProfile.stride, lift = runProfile.lift) {
+    const q = ((phase % 1) + 1) % 1, support = runProfile.stance;
+    if (q < support) {
+      return {x: stride * (-.5 + q / support), y: 0, angle: 0, stance: true, phase: q};
+    }
+    const r = (q - support) / (1 - support), r2 = r * r, r3 = r2 * r;
+    const arch = Math.sin(Math.PI * r) ** 2;
+    return {
+      x: stride * (.5 - 3 * r2 + 2 * r3 + (1 - support) / support * (r - 3 * r2 + 2 * r3)),
+      y: -lift * arch, angle: 26 * Math.sin(TAU * r) * arch,
+      stance: false, phase: q
+    };
+  }
+
   /**
    * Two-bone IK with a stable bend side. Angles are rotations of a DOWN-pointing
    * bone: positive degrees rotate clockwise on a y-down Canvas. Unreachable
@@ -185,14 +204,18 @@
    * Clock-driven motion, sampled directly rather than played as sparse frames.
    * Optional walkAmount supports accelerating/decelerating under any expression.
    * It changes the stride and arm swing together; direction belongs to renderer.
+   * Optional runAmount blends the separate running stride; run/run_<emotion>
+   * default to a full run. Existing walk and action samples stay unchanged.
    * Optional emotion selects only the face; omitted/'auto' keeps action defaults.
    * Optional speaking/speechTime layers speech without restarting action motion.
    */
   function pose(state, time, options = {}) {
     if (!Number.isFinite(time)) time = 0;
     const walkingState = state === 'walk' || state.startsWith('walk_');
-    const emotion = state.startsWith('walk_') ? state.slice(5) : state;
+    const runningState = state === 'run' || state.startsWith('run_');
+    const emotion = state.startsWith('walk_') ? state.slice(5) : state.startsWith('run_') ? state.slice(4) : state;
     const amount = clamp(options.walkAmount === undefined ? (walkingState ? 1 : 0) : options.walkAmount);
+    const runAmount = clamp(options.runAmount === undefined ? (runningState ? 1 : 0) : options.runAmount);
     const breathe = TAU * time / 4.6;
     const s = Math.sin(breathe), c = Math.cos(breathe);
     const p = {
@@ -376,6 +399,44 @@
       p.waveSideGesture *= 1 - amount;
       p.waveForearmShorten *= 1 - amount;
     }
+    if (runAmount > 0) {
+      const phase = time / runProfile.duration, q = cycle(time, runProfile.duration), a = TAU * phase;
+      const near = runGait(phase), far = runGait(phase + .5);
+      // Lift the feet WITH the pelvis in flight. A pelvis-only hop stretches
+      // the short painted legs and makes the hidden hip correction do the work.
+      const half = q % .5, flight = half > runProfile.stance
+        ? Math.sin(Math.PI * (half - runProfile.stance) / (.5 - runProfile.stance)) ** 2 : 0;
+      const flightLift = 12 * flight;
+      p.footNearX = mix(p.footNearX, near.x, runAmount);
+      p.footNearY = mix(p.footNearY, near.y - flightLift, runAmount);
+      p.footFarX = mix(p.footFarX, far.x, runAmount);
+      p.footFarY = mix(p.footFarY, far.y - flightLift, runAmount);
+      p.footNearAngle = mix(p.footNearAngle, near.angle, runAmount);
+      p.footFarAngle = mix(p.footFarAngle, far.angle, runAmount);
+      p.bodyY = mix(p.bodyY, 3 - 6 * Math.sin(a) ** 2 - flightLift, runAmount);
+      p.bodyX = mix(p.bodyX, 0, runAmount);
+      const lean = -16.5 + .45 * Math.sin(a);
+      p.lean = mix(p.lean, lean, runAmount);
+      p.headAngle = mix(p.headAngle, 5 + .7 * Math.sin(a - .3), runAmount);
+      // The arm opposite the forward leg leads, with a bent elbow and a small
+      // delayed wrist response. Leave airArms off to retain frontal arm depth.
+      // Shift the swing behind the shoulders and widen its rear reach. The far
+      // forearm folds more tightly so its hidden elbow never reads as straight.
+      p.armNear = mix(p.armNear, -14 - 34 * Math.cos(a - .16), runAmount);
+      p.armFar = mix(p.armFar, -14 + 34 * Math.cos(a - .16), runAmount);
+      p.elbowNear = mix(p.elbowNear, 85 + 10 * Math.sin(a - .35), runAmount);
+      p.elbowFar = mix(p.elbowFar, 105 - 8 * Math.sin(a - .35), runAmount);
+      p.wristNear = mix(p.wristNear, -4 + 4 * Math.sin(a - .5), runAmount);
+      p.wristFar = mix(p.wristFar, -4 - 4 * Math.sin(a - .5), runAmount);
+      p.airborne = mix(p.airborne, flight, runAmount);
+      p.airArms *= 1 - runAmount;
+      for (const key of ['idleGesture', 'thinkGesture', 'waveGesture', 'waveArmOffset',
+        'waveElbowOffset', 'waveWristOffset', 'waveSideGesture', 'waveForearmShorten']) p[key] *= 1 - runAmount;
+      // Only new run samples carry these channels. The renderer projects the
+      // forward tilt for each view without changing historical action poses.
+      p.runGesture = runAmount;
+      p.runLean = lean * runAmount;
+    }
     p.blink = clamp(p.blink);
     // Repeated air actions need extra headroom. A composed sequence may keep
     // its own fixed framing independently of the arms' front/back depth.
@@ -396,23 +457,33 @@
       this.target = {...initial};
       this.previousTarget = {...initial};
     }
+    withRunRest(target) {
+      const next = {...target};
+      // Historical poses deliberately omit new channels. Once a transition
+      // has used them, an absent channel means returning to its zero rest.
+      for (const key of ['runGesture', 'runLean']) {
+        if (key in this.values && !(key in next)) next[key] = 0;
+      }
+      return next;
+    }
     retarget(target) {
-      this.target = {...target};
+      this.target = this.withRunRest(target);
       // A state change is a position goal, not a fictitious one-frame velocity.
-      this.previousTarget = {...target};
-      for (const [key, value] of Object.entries(target)) {
-        if (!(key in this.values)) { this.values[key] = value; this.velocity[key] = 0; }
+      this.previousTarget = {...this.target};
+      for (const [key, value] of Object.entries(this.target)) {
+        if (!(key in this.values)) { this.values[key] = key === 'runGesture' || key === 'runLean' ? 0 : value; this.velocity[key] = 0; }
       }
       return this;
     }
     step(target, dt) {
       if (typeof target === 'number' && dt === undefined) { dt = target; target = this.target; }
       target = target || this.target;
+      target = this.withRunRest(target);
       this.target = {...target};
       if (!(dt > 0) || !Number.isFinite(dt)) return {...this.values};
       for (const [key, goal] of Object.entries(target)) {
         if (!Number.isFinite(goal)) continue;
-        if (!(key in this.values)) { this.values[key] = goal; this.velocity[key] = 0; }
+        if (!(key in this.values)) { this.values[key] = key === 'runGesture' || key === 'runLean' ? 0 : goal; this.velocity[key] = 0; }
         const previous = this.previousTarget[key] === undefined ? goal : this.previousTarget[key];
         const goalVelocity = (goal - previous) / dt;
         const omega = key === 'blink' ? 78 : key === 'mouthOpen' ? 65 : key.startsWith('foot') ? 36 : 24;
@@ -422,7 +493,7 @@
         const decay = Math.exp(-omega * dt);
         this.values[key] = goal + (error + c * dt) * decay;
         this.velocity[key] = goalVelocity + (relativeVelocity - omega * c * dt) * decay;
-        if ((key==='blink'||key==='mouthOpen'||key==='speaking'||key==='thinkGesture'||key==='waveGesture'||key==='waveSideGesture'||key==='waveForearmShorten'||key==='airborne'||key==='airArms'||key==='idleGesture'||key.startsWith('expr')) && (this.values[key] < 0 || this.values[key] > 1)) {
+        if ((key==='blink'||key==='mouthOpen'||key==='speaking'||key==='thinkGesture'||key==='waveGesture'||key==='waveSideGesture'||key==='waveForearmShorten'||key==='airborne'||key==='airArms'||key==='idleGesture'||key==='runGesture'||key.startsWith('expr')) && (this.values[key] < 0 || this.values[key] > 1)) {
           this.values[key] = clamp(this.values[key]); this.velocity[key] = 0;
         }
       }
@@ -488,5 +559,5 @@
     return result;
   }
 
-  return {smoothstep, sideWavePreparation, sideWaveRoll, gait, solveIK, pose, applyEmotion, applySpeech, blinkAt, speechAt, PoseTransition, deformPoint, emotions, expressionKeys};
+  return {smoothstep, sideWavePreparation, sideWaveRoll, gait, runGait, runProfile, solveIK, pose, applyEmotion, applySpeech, blinkAt, speechAt, PoseTransition, deformPoint, emotions, expressionKeys};
 });

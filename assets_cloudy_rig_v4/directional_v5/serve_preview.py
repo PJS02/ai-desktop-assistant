@@ -24,7 +24,7 @@ class Handler(SimpleHTTPRequestHandler):
         data=self.rfile.read(size)
         try:
             im=Image.open(BytesIO(data))
-            assert im.format=='PNG' and im.size in [(720,1080),(4320,3240)]
+            assert im.format=='PNG' and im.size in [(720,1080),(4320,3240),(4320,2160)]
             im.load()
         except Exception:
             self.send_error(400,'Invalid PNG');return

@@ -181,7 +181,12 @@ class Renderer{
    const flex=orientation*(pose['wrist'+suffix]+(sideWave?(pose.waveWristOffset||0):0));
    hand={name:handName,pivot:handPivot,angle:b+flex,forearmAngle:b,flex,projectionScale:forearmScale};
   }
-  const normalScale=root.CloudyGirth?root.CloudyGirth.scale(cfg.prefix,type,near):undefined;
+  const baseNormalScale=root.CloudyGirth?root.CloudyGirth.scale(cfg.prefix,type,near):undefined;
+  // Roll the far side arm as one connected painted surface. Mirroring both
+  // bones keeps the elbow, sleeve, cuff and palm continuous; a wrist-only cut
+  // exposes a seam and opposing upper/forearm maps pinch the elbow.
+  const normalScale=type==='arm'&&!near&&cfg.prefix!=='front'
+   ?(boneIndex,fraction)=>-(baseNormalScale?baseNormalScale(boneIndex,fraction):1):baseNormalScale;
   const splitMaterials=this.textures[name+'_connected_wave_cloth']&&this.textures[name+'_connected_wave_hardware']
    &&this.textures[name+'_connected_wave_tag']&&this.textures[name+'_wave_elbow_cloth_cap_v16'];
   const waveLayers=type==='arm'&&near&&cfg.prefix!=='front'&&(pose.waveSideGesture||0)>0&&root.CloudySideWaveSkinning&&splitMaterials
@@ -317,8 +322,10 @@ class Renderer{
     }
     // The left painted hands were tilted against the forearm axis. Correct
     // their resting alignment below the cuff; retain the small wrist sway.
-    const alignment=cfg.prefix==='left'?(near?13:-12):0;
-   return rotate(mapped,(hand.flex+alignment)*M.smoothstep((axial+3)/28),opening);
+    const alignment=cfg.prefix==='left'?(near?13:12):0;
+    const wristAngle=(hand.flex+alignment)*M.smoothstep((axial+3)/28);
+    mapped=rotate(mapped,wristAngle,opening);
+   return mapped;
    };
    const attachmentBank=P[segmented?clothTexture:name+'_connected_wave_cuff_fallback_v18'];
    const movingCuff=wholeCuff&&root.CloudySideCuffMotion&&attachmentBank&&attachmentBank.cuffAttachmentBoundary;
@@ -578,7 +585,16 @@ class Renderer{
   // after it ends. Gesture thresholds control bone mapping, never asset swaps.
   this.action=options.action||null;
   const gl=this.gl;gl.useProgram(this.program);gl.activeTexture(gl.TEXTURE0);gl.enable(gl.BLEND);gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
-  const cfg=yaw<-21?views[0][1]:yaw>21?views[6][1]:views[3][1];
+  // Running is a side-only clip. Direct callers requesting a frontal run use
+  // the left artwork; other actions keep their frontal view, including recovery.
+  const sideRun=this.action==='run'||(!this.action&&(pose.runGesture||0)>0);
+  const cfg=yaw<-21||sideRun&&Math.abs(yaw)<=21?views[0][1]:yaw>21?views[6][1]:views[3][1];
+  // Side artwork faces opposite directions, so project the running tilt toward
+  // the travel direction without changing any historical action pose.
+  if(pose.runGesture>0&&Number.isFinite(pose.runLean)){
+   const projection=cfg.prefix==='right'?-1:1;
+   pose={...pose,lean:pose.lean+(projection-1)*pose.runLean};
+  }
   // Keep a fixed framing throughout each air-action cycle: the character must
   // not shrink and grow with jump height. Blend only when entering/leaving it.
   this.viewZoom=Number.isFinite(pose.framingZoom)?Math.max(.86,Math.min(1,pose.framingZoom)):1-.14*Math.max(0,Math.min(1,pose.airArms||0));
