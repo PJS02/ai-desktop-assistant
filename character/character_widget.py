@@ -22,7 +22,7 @@ from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameDialog
-from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options
+from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 
 
 # Context 모듈 import
@@ -118,6 +118,7 @@ class CharacterWidget(QLabel):
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
         self.jump_height = options['jump_height']
+        self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.show_debug = options['show_hitboxes']
 
         # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
@@ -1467,7 +1468,7 @@ class CharacterWidget(QLabel):
             self.rig_view.set_debug_painter(self._paint_debug if self.show_debug else None)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None):
         """Update bounds and personality without resetting the current mood."""
         screen = QApplication.primaryScreen()
         if screen is not None:
@@ -1479,6 +1480,8 @@ class CharacterWidget(QLabel):
             'movement_speed': self.movement_speed if movement_speed is None else movement_speed,
             'jump_height': self.jump_height if jump_height is None else jump_height,
             'show_hitboxes': self.show_debug if show_hitboxes is None else show_hitboxes,
+            'movement_range_extra_percent': (self.movement_range_extra_percent
+                                            if movement_range_extra_percent is None else movement_range_extra_percent),
         }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
@@ -1486,6 +1489,7 @@ class CharacterWidget(QLabel):
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
         self.jump_height = options['jump_height']
+        self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.set_show_hitboxes(options['show_hitboxes'])
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height) + self.gravity
         bounds_changed = (self.custom_screen_width, self.custom_screen_height) != (width, height)
@@ -1908,7 +1912,12 @@ class CharacterWidget(QLabel):
         
         mood = self.mood_system.decide_emotion()
         emotion = mood['emotion']
-        move_range = self._get_emotion_response_profile(emotion)["move_range"]
+        base_range = self._get_emotion_response_profile(emotion)["move_range"]
+        scale = random_movement_scale(
+            getattr(self, 'size_percent', DEFAULT_CHARACTER_OPTIONS['size_percent']),
+            getattr(self, 'movement_range_extra_percent', DEFAULT_CHARACTER_OPTIONS['movement_range_extra_percent']),
+        )
+        move_range = round(base_range * scale)
 
         # 감정에 따라 움직이는 범위 결정 (X축만: 왼쪽/오른쪽)
         # Y축은 중력에 의해서만 제어됨

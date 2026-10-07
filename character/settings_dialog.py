@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 
 from .personality_system import PersonalitySystem
 from .tts_service import available_voices
-from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options
+from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
 
 
 class SettingsDialog(QDialog):
@@ -102,12 +102,13 @@ class SettingsDialog(QDialog):
         return combo
 
     def _character_page(self, local):
-        _, _, form = self._page('캐릭터', '크기와 이동 속도는 바로 적용되고, 점프 높이는 다음 점프부터 반영됩니다. 활동 범위와 점프는 화면 안으로 제한됩니다.')
+        _, _, form = self._page('캐릭터', '크기와 이동 속도는 바로 적용되고, 이동 폭은 다음 랜덤 이동부터, 점프 높이는 다음 점프부터 반영됩니다. 활동 범위와 점프는 화면 안으로 제한됩니다.')
         self.character_sliders = {}
         self.character_inputs = {}
         for key, label, suffix in (
             ('size_percent', '캐릭터 크기', ' %'),
             ('movement_speed', '이동 속도', ' px/초'),
+            ('movement_range_extra_percent', '추가 이동 폭 비율', ' %'),
             ('jump_height', '점프 높이', ' px'),
         ):
             row = QWidget()
@@ -133,6 +134,16 @@ class SettingsDialog(QDialog):
         form.addRow('', self.size_preview)
         self.character_inputs['size_percent'].valueChanged.connect(self._describe_size)
         self._describe_size()
+        self.movement_range_preview = QLabel()
+        self.movement_range_preview.setWordWrap(True)
+        form.addRow('', self.movement_range_preview)
+        range_hint = QLabel('감정별 기본 이동 폭에 (캐릭터 크기 비율 + 추가 비율)을 적용합니다.\n'
+                           '추가 0%는 크기만 반영하고, 음수는 줄이고 양수는 늘립니다.')
+        range_hint.setWordWrap(True)
+        form.addRow('', range_hint)
+        for key in ('size_percent', 'movement_range_extra_percent'):
+            self.character_inputs[key].valueChanged.connect(self._describe_movement_range)
+        self._describe_movement_range()
         self.show_hitboxes = QCheckBox('히트박스·인식한 창 표시')
         self.show_hitboxes.setChecked(local['character']['show_hitboxes'])
         form.addRow(self.show_hitboxes)
@@ -169,6 +180,15 @@ class SettingsDialog(QDialog):
     def _describe_size(self):
         percent = self.character_inputs['size_percent'].value()
         self.size_preview.setText(f"크기 배율: {percent}% · 가로세로 비율 유지")
+
+    def _describe_movement_range(self):
+        size = self.character_inputs['size_percent'].value()
+        extra = self.character_inputs['movement_range_extra_percent'].value()
+        total = round(random_movement_scale(size, extra) * 100)
+        self.movement_range_preview.setText(
+            f'최종 이동 폭: 감정별 기본 폭의 {total}% (크기 {size}% + 추가 {extra:+d}%)'
+            + (' · 랜덤 걷기 없음' if total == 0 else '')
+        )
 
     def _set_resolution_preset(self):
         value = self.resolution_preset.currentData()

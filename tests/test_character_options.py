@@ -116,7 +116,8 @@ def test_character_option_storage_migrates_and_preserves_extra_keys(tmp_path, mo
     path.write_text('{"width":1280,"height":720,"extra":42}', encoding='utf-8')
     monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
     assert config_manager.load_character_options() == DEFAULT_CHARACTER_OPTIONS
-    options = {'size_percent': 160, 'movement_speed': 125, 'jump_height': 300, 'show_hitboxes': False}
+    options = {'size_percent': 160, 'movement_speed': 125, 'jump_height': 300, 'show_hitboxes': False,
+               'movement_range_extra_percent': 50}
     config_manager.save_config(1280, 720, character_options=options)
     assert config_manager.load_character_options() == options
     assert json.loads(path.read_text(encoding='utf-8'))['extra'] == 42
@@ -178,6 +179,7 @@ def test_settings_slider_numeric_input_apply_and_cancel(real_character):
     dialog.character_sliders['size_percent'].setValue(150)
     dialog.character_inputs['movement_speed'].setValue(125)
     dialog.character_sliders['jump_height'].setValue(300)
+    dialog.character_inputs['movement_range_extra_percent'].setValue(50)
     assert dialog.character_inputs['size_percent'].value() == 150
     assert dialog.character_sliders['movement_speed'].value() == 125
     emitted = []
@@ -185,22 +187,28 @@ def test_settings_slider_numeric_input_apply_and_cancel(real_character):
     dialog.submit(False)
     values = emitted[0]['local']['character']
     assert (values['size_percent'], values['movement_speed'], values['jump_height']) == (150, 125, 300)
+    assert values['movement_range_extra_percent'] == 50
+    assert '200%' in dialog.movement_range_preview.text()
     dialog.complete('saved', local={'character': values})
     assert dialog.changes()['local'] == {}
     dialog.character_inputs['movement_speed'].setValue(300)
+    dialog.character_inputs['movement_range_extra_percent'].setValue(-50)
     dialog.reject()
     assert dialog.local_baseline['character']['movement_speed'] == 125
+    assert dialog.local_baseline['character']['movement_range_extra_percent'] == 50
 
 
 def test_saved_character_options_apply_at_startup(real_character, tmp_path, monkeypatch):
     path = tmp_path / 'character.json'
     monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
-    options = {'size_percent': 200, 'movement_speed': 125, 'jump_height': 300}
+    options = {'size_percent': 200, 'movement_speed': 125, 'jump_height': 300,
+               'movement_range_extra_percent': 50}
     config_manager.save_config(1920, 1080, character_options=options)
     restarted = CharacterWidget(character_options=config_manager.load_character_options())
     try:
         assert (restarted.width(), restarted.height()) == (300, 400)
         assert restarted.movement_speed == 125 and restarted.jump_height == 300
+        assert restarted.movement_range_extra_percent == 50
     finally:
         restarted.close()
 
@@ -251,3 +259,84 @@ def test_diagnostics_use_host_coordinates_and_toggle_removes_all_pixels(real_cha
     assert image.pixelColor(rect.right() - 1, rect.center().y()).red() > 200
     host.set_show_hitboxes(False)
     assert not any(paint().pixelColor(x, y).alpha() for x, y in [(30, 125), (148, 150), (10, 10)])
+
+
+@pytest.mark.parametrize('size,extra,emotion,limit', [
+    (100, 0, 'neutral', 200), (50, 0, 'neutral', 100),
+    (200, 0, 'neutral', 400), (200, 50, 'neutral', 500),
+    (100, -50, 'neutral', 100), (200, 50, 'joy', 250),
+    (200, 50, 'sadness', 100),
+])
+@pytest.mark.parametrize('direction', [-1, 1])
+def test_random_route_scales_with_size_plus_extra_and_keeps_emotion_difference(
+        size, extra, emotion, limit, direction, monkeypatch):
+    host = moving_host()
+    host._x = 700
+    host.size_percent = size
+    host.movement_range_extra_percent = extra
+    host.mood_system.emotion = emotion
+    monkeypatch.setattr(character_widget.random, 'random', lambda: .5)
+    sampled = []
+    def choose(low, high):
+        sampled.append((low, high))
+        return direction * high
+    monkeypatch.setattr(character_widget.random, 'randint', choose)
+    host.random_move()
+    assert sampled == [(-limit, limit)]
+    assert host._target_x == 700 + direction * limit
+    assert host.movement_speed == 80
+
+
+@pytest.mark.parametrize('extra', [-50, -200])
+def test_zero_or_negative_total_range_does_not_start_walking(extra, monkeypatch):
+    host = moving_host()
+    host.size_percent = 50
+    host.movement_range_extra_percent = extra
+    monkeypatch.setattr(character_widget.random, 'random', lambda: .5)
+    host.random_move()
+    assert not host.is_moving and host.x() == 200
+    assert not host._move_timer.start.called
+
+
+@pytest.mark.parametrize('direction', [-1, 1])
+def test_expanded_random_range_still_respects_screen_edges(direction, monkeypatch):
+    host = moving_host()
+    host.size_percent = 200
+    host.movement_range_extra_percent = 200
+    host.mood_system.emotion = 'neutral'
+    host._x = 10 if direction < 0 else 1760
+    monkeypatch.setattr(character_widget.random, 'random', lambda: .5)
+    monkeypatch.setattr(character_widget.random, 'randint', lambda low, high: direction * high)
+    host.random_move()
+    assert host._target_x == (0 if direction < 0 else 1770)
+
+
+def test_extra_range_apply_does_not_interrupt_current_motion(real_character):
+    host, _app = real_character
+    host.is_moving = True
+    before = host.pos()
+    host.apply_character_settings(*host._get_screen_dimensions(), 'Russell (기본)',
+                                  movement_range_extra_percent=50)
+    assert host.movement_range_extra_percent == 50
+    assert host.is_moving and host.pos() == before
+
+
+def test_legacy_options_keep_size_and_default_to_no_extra_range(tmp_path, monkeypatch):
+    path = tmp_path / 'legacy.json'
+    path.write_text(json.dumps({'character_options': {'size_percent': 150, 'movement_speed': 125,
+                                                      'jump_height': 300, 'show_hitboxes': False}}))
+    monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
+    saved = config_manager.load_character_options()
+    assert saved['movement_range_extra_percent'] == 0
+    assert saved['size_percent'] == 150 and saved['movement_speed'] == 125
+
+
+@pytest.mark.parametrize('invalid', [-201, 201, float('nan')])
+def test_invalid_extra_range_does_not_overwrite_saved_options(tmp_path, monkeypatch, invalid):
+    path = tmp_path / 'range.json'
+    monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
+    config_manager.save_config(1920, 1080, character_options={'movement_range_extra_percent': 50})
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        config_manager.save_config(1920, 1080, character_options={'movement_range_extra_percent': invalid})
+    assert path.read_bytes() == before
