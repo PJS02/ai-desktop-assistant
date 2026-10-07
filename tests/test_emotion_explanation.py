@@ -66,3 +66,11 @@ def test_manual_russell_adjustment_is_visible_as_a_reason():
     assert latest["category"] == "manual"
     assert latest["after_valence"] == mood.russell.valence
     assert latest["impact_score"] > 0
+
+
+def test_explanation_returns_retained_history_and_explicit_limit():
+    mood = MoodSystem()
+    for _ in range(40):
+        mood.on_click()
+    assert len(mood.get_emotion_explanation()['recent_events']) == 30
+    assert len(mood.get_emotion_explanation(limit=8)['recent_events']) == 8

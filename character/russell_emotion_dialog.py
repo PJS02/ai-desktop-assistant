@@ -1,4 +1,5 @@
 import math
+from copy import deepcopy
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -10,6 +11,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
@@ -397,6 +399,7 @@ class RussellEmotionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Russell 감정 판단 근거 · Explainable Emotion AI")
+        self.setFont(QFont("Malgun Gothic", 9))
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
         )
@@ -405,6 +408,8 @@ class RussellEmotionDialog(QDialog):
         self._state_provider = None
         self._manual_control_callback = None
         self._explanation_provider = None
+        self._influence_paused = False
+        self._latest_events = []
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_from_provider)
 
@@ -471,14 +476,32 @@ class RussellEmotionDialog(QDialog):
         self.influence_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.influence_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.influence_table.setAlternatingRowColors(True)
+        self.influence_table.setWordWrap(False)
+        self.influence_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.influence_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.influence_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.influence_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             self.influence_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.influence_table.setMinimumHeight(225)
 
-        influence_group = QGroupBox("최근 영향 요인")
+        influence_group = QGroupBox()
         influence_layout = QVBoxLayout()
+        self.influence_title = QLabel("최근 영향 요인")
+        influence_font = self.influence_title.font()
+        influence_font.setBold(True)
+        self.influence_title.setFont(influence_font)
+        self.pause_button = QPushButton("일시정지")
+        self.pause_button.setToolTip("최근 영향 요인 목록만 고정합니다. 감정 처리와 기록은 계속됩니다.")
+        self.pause_button.clicked.connect(self._toggle_influence_pause)
+        self.pause_label = QLabel("실시간")
+        self.pause_label.setStyleSheet("color: #4667a8;")
+        influence_header = QHBoxLayout()
+        influence_header.addWidget(self.influence_title)
+        influence_header.addWidget(self.pause_button)
+        influence_header.addWidget(self.pause_label)
+        influence_header.addStretch()
+        influence_layout.addLayout(influence_header)
         influence_layout.addWidget(self.influence_table)
         influence_group.setLayout(influence_layout)
 
@@ -564,6 +587,9 @@ class RussellEmotionDialog(QDialog):
             QProgressBar { border: 1px solid #d6dce7; border-radius: 5px; text-align: center;
                            background: #edf0f5; min-height: 17px; }
             QProgressBar::chunk { background: #5b8def; border-radius: 4px; }
+            QPushButton { background: white; color: #263b69; border: 1px solid #c8d9ff;
+                          border-radius: 6px; padding: 7px 14px; }
+            QPushButton:hover { background: #eaf1ff; }
         """)
 
     def set_state_provider(self, provider):
@@ -574,7 +600,7 @@ class RussellEmotionDialog(QDialog):
 
     def set_live_mode(self):
         self._refresh_from_provider()
-        if self._state_provider is not None:
+        if self._state_provider is not None or self._explanation_provider is not None:
             self.start_auto_refresh()
 
     def set_explanation_provider(self, provider):
@@ -596,6 +622,7 @@ class RussellEmotionDialog(QDialog):
 
     def update_explanation(self, snapshot: dict) -> None:
         """MoodSystem의 설명 스냅샷을 분석 패널 전체에 반영한다."""
+        self._latest_events = deepcopy(snapshot.get("recent_events", []))
         self.update_state(
             snapshot.get("valence", 0.0),
             snapshot.get("arousal", 0.0),
@@ -607,7 +634,7 @@ class RussellEmotionDialog(QDialog):
         latest = snapshot.get("latest_change")
         if latest:
             category = latest.get("category", "")
-            marker = {"positive": "+", "negative": "−", "recovery": "↺"}.get(category, "•")
+            marker = {"positive": "+", "negative": "-", "recovery": "회복"}.get(category, "변화")
             score = abs(int(latest.get("impact_score", 0)))
             self.change_label.setText(
                 f"{marker}  {latest.get('source', '감정 사건')}  ·  영향도 {score}\n"
@@ -618,34 +645,8 @@ class RussellEmotionDialog(QDialog):
         else:
             self.change_label.setText("아직 기록된 감정 사건이 없습니다. 캐릭터와 상호작용해 보세요.")
 
-        events = snapshot.get("recent_events", [])[:7]
-        self.influence_table.setRowCount(len(events))
-        for row, item in enumerate(events):
-            category = item.get("category", "")
-            marker = {"positive": "+", "negative": "−", "recovery": "↺"}.get(category, "•")
-            score = abs(int(item.get("impact_score", 0)))
-            values = [
-                datetime.fromtimestamp(item.get("timestamp", 0)).strftime("%H:%M:%S"),
-                item.get("source", ""),
-                f"{marker}{score}",
-                f"{item.get('delta_valence', 0):+.3f}",
-                f"{item.get('delta_arousal', 0):+.3f}",
-            ]
-            color = {
-                "positive": QColor("#16804b"),
-                "negative": QColor("#c23b3b"),
-                "recovery": QColor("#4667a8"),
-            }.get(category, QColor("#4b5563"))
-            for column, value in enumerate(values):
-                cell = QTableWidgetItem(value)
-                if column >= 2:
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if column == 2:
-                    cell.setForeground(color)
-                    font = cell.font()
-                    font.setBold(True)
-                    cell.setFont(font)
-                self.influence_table.setItem(row, column, cell)
+        if not self._influence_paused:
+            self._render_influence_events(self._latest_events)
 
         personality = snapshot.get("personality", {})
         preset = personality.get("preset", "미설정")
@@ -676,6 +677,53 @@ class RussellEmotionDialog(QDialog):
             label.setText(self.OCC_NAMES.get(name, name or "-"))
             bar.setValue(int(round(value * 100)))
             bar.setFormat(f"{value * 100:.0f}%")
+
+    def _render_influence_events(self, events):
+        scroll_position = self.influence_table.verticalScrollBar().value()
+        self.influence_table.setRowCount(len(events))
+        for row, item in enumerate(events):
+            category = item.get("category", "")
+            marker = {"positive": "+", "negative": "-", "recovery": "회복 "}.get(category, "변화 ")
+            score = abs(int(item.get("impact_score", 0)))
+            values = [
+                datetime.fromtimestamp(item.get("timestamp", 0)).strftime("%H:%M:%S"),
+                item.get("source", ""),
+                f"{marker}{score}",
+                f"{item.get('delta_valence', 0):+.3f}",
+                f"{item.get('delta_arousal', 0):+.3f}",
+            ]
+            color = {
+                "positive": QColor("#16804b"),
+                "negative": QColor("#c23b3b"),
+                "recovery": QColor("#4667a8"),
+            }.get(category, QColor("#4b5563"))
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                cell.setToolTip(value)
+                if column >= 2:
+                    cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if column == 2:
+                    cell.setForeground(color)
+                    font = cell.font()
+                    font.setBold(True)
+                    cell.setFont(font)
+                self.influence_table.setItem(row, column, cell)
+        self.influence_table.verticalScrollBar().setValue(scroll_position)
+
+    def _toggle_influence_pause(self):
+        self.set_influence_paused(not self._influence_paused)
+
+    def set_influence_paused(self, paused: bool):
+        """Freeze only the influence table; all other views stay live."""
+        paused = bool(paused)
+        if paused == self._influence_paused:
+            return
+        self._influence_paused = paused
+        self.pause_button.setText("일시정지 해제" if paused else "일시정지")
+        self.pause_label.setText("목록 고정 중" if paused else "실시간")
+        if not paused:
+            self._refresh_from_provider()
+            self._render_influence_events(self._latest_events)
 
     def _refresh_from_provider(self):
         if self._explanation_provider is not None:

@@ -986,10 +986,12 @@ class MoodSystem:
         """수동 Russell 조작을 종료하고 자동 감정 갱신을 재개한다."""
         self._manual_russell_override = False
 
-    def get_emotion_explanation(self, limit: int = 8) -> dict:
+    def get_emotion_explanation(self, limit: int | None = None) -> dict:
         """UI가 바로 표시할 수 있는 현재 판단 근거 스냅샷을 반환한다."""
         emotion_info = self.decide_emotion()
-        influences = list(self._emotion_influences)[-max(1, limit):]
+        influences = list(self._emotion_influences)
+        if limit is not None:
+            influences = influences[-max(1, limit):]
         recent_events = [item.to_dict() for item in reversed(influences)]
 
         # 활성 OCC 성분을 큰 순서대로 제공해 최종 좌표가 어디서 왔는지 드러낸다.
