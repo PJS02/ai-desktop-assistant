@@ -5,6 +5,7 @@ from PyQt6.QtCore import QObject, QTimer
 from .ai_settings import load_ai_settings, save_ai_settings
 from .config_manager import load_config, load_character_options, save_config
 from .settings_dialog import SettingsDialog
+from .motion_options import DEFAULT_CHARACTER_OPTIONS
 
 
 class SettingsController(QObject):
@@ -70,7 +71,7 @@ class SettingsController(QObject):
         try:
             for section, value in changes['local'].items():
                 if section == 'character':
-                    options = {key: value[key] for key in ('size_percent', 'movement_speed', 'jump_height')}
+                    options = {key: value[key] for key in DEFAULT_CHARACTER_OPTIONS}
                     save_config(value['width'], value['height'], value['personality'], character_options=options)
                     self.character.apply_character_settings(value['width'], value['height'], value['personality'], **options)
                 elif section == 'voice':

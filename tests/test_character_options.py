@@ -4,10 +4,11 @@ from unittest.mock import Mock
 import pytest
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QApplication
 
 from character import ai_settings, character_widget, config_manager, dialogue_system
-from character.character_widget import CharacterWidget
+from character.character_widget import CharacterWidget, Surface
 from character.motion_options import DEFAULT_CHARACTER_OPTIONS
 from character.settings_dialog import SettingsDialog
 from character.tts_service import SupertonicTTS
@@ -115,7 +116,7 @@ def test_character_option_storage_migrates_and_preserves_extra_keys(tmp_path, mo
     path.write_text('{"width":1280,"height":720,"extra":42}', encoding='utf-8')
     monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
     assert config_manager.load_character_options() == DEFAULT_CHARACTER_OPTIONS
-    options = {'size_percent': 160, 'movement_speed': 125, 'jump_height': 300}
+    options = {'size_percent': 160, 'movement_speed': 125, 'jump_height': 300, 'show_hitboxes': False}
     config_manager.save_config(1280, 720, character_options=options)
     assert config_manager.load_character_options() == options
     assert json.loads(path.read_text(encoding='utf-8'))['extra'] == 42
@@ -202,3 +203,49 @@ def test_saved_character_options_apply_at_startup(real_character, tmp_path, monk
         assert restarted.movement_speed == 125 and restarted.jump_height == 300
     finally:
         restarted.close()
+
+
+def test_hitbox_checkbox_apply_cancel_and_reload(real_character, tmp_path, monkeypatch):
+    host, _app = real_character
+    path = tmp_path / 'character.json'
+    monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
+    dialog = SettingsDialog(local_settings())
+    assert dialog.show_hitboxes.isChecked()
+    dialog.show_hitboxes.setChecked(False)
+    changes = dialog.changes()['local']['character']
+    assert changes['show_hitboxes'] is False
+    config_manager.save_config(changes.pop('width'), changes.pop('height'),
+                               changes.pop('personality'), character_options=changes)
+    host.is_moving = True
+    before = host.pos()
+    host.apply_character_settings(*host._get_screen_dimensions(), 'Russell (기본)', **changes)
+    assert host.pos() == before and host.is_moving
+    assert not host.show_debug
+    assert config_manager.load_character_options()['show_hitboxes'] is False
+    reopened = CharacterWidget(character_options=config_manager.load_character_options())
+    try:
+        assert not reopened.show_debug
+    finally:
+        reopened.close()
+    dialog.reject()
+    assert dialog.local_baseline['character']['show_hitboxes'] is True
+
+
+def test_diagnostics_use_host_coordinates_and_toggle_removes_all_pixels(real_character):
+    host, _app = real_character
+    host.add_surface(Surface('window_test', host.y() + 20, host.x() + 10,
+                             host.x() + 100, 120, window_title='검증 창'))
+    def paint():
+        image = QImage(host.size(), QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        host._paint_debug(painter)
+        painter.end()
+        return image
+    host.set_show_hitboxes(True)
+    image = paint()
+    # Window overlay and character border use host coordinates.
+    assert image.pixelColor(30, 125).alpha() > 0
+    assert image.pixelColor(host.width() - 2, host.height() // 2).red() > 200
+    host.set_show_hitboxes(False)
+    assert not any(paint().pixelColor(x, y).alpha() for x, y in [(30, 125), (148, 150), (10, 10)])

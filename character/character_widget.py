@@ -55,13 +55,14 @@ except (ImportError, OSError):
 
 class Surface:
     """캐릭터가 올라갈 수 있는 표면 (바닥, 팝업창 등)"""
-    def __init__(self, name: str, y_level: int, x_min: int = 0, x_max: int = 10000, height: int | None = None, source_key: str | None = None):
+    def __init__(self, name: str, y_level: int, x_min: int = 0, x_max: int = 10000, height: int | None = None, source_key: str | None = None, window_title: str | None = None):
         self.name = name           # 표면 이름
         self.y_level = y_level     # 캐릭터가 올라갈 Y좌표
         self.x_min = x_min         # 표면의 X 범위 시작 (좌)
         self.x_max = x_max         # 표면의 X 범위 끝 (우)
         self.height = height       # 표면 높이 (창 테두리 표시용)
         self.source_key = source_key  # 창 추적용 고유 키
+        self.window_title = window_title
     
     def __repr__(self):
         return f"Surface({self.name}, y={self.y_level}, x=[{self.x_min},{self.x_max}], h={self.height})"
@@ -117,6 +118,7 @@ class CharacterWidget(QLabel):
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
         self.jump_height = options['jump_height']
+        self.show_debug = options['show_hitboxes']
 
         # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
         self._show_perception_console_callback = on_show_perception_console
@@ -319,7 +321,7 @@ class CharacterWidget(QLabel):
         self.is_jumping = False  # 현재 점프 중인지
         
         # 디버그 모드 (collision 박스 및 ground indicator 표시)
-        self.show_debug = self.rig_view is None  # Preserve the legacy debug default.
+        # The visibility setting is shared by both sprite and native renderers.
         
         # 착지 감지 상태 추적 (로그 중복 제제거)
         self._last_surface_name = None  # 이전 착지 표면 이름
@@ -387,6 +389,7 @@ class CharacterWidget(QLabel):
                 view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                 view.setGeometry(self.rect())
                 view.set_external_physics(True)
+                view.set_debug_painter(self._paint_debug if self.show_debug else None)
                 self.rig_view = view
                 self.sprite_animator = RigAnimator(view, parent=self)
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
@@ -1458,7 +1461,13 @@ class CharacterWidget(QLabel):
         scale = self.size_percent / 100
         return round(self.CHARACTER_WIDTH * scale), round(self.CHARACTER_HEIGHT * scale)
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None):
+    def set_show_hitboxes(self, enabled):
+        self.show_debug = bool(enabled)
+        if self.rig_view is not None:
+            self.rig_view.set_debug_painter(self._paint_debug if self.show_debug else None)
+        self.update()
+
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None):
         """Update bounds and personality without resetting the current mood."""
         screen = QApplication.primaryScreen()
         if screen is not None:
@@ -1469,6 +1478,7 @@ class CharacterWidget(QLabel):
             'size_percent': self.size_percent if size_percent is None else size_percent,
             'movement_speed': self.movement_speed if movement_speed is None else movement_speed,
             'jump_height': self.jump_height if jump_height is None else jump_height,
+            'show_hitboxes': self.show_debug if show_hitboxes is None else show_hitboxes,
         }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
@@ -1476,6 +1486,7 @@ class CharacterWidget(QLabel):
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
         self.jump_height = options['jump_height']
+        self.set_show_hitboxes(options['show_hitboxes'])
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height) + self.gravity
         bounds_changed = (self.custom_screen_width, self.custom_screen_height) != (width, height)
         self.custom_screen_width, self.custom_screen_height = width, height
@@ -1782,78 +1793,61 @@ class CharacterWidget(QLabel):
     
     # ====== 디버그 렌더링 ======
     def paintEvent(self, event):
-        """화면 그리기 (collision box 및 ground indicator)"""
-        # 부모의 paintEvent 호출 (이미지 표시)
+        """Sprite diagnostics; the native view draws these after its GL frame."""
         super().paintEvent(event)
-        
+        if self.rig_view is not None or not self.show_debug:
+            return
+        painter = QPainter(self)
+        self._paint_debug(painter)
+        painter.end()
+
+    def _paint_debug(self, painter):
+        """Use host screen coordinates, including on the native GL child."""
         if not self.show_debug:
             return
-        
-        # 추가 디버그 그리기
-        painter = QPainter(self)
-        
-        # 1. 빨간색 collision box 그리기
-        # 4. 스크린 좌표 기반 디버그 정보 표시
-        # 절대 위치를 스크린 좌표로 표시
-        screen_pos = self.mapToGlobal(self.rect().topLeft())
-        emotion = self.mood_system.decide_emotion()
-        mood_text = emotion.get("emotion", "idle")
-        debug_text = f"Pos:({screen_pos.x()},{screen_pos.y()}) Ground:{self.on_ground}"
-        
-        painter.setPen(QColor(255, 0, 0))
-        painter.drawText(10, 20, 200, 30, Qt.AlignmentFlag.AlignLeft, debug_text)
-        
-        # 5. 현재 Surface 정보 표시
-        if self.current_surface:
-            surface_text = f"Surface: {self.current_surface.name}"
-            painter.drawText(10, 45, 300, 30, Qt.AlignmentFlag.AlignLeft, surface_text)
-        
-        # 6. 현재 Mood 상태 표시
-        painter.setPen(QColor(255, 0, 0))
-        mood_display_text = f"Mood: {mood_text}"
-        painter.drawText(10, 70, 200, 30, Qt.AlignmentFlag.AlignLeft, mood_display_text)
-        
-        # 6. Ground surface를 주황색 선으로 표시
-        ground_pen = QPen(QColor(255, 165, 0), 4)  # 주황, 두께 4px
-        painter.setPen(ground_pen)
-        widget_screen_top_left = self.mapToGlobal(QPoint(0, 0))
-        
-        for surface in self.surfaces:
-            if surface.name == "ground":
-                # ground는 수평선으로 표시
-                ground_y_widget = int(surface.y_level - widget_screen_top_left.y())
-                ground_x_min_widget = int(surface.x_min - widget_screen_top_left.x())
-                ground_x_max_widget = int(surface.x_max - widget_screen_top_left.x())
-                
-                # 화면에 보이는 범위만 그리기
-                if 0 <= ground_y_widget < self.height():
-                    painter.drawLine(ground_x_min_widget, ground_y_widget, ground_x_max_widget, ground_y_widget)
-                break
-        
-        # 7. 감지된 창 Surface의 테두리를 노란색으로 표시
-        yellow_pen = QPen(QColor(255, 255, 0), 2)  # 노랑, 두께 2px
-        yellow_brush = QBrush(QColor(255, 255, 0, 35))
-        painter.setPen(yellow_pen)
-        painter.setBrush(yellow_brush)
-
-        for surface in self.surfaces:
-            if not surface.name.startswith("window_"):
-                continue
-
+        painter.save()
+        origin = self.mapToGlobal(QPoint(0, 0))
+        host_rect = QRect(origin, self.size())
+        windows = [s for s in self.surfaces if s.name.startswith('window_')]
+        overlapping = []
+        painter.setPen(QPen(QColor(255, 220, 0), 2))
+        painter.setBrush(QBrush(QColor(255, 230, 0, 35)))
+        for surface in windows:
             if surface.height is None:
                 continue
-
-            surface_rect = QRect(
-                int(surface.x_min - widget_screen_top_left.x()),
-                int(surface.y_level - widget_screen_top_left.y()),
-                int(surface.x_max - surface.x_min),
-                int(surface.height),
-            )
-
-            if surface_rect.width() > 0 and surface_rect.height() > 0:
-                painter.drawRect(surface_rect)
-        
-        painter.end()
+            window_rect = QRect(int(surface.x_min), int(surface.y_level),
+                                int(surface.x_max - surface.x_min), int(surface.height))
+            if window_rect.intersects(host_rect):
+                overlapping.append(surface.window_title or surface.name.removeprefix('window_'))
+                painter.drawRect(window_rect.translated(-origin))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(255, 90, 90), 2))
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        painter.setPen(QPen(QColor(255, 165, 0), 3))
+        for surface in self.surfaces:
+            if surface.name == 'ground':
+                y = int(surface.y_level - origin.y())
+                if 0 <= y <= self.height():
+                    painter.drawLine(int(surface.x_min - origin.x()), min(y, self.height() - 1),
+                                     int(surface.x_max - origin.x()), min(y, self.height() - 1))
+        current = self.current_surface
+        surface_name = (current.window_title or current.name) if current else '공중'
+        lines = [f'위치: {origin.x()}, {origin.y()} | 바닥: {self.on_ground}',
+                 f'표면: {surface_name}', f'감지한 창: {len(windows)}개']
+        if overlapping:
+            lines.append('겹치는 창: ' + ', '.join(dict.fromkeys(overlapping)))
+        if not HAS_PYGETWINDOW:
+            lines.append('창 감지 기능을 사용할 수 없습니다.')
+        painter.setFont(QFont('Malgun Gothic', 7))
+        flags = Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap
+        text = '\n'.join(lines)
+        available = QRect(0, 0, self.width() - 16, self.height())
+        text_height = painter.fontMetrics().boundingRect(available, flags, text).height() + 4
+        text_rect = QRect(5, 5, self.width() - 10, min(self.height() - 10, 110, text_height))
+        painter.fillRect(text_rect, QColor(20, 26, 35, 190))
+        painter.setPen(QColor(255, 245, 210))
+        painter.drawText(text_rect.adjusted(3, 2, -3, -2), flags, text)
+        painter.restore()
 
     def update_dragging(self):
         if self.is_dragging:
@@ -2292,6 +2286,7 @@ class CharacterWidget(QLabel):
                         x_max=surface_x_max,
                         height=visible_height,
                         source_key=window_key,
+                        window_title=window.title,
                     )
                     self.add_surface(new_surface)
                     print(f"[창 감지] {surface_name}")
@@ -2309,6 +2304,7 @@ class CharacterWidget(QLabel):
                     surface.x_min = window.left
                     surface.x_max = window.left + window.width
                     surface.height = min(window.height, screen_geometry.bottom() - window.top + 1)
+                    surface.window_title = window.title
                 else:
                     # 창이 없어졌으면 Surface 제거
                     self.remove_surface(surface.name)

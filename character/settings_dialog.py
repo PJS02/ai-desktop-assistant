@@ -133,6 +133,12 @@ class SettingsDialog(QDialog):
         form.addRow('', self.size_preview)
         self.character_inputs['size_percent'].valueChanged.connect(self._describe_size)
         self._describe_size()
+        self.show_hitboxes = QCheckBox('히트박스·인식한 창 표시')
+        self.show_hitboxes.setChecked(local['character']['show_hitboxes'])
+        form.addRow(self.show_hitboxes)
+        overlay_hint = QLabel('캐릭터의 표시 영역, 겹치는 창 영역과 인식한 창 이름을 표시합니다.')
+        overlay_hint.setWordWrap(True)
+        form.addRow('', overlay_hint)
         self.resolution_preset = self._combo([
             ('사용자 정의', None), ('720p · 1280 × 720', (1280, 720)),
             ('1080p · 1920 × 1080', (1920, 1080)), ('1440p · 2560 × 1440', (2560, 1440)),
@@ -274,6 +280,7 @@ class SettingsDialog(QDialog):
                  'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData()},
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
+        local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
         remote = {}
         if self.remote_baseline is not None:

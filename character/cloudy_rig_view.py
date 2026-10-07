@@ -108,6 +108,7 @@ class CloudyRigView(QOpenGLWidget):
         self._last_plan = None
         self._last_paint_time = time.perf_counter()
         self._overlay = QPixmap()
+        self._debug_painter = None
         self._frames = 0
         self._plan_ms = self._draw_ms = self._max_plan_ms = 0.0
         self._peak_decode_bytes = 0
@@ -151,6 +152,10 @@ class CloudyRigView(QOpenGLWidget):
 
     def set_overlay_pixmap(self, pixmap: QPixmap):
         self._overlay = pixmap
+        self.update()
+
+    def set_debug_painter(self, callback):
+        self._debug_painter = callback
         self.update()
 
     def _time(self) -> float:
@@ -345,9 +350,12 @@ class CloudyRigView(QOpenGLWidget):
             # Restore the active texture unit before Qt composites the widget.
             gl.glActiveTexture(0x84C0)
             gl.glViewport(0, 0, width, height)
-            if not self._overlay.isNull():
+            if not self._overlay.isNull() or self._debug_painter is not None:
                 painter = QPainter(self)
-                painter.drawPixmap(self.rect(), self._overlay)
+                if not self._overlay.isNull():
+                    painter.drawPixmap(self.rect(), self._overlay)
+                if self._debug_painter is not None:
+                    self._debug_painter(painter)
                 painter.end()
             self._draw_ms = (time.perf_counter() - t0) * 1000 - self._plan_ms
             self._frames += 1
@@ -379,6 +387,7 @@ class CloudyRigView(QOpenGLWidget):
     def release(self):
         if not self._released:
             self._released = True
+            self._debug_painter = None
             self._timer.stop()
             self._cleanup_gl()
             if hasattr(self.planner, "close"):
