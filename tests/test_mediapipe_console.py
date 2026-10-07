@@ -3,6 +3,9 @@ from pathlib import Path
 import queue
 import sys
 from unittest.mock import Mock
+from collections import deque
+import math
+import pytest
 
 
 MEDIAPIPE_ROOT = Path(__file__).resolve().parents[1] / "medeapipe_capstone"
@@ -55,7 +58,7 @@ def test_shutdown_command_closes_without_scheduling_another_poll():
     app.root.after.assert_not_called()
 
 
-def test_stt_speech_event_updates_text_and_sequence():
+def test_stt_speech_event_updates_text_and_sequence(monkeypatch):
     app = HolisticGuiApp.__new__(HolisticGuiApp)
     app.root = Mock()
     app.stt = Mock()
@@ -63,11 +66,13 @@ def test_stt_speech_event_updates_text_and_sequence():
     app.latest_speech_text = ""
     app.speech_sequence = 0
     app.send_recognition_state = Mock()
+    monkeypatch.setattr('app.holistic_gui_app.time.time', lambda: 100.0)
 
     app.poll_stt_events()
 
     assert app.latest_speech_text == "테스트 음성"
     assert app.speech_sequence == 1
+    assert app.speech_recognized_at == 100.0
     app.send_recognition_state.assert_called_once_with()
     app.root.after.assert_called_once_with(100, app.poll_stt_events)
 
@@ -96,6 +101,78 @@ def test_saved_bool_accepts_only_json_boolean_values():
     assert HolisticGuiApp.saved_bool({"enabled": False}, "enabled", True) is False
     assert HolisticGuiApp.saved_bool({"enabled": "false"}, "enabled", True) is True
     assert HolisticGuiApp.saved_bool({}, "enabled", False) is False
+
+
+def test_wave_timestamp_only_changes_when_a_new_wave_starts(monkeypatch):
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.update_wave_histories = Mock()
+    app.detect_wave = Mock(side_effect=['HELLO', 'NONE', 'HELLO', 'NONE', 'NONE', 'NONE', 'NONE', 'HELLO'])
+    now = [100.0]
+    monkeypatch.setattr('app.holistic_gui_app.time.time', lambda: now[0])
+    assert app.update_wave_state({}, 640) == {'left': 'HELLO', 'right': 'NONE'}
+    assert app.wave_started_at == 100.0
+    now[0] = 101.0
+    app.update_wave_state({}, 640)
+    assert app.wave_started_at == 100.0
+    app.update_wave_state({}, 640)
+    now[0] = 102.0
+    app.update_wave_state({}, 640)
+    assert app.wave_started_at == 102.0
+    app.always_results = {'wave': {'left_state': 'NONE', 'right_state': 'HELLO'}}
+    app.emotion_result = None
+    app.mode_result = app.rps_sample = None
+    app.latest_speech_text, app.speech_sequence, app.speech_recognized_at = '안녕', 1, 102.5
+    payload = app.build_recognition_state_event()
+    assert payload['always']['wave']['started_at'] == 102.0
+    assert payload['speech']['recognized_at'] == 102.5
+
+
+def make_wave_app():
+    app = HolisticGuiApp.__new__(HolisticGuiApp)
+    app.wave_histories = {'left': deque(maxlen=30), 'right': deque(maxlen=30)}
+    return app
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('width', [640, 1280, 1920])
+def test_gradual_palm_wave_with_stationary_wrist_is_detected(side, width):
+    app = make_wave_app()
+    for i in range(30):
+        center = width * .5 + width * .04 * math.sin(i * math.pi / 9.5)
+        records = [{'name': 'WRIST', 'pixel_x': width * .5, 'pixel_y': 200}]
+        records += [{'name': name, 'pixel_x': center + offset, 'pixel_y': 150}
+                    for name, offset in [('INDEX_FINGER_MCP', -10), ('MIDDLE_FINGER_MCP', 0), ('PINKY_MCP', 10)]]
+        frame = {'left_hand_landmarks': [], 'right_hand_landmarks': []}
+        frame[f'{side}_hand_landmarks'] = records
+        states = app.update_wave_state(frame, width)
+    assert states[side] == 'HELLO'
+    assert states['right' if side == 'left' else 'left'] == 'WAIT'
+
+
+def test_gradual_wrist_translation_accumulates_direction_changes():
+    app = make_wave_app()
+    xs = list(range(0, 56, 5)) + list(range(50, -1, -5)) + list(range(5, 40, 5))
+    assert app.count_direction_changes(xs, min_delta=8) == 0  # Previous detector missed every turn.
+    app.wave_histories['left'].extend((x + 300, 180) for x in xs)
+    assert app.detect_wave('left', 640) == 'HELLO'
+
+
+@pytest.mark.parametrize('xs', [[320] * 30, [320 + (i % 2) * 2 for i in range(30)],
+                               [300 + i * 5 for i in range(30)]])
+def test_stationary_jittering_or_one_way_hand_does_not_count_as_wave(xs):
+    app = make_wave_app()
+    app.wave_histories['left'].extend((x, 180) for x in xs)
+    assert app.detect_wave('left', 640) == 'NONE'
+
+
+def test_hand_disappearing_breaks_old_wave_history():
+    app = make_wave_app()
+    app.wave_histories['left'].extend((300 + 60 * math.sin(i * math.pi / 5), 180) for i in range(30))
+    assert app.detect_wave('left', 640) == 'HELLO'
+    app.wave_histories['left'].append(None)
+    assert app.detect_wave('left', 640) == 'WAIT'
+    app.wave_histories['left'].append((300, 180))
+    assert app.detect_wave('left', 640) == 'WAIT'
 
 
 def test_recognition_mode_and_tools_are_saved_together():

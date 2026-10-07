@@ -360,10 +360,15 @@ class CharacterWidget(QLabel):
             self.dialogue_system.tts.speaking_changed.connect(self._on_speaking_changed)
 
         # ====== 외부 감정/동작 인식 수신 ======
+        self._pending_user_greeting_until = None
+        self._greeting_retry_timer = QTimer(self)
+        self._greeting_retry_timer.setInterval(100)
+        self._greeting_retry_timer.timeout.connect(self._try_user_greeting)
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
             mood_system=self.mood_system,
             on_dialogue=self._show_perception_dialogue,
+            on_greeting=self._request_user_greeting,
         )
         self.perception_receiver = QtPerceptionReceiver(parent=self)
         # TCP 콜백은 백그라운드 스레드에서 실행되므로 UI 처리는 Qt 메인 스레드에 예약한다.
@@ -527,12 +532,55 @@ class CharacterWidget(QLabel):
     def _show_perception_dialogue(self, text):
         self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
 
+    def _request_user_greeting(self):
+        if self._character_closing:
+            return
+        self._pending_user_greeting_until = time.monotonic() + 10.0
+        if not self._try_user_greeting():
+            print('[사용자 인사] 캐릭터 동작이 끝난 뒤 인사하도록 보류함')
+            self._greeting_retry_timer.start()
+
+    def _try_user_greeting(self):
+        deadline = self._pending_user_greeting_until
+        if deadline is None:
+            return False
+        if self._character_closing or time.monotonic() > deadline:
+            self._pending_user_greeting_until = None
+            self._greeting_retry_timer.stop()
+            if not self._character_closing:
+                print('[사용자 인사] 보류 시간 초과: 인사를 취소함')
+            return False
+        if (self.is_dragging or self.is_jumping or not self.on_ground
+                or getattr(self, '_ball_session_active', False)
+                or (self.rps_game is not None and self.rps_game.isVisible())
+                or (self.rig_view is not None and self.sprite_animator.is_playing
+                    and self.sprite_animator.current_action in {'land', 'wave'})):
+            return False
+        self._pending_user_greeting_until = None
+        self._greeting_retry_timer.stop()
+        self._mark_character_interaction()
+        if self.rig_view is not None:
+            self._play_rig_action('wave')
+        else:
+            self._move_timer.stop()
+            self.is_moving = False
+            self._ball_chasing = False
+            self.animation_controller.idle.stop()
+            # Legacy PNG packs may not contain a wave animation.
+            if (self.assets_path / 'wave').is_dir():
+                self.current_action = 'wave'
+                self.sprite_animator.play('wave', fps=24, loop=False)
+        self._show_perception_dialogue('안녕! 👋')
+        print('[사용자 인사] 캐릭터 인사 재생')
+        return True
+
     def _shutdown_character_renderer(self):
         """Stop host callbacks before releasing the drawing backend."""
         self._character_closing = True
+        self._pending_user_greeting_until = None
         for name in ("timer", "emotion_timer", "move_timer", "drag_timer", "_move_timer",
                      "_gravity_timer", "_window_scan_timer", "_activity_monitor_timer",
-                     "_release_timer"):
+                     "_release_timer", "_greeting_retry_timer"):
             timer = getattr(self, name, None)
             if timer is not None:
                 timer.stop()
@@ -1028,7 +1076,9 @@ class CharacterWidget(QLabel):
                 else:
                     self.update_action(mood)
             return
-        if self.current_action.startswith("walk"):
+        if self.current_action == 'wave':
+            self.update_action(self.mood_system.decide_emotion())
+        elif self.current_action.startswith("walk"):
             self.current_action = "idle"
             self.update_render("idle")
     

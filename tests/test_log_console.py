@@ -13,6 +13,9 @@ from character.log_console import (
 def test_classifies_major_log_categories():
     assert classify_log_message("[외부 감정 인식] happy") == "사용자 인식"
     assert classify_log_message("[외부 음성 인식] 안녕하세요") == "사용자 인식"
+    assert classify_log_message("[외부 동작 인식] 손 흔들기 wave/hello") == "사용자 인식"
+    assert classify_log_message("[사용자 인사] 캐릭터 인사 재생") == "사용자 인식"
+    assert classify_log_message("[사용자 인사] 재인사 대기 중") == "사용자 인식"
     assert classify_log_message("[점프!] velocity_y=-15") == "캐릭터 상태"
     assert classify_log_message("[Gemini 응답] 안녕하세요") == "대화·AI"
     assert classify_log_message("[설정] 저장된 성격") == "시스템"

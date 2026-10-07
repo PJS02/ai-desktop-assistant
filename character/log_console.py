@@ -70,6 +70,7 @@ def classify_log_message(message: str, is_error: bool = False) -> str:
             "mediapipe",
             "외부 감정",
             "외부 동작",
+            "사용자 인사",
             "외부 고개",
             "외부 상태",
             "인식 수신기",

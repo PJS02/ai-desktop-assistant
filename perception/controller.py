@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import math
 import time
 from typing import Callable
 
@@ -20,6 +21,8 @@ class PerceptionController:
         reaction_cooldown: float = 3.0,
         max_event_age: float = 5.0,
         time_provider: Callable[[], float] = time.time,
+        on_greeting: Callable[[], None] | None = None,
+        greeting_cooldown: float = 6.0,
     ) -> None:
         self.mood_system = mood_system
         self.on_dialogue = on_dialogue or (lambda _text: None)
@@ -28,6 +31,10 @@ class PerceptionController:
         self.reaction_cooldown = reaction_cooldown
         self.max_event_age = max_event_age
         self.time_provider = time_provider
+        self.on_greeting = on_greeting or (lambda: self.on_dialogue("안녕! 👋"))
+        self.greeting_cooldown = greeting_cooldown
+        self._greeting_sources = {}
+        self._last_greeting_at = -math.inf
         # 얼굴 감정은 프레임마다 흔들릴 수 있으므로 최근 결과를 모아 안정성을 확인한다.
         self._emotion_history: deque[str] = deque(maxlen=max(1, emotion_samples))
         self._last_emotion: str | None = None
@@ -55,6 +62,7 @@ class PerceptionController:
         self._handle_head_motion(event, now)
         self._handle_attention(event)
         self._handle_speech(event)
+        self._handle_greeting(event, now)
 
     def _handle_emotion(self, event: PerceptionEvent, now: float) -> None:
         observation = event.emotion
@@ -94,10 +102,7 @@ class PerceptionController:
                 continue
             # 실제 MoodSystem은 제스처 이름까지 XAI 판단 근거로 남기고,
             # 단순 테스트/외부 구현체는 기존 on_click 계약을 그대로 사용한다.
-            if hasattr(self.mood_system, "on_positive_gesture"):
-                self.mood_system.on_positive_gesture(label)
-            else:
-                self.mood_system.on_click()
+            self._record_positive_gesture(label)
             self.on_dialogue(message)
             self._last_reaction_at[reaction_key] = now
             print(f"[외부 동작 인식] {kind}/{label} ({side or 'unknown'})")
@@ -134,21 +139,55 @@ class PerceptionController:
             self.mood_system.on_idle()
             print("[외부 상태 인식] 사용자가 자리를 비움")
 
-    def _handle_speech(self, event: PerceptionEvent) -> None:
+    def _handle_speech(self, event: PerceptionEvent) -> bool:
         if event.speech is None:
-            return
+            return False
         # 발화 순번이 있으면 같은 문장을 다시 말해도 새로운 음성으로 처리한다.
         identity = event.speech_id if event.speech_id is not None else event.speech
         speech_key = (event.source, identity)
         if speech_key == self._last_speech_key:
-            return
+            return False
         self._last_speech_key = speech_key
         print(f"[외부 음성 인식] {event.speech} (출처: {event.source})")
+        return True
+
+    def _record_positive_gesture(self, label):
+        if hasattr(self.mood_system, "on_positive_gesture"):
+            self.mood_system.on_positive_gesture(label)
+        else:
+            self.mood_system.on_click()
+
+    @staticmethod
+    def _observation_time(value, fallback):
+        return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else fallback
+
+    def _handle_greeting(self, event, now):
+        state = self._greeting_sources.setdefault(event.source, {'active': False})
+        waving = any((item.kind == 'wave' and item.label == 'hello')
+                     or item.label == 'wave' for item in event.gestures)
+        newly_waving = waving and not state['active']
+        state['active'] = waving
+        if not newly_waving:
+            return
+        always = event.raw.get('always', {})
+        wave = always.get('wave', {}) if isinstance(always, dict) else {}
+        observed = wave.get('started_at') if isinstance(wave, dict) else None
+        started_at = self._observation_time(observed, event.timestamp)
+        if not 0 <= now - started_at <= self.max_event_age:
+            return
+        # Detection is logged even if animation is suppressed by the cooldown.
+        sides = sorted({item.side or 'unknown' for item in event.gestures
+                        if item.kind == 'wave' or item.label == 'wave'})
+        print(f"[외부 동작 인식] 손 흔들기 wave/hello ({', '.join(sides)}, 출처: {event.source})")
+        if now - self._last_greeting_at < self.greeting_cooldown:
+            print("[사용자 인사] 재인사 대기 중: 손 흔들기는 감지했지만 반복 재생을 생략함")
+            return
+        self._last_greeting_at = now
+        self._record_positive_gesture('greeting')
+        self.on_greeting()
 
     @staticmethod
     def _gesture_message(kind: str, label: str) -> str | None:
-        if kind == "wave" and label == "hello":
-            return "안녕! 👋"
         return {
             "thumbs_up": "좋아! 👍",
             "heart": "나도 반가워! 💛",

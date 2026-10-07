@@ -222,6 +222,7 @@ class MoodSystem:
             "heart": "하트 제스처",
             "ok": "OK 제스처",
             "hello": "손 흔들기",
+            "greeting": "손 흔들기 인사",
         }
         event = EmotionEvent(
             goal_relevance=0.8,

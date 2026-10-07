@@ -128,6 +128,8 @@ class HolisticGuiApp(SettingsBridge):
         self.air_paths = {"left": [], "right": []}
         self.air_max_points = 180
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
+        self.wave_started_at = None
+        self._wave_active = False
         self.head_history = deque(maxlen=36)
         self.away_frame_count = 0
         self.emotion_result = None
@@ -136,6 +138,7 @@ class HolisticGuiApp(SettingsBridge):
         self.mode_result = {"active": None, "result": None}
         self.latest_speech_text = ""
         self.speech_sequence = 0
+        self.speech_recognized_at = None
         self.last_sent_interaction_events = {}
 
         self.camera_var = tk.StringVar()
@@ -907,6 +910,7 @@ class HolisticGuiApp(SettingsBridge):
                 self.latest_speech_text = value
                 # 같은 문장을 다시 말해도 별개의 발화로 전송되도록 순번을 증가시킨다.
                 self.speech_sequence += 1
+                self.speech_recognized_at = time.time()
                 # 카메라 프레임 처리 여부와 관계없이 완성된 음성을 즉시 전달한다.
                 self.send_recognition_state()
             elif kind == "status":
@@ -1105,6 +1109,8 @@ class HolisticGuiApp(SettingsBridge):
 
     def reset_motion_states(self):
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
+        self.wave_started_at = None
+        self._wave_active = False
         self.head_history = deque(maxlen=36)
         self.away_frame_count = 0
 
@@ -1296,6 +1302,7 @@ class HolisticGuiApp(SettingsBridge):
                     "left": wave.get("left_state"),
                     "right": wave.get("right_state"),
                     "raw": wave.get("states", {}),
+                    "started_at": getattr(self, 'wave_started_at', None),
                 },
                 "hand_gesture": {
                     "left": gesture.get("left_state"),
@@ -1319,6 +1326,7 @@ class HolisticGuiApp(SettingsBridge):
             "speech": {
                 "latest_text": self.latest_speech_text,
                 "sequence": self.speech_sequence,
+                "recognized_at": getattr(self, 'speech_recognized_at', None),
             },
         }
 
@@ -1585,10 +1593,15 @@ class HolisticGuiApp(SettingsBridge):
 
     def update_wave_state(self, frame_record, frame_width):
         self.update_wave_histories(frame_record)
-        return {
+        states = {
             side: self.detect_wave(side, frame_width)
             for side in ("left", "right")
         }
+        active = 'HELLO' in states.values()
+        if active and not getattr(self, '_wave_active', False):
+            self.wave_started_at = time.time()
+        self._wave_active = active
+        return states
 
     def apply_gesture_overlay(self, frame_bgr, frame_record):
         cached = self.always_results.get("gesture")
@@ -1714,21 +1727,62 @@ class HolisticGuiApp(SettingsBridge):
 
     def update_wave_histories(self, frame_record):
         for side in ("left", "right"):
-            anchor = core.hand_anchor_point(frame_record[f"{side}_hand_landmarks"])
+            hand_records = frame_record[f"{side}_hand_landmarks"]
+            hand_map = core.records_by_name(hand_records)
+            # The wrist can stay almost still while an open palm waves.
+            # Follow the knuckles instead; partial landmark inputs use the wrist.
+            anchor = core.average_point(*(core.point_from_record(hand_map.get(name))
+                                          for name in ('INDEX_FINGER_MCP', 'MIDDLE_FINGER_MCP', 'PINKY_MCP')))
+            if anchor is None:
+                anchor = core.hand_anchor_point(hand_records)
             self.wave_histories[side].append(anchor)
 
     def detect_wave(self, side, frame_width):
-        points = [point for point in self.wave_histories[side] if point is not None]
+        # Missing hands break the motion history, so old movement cannot be
+        # reclassified as a new wave when the hand reappears.
+        points = []
+        for point in reversed(self.wave_histories[side]):
+            if point is None:
+                break
+            points.append(point)
+        points.reverse()
         if len(points) < 12:
             return "WAIT"
 
         xs = [point[0] for point in points]
         amplitude = max(xs) - min(xs)
-        min_amplitude = max(42, frame_width * 0.055)
-        direction_changes = self.count_direction_changes(xs, min_delta=8)
+        min_amplitude = max(16, frame_width * 0.025)
+        direction_changes = self.count_wave_direction_changes(xs, min_delta=max(4, min_amplitude * 0.2))
         if amplitude >= min_amplitude and direction_changes >= 2:
             return "HELLO"
         return "NONE"
+
+    @staticmethod
+    def count_wave_direction_changes(values, min_delta):
+        """Count reversals from extrema, including gradual subpixel-frame motion."""
+        if not values:
+            return 0
+        extreme = values[0]
+        direction = changes = 0
+        for value in values[1:]:
+            if direction == 0:
+                delta = value - extreme
+                if abs(delta) >= min_delta:
+                    direction = 1 if delta > 0 else -1
+                    extreme = value
+            elif direction > 0:
+                if value > extreme:
+                    extreme = value
+                elif extreme - value >= min_delta:
+                    direction, extreme = -1, value
+                    changes += 1
+            else:
+                if value < extreme:
+                    extreme = value
+                elif value - extreme >= min_delta:
+                    direction, extreme = 1, value
+                    changes += 1
+        return changes
 
     def detect_static_hand_gesture(self, hand_records):
         pose = self.analyze_hand_pose(hand_records)

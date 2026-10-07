@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import time
+from unittest.mock import Mock
 
 import pytest
 from PyQt6.QtCore import QPoint, QRect
@@ -18,6 +19,9 @@ class Timer:
 
     def stop(self):
         self.stopped = True
+
+    def start(self):
+        self.stopped = False
 
 
 class Mood:
@@ -66,7 +70,8 @@ class HostHarness:
                   "mouseReleaseEvent", "_queue_sprite_fallback", "_use_sprite_renderer",
                   "_on_speaking_changed", "_shutdown_character_renderer", "jump",
                   "get_character_idle_time", "_mark_character_interaction",
-                  "_maybe_run_autonomous_event", "advance_emotion"):
+                  "_maybe_run_autonomous_event", "advance_emotion",
+                  "_request_user_greeting", "_try_user_greeting", "_show_perception_dialogue"):
         locals()[_name] = getattr(CharacterWidget, _name)
 
     def __init__(self, native=True):
@@ -78,6 +83,9 @@ class HostHarness:
         self._rig_preferred_yaw = 0
         self._rig_fallback_pending = False
         self._character_closing = False
+        self._pending_user_greeting_until = None
+        self._greeting_retry_timer = Timer()
+        self.rps_game = None
         self._ball_chasing = False
         self._ball_session_active = False
         self.is_dragging = self.is_moving = self.is_jumping = False
@@ -98,7 +106,7 @@ class HostHarness:
         self.animation_controller = SimpleNamespace(
             idle=Timer(), update_base_pos=lambda pos: None, start_idle=lambda: None,
             stop=self._move_timer.stop)
-        self.dialogue_system = SimpleNamespace(update_dialogue_position=lambda: None)
+        self.dialogue_system = SimpleNamespace(update_dialogue_position=lambda: None, show_dialogue=Mock())
         self._x, self._y = 200, 800
         self.surface = Surface("ground", 1000)
         self.current_surface = self.surface
@@ -182,6 +190,73 @@ def test_wave_completion_returns_to_preferred_direction_idle_once():
     assert host._rig_manual_action is None
     assert host.rig_view.actions == [("wave", False), ("idle", True)]
     assert host.sprite_animator.yaw == -65
+
+
+def test_user_greeting_stops_walk_and_plays_wave_once_with_bubble():
+    host = HostHarness()
+    host.is_moving = True
+    host._request_user_greeting()
+    assert host.rig_view.actions == [('wave', False)]
+    assert not host.is_moving and host._move_timer.stopped
+    assert host._pending_user_greeting_until is None and host._greeting_retry_timer.stopped
+    host.dialogue_system.show_dialogue.assert_called_once_with('안녕! 👋', duration=3000, use_narration=False)
+    assert not host._try_user_greeting()
+    host.rig_view.animation_finished.emit()
+    assert host.current_action == 'idle'
+
+
+@pytest.mark.parametrize('activity', ['drag', 'jump', 'fall', 'land', 'ball', 'rps'])
+def test_greeting_waits_for_safe_state(activity):
+    host = HostHarness()
+    if activity == 'drag':
+        host.is_dragging = True
+    elif activity == 'jump':
+        host.jump()
+    elif activity == 'fall':
+        host.on_ground = False
+    elif activity == 'land':
+        host.update_render('land')
+    elif activity == 'ball':
+        host._ball_session_active = True
+    else:
+        host.rps_game = SimpleNamespace(isVisible=lambda: True)
+    original = (host.x(), host.y(), host.velocity_y, host.current_action, list(host.rig_view.actions))
+    host._request_user_greeting()
+    assert (host.x(), host.y(), host.velocity_y, host.current_action, host.rig_view.actions) == original
+    host.dialogue_system.show_dialogue.assert_not_called()
+    assert host._pending_user_greeting_until is not None and not host._greeting_retry_timer.stopped
+    host.is_dragging = host.is_jumping = host._ball_session_active = False
+    host.on_ground, host.rps_game = True, None
+    if activity == 'land':
+        host.rig_view.animation_finished.emit()
+    assert host._try_user_greeting()
+    assert host.current_action == 'wave'
+    assert host._greeting_retry_timer.stopped
+
+
+def test_delayed_greeting_expires_and_shutdown_cancels_it(monkeypatch):
+    host = HostHarness()
+    host.is_dragging = True
+    monkeypatch.setattr('character.character_widget.time.monotonic', lambda: 100.0)
+    host._request_user_greeting()
+    monkeypatch.setattr('character.character_widget.time.monotonic', lambda: 111.0)
+    host.is_dragging = False
+    assert not host._try_user_greeting()
+    assert host._pending_user_greeting_until is None and host._greeting_retry_timer.stopped
+    host.dialogue_system.show_dialogue.assert_not_called()
+    host.is_dragging = True
+    host._request_user_greeting()
+    host._shutdown_character_renderer()
+    assert host._pending_user_greeting_until is None and host._greeting_retry_timer.stopped
+    host._request_user_greeting()
+    assert host._pending_user_greeting_until is None
+
+
+def test_greeting_on_png_renderer_without_wave_assets_still_shows_bubble():
+    host = HostHarness(native=False)
+    host._request_user_greeting()
+    host.dialogue_system.show_dialogue.assert_called_once()
+    assert host._greeting_retry_timer.stopped
 
 
 @pytest.mark.parametrize("flipped,yaw", [(False, -65), (True, 65)])
