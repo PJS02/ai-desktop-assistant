@@ -18,6 +18,10 @@ class FakeRigView(QObject):
         self.resumes = 0
         self.releases = 0
         self.hidden = False
+        self.jump_active = False
+
+    def set_jump_active(self, active):
+        self.jump_active = bool(active)
 
     def set_action(self, action, loop=True):
         self.actions.append((action, loop))

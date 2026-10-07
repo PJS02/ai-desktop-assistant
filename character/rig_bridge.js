@@ -187,6 +187,20 @@
       else if (action === 'fall') adjustment = 29;
       else if (action === 'hovering') adjustment = 24;
       pose.bodyY += adjustment;
+      var controlledJump = state.jumpActive === true && (action === 'jump' || action === 'fall');
+      if (controlledJump || action === 'land') {
+        // Host physics moves the whole character. Keep the relaxed arm pose
+        // through takeoff, descent and landing instead of the panic fall cycle.
+        var rest = root.CloudyMotion.pose('idle', time, options);
+        ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar',
+          'idleGesture', 'airArms', 'framingZoom'].forEach(function (key) { pose[key] = rest[key]; });
+        if (controlledJump) {
+          ['bodyX', 'bodyY', 'lean', 'headAngle', 'airborne',
+            'footNearX', 'footNearY', 'footNearAngle',
+            'footFarX', 'footFarY', 'footFarAngle'].forEach(function (key) { pose[key] = rest[key]; });
+          adjustment = pose.bodyY - originalPose.bodyY;
+        }
+      }
     }
     if (Number.isFinite(state.blink) && state.blink >= 0) pose.blink = Math.max(0, Math.min(1, state.blink));
     if (state.smooth === true) {

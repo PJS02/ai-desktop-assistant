@@ -479,6 +479,7 @@ class CharacterWidget(QLabel):
 
     def _rig_landed(self):
         if self.rig_view is not None:
+            self.rig_view.set_jump_active(False)
             self._rig_manual_action = None
             self.current_action = "land"
             self.sprite_animator.play("land", loop=False)
@@ -980,6 +981,7 @@ class CharacterWidget(QLabel):
         """애니메이션 폴더 또는 기존 PNG 파일 로드"""
         # develop의 scared 이름과 기존 fear 에셋을 모두 지원한다.
         if self.rig_view is not None:
+            self.rig_view.set_jump_active(bool(getattr(self, 'is_jumping', False)))
             if action in {"hovering", "fall", "jump"}:
                 self._rig_manual_action = None
             if action.startswith("walk"):

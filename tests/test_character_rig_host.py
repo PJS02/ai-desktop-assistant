@@ -209,6 +209,7 @@ def test_drag_release_falls_lands_once_then_idle_without_changing_physics():
         host.update_render("hovering")
         host.mouseReleaseEvent(None)
     assert native.sprite_animator.current_action == "fall"
+    assert not native.rig_view.jump_active
     assert native._rig_manual_action is None
     for _ in range(40):
         native._apply_gravity()
@@ -229,13 +230,16 @@ def test_jump_fall_land_keeps_legacy_trajectory():
     native.jump()
     legacy.jump()
     assert native.rig_view.actions == [("jump", True)]
+    assert native.rig_view.jump_active
     for _ in range(70):
         native._apply_gravity()
         legacy._apply_gravity()
+        assert native.rig_view.jump_active == native.is_jumping
         assert (native.x(), native.y(), native.velocity_x, native.velocity_y,
                 native.on_ground) == (legacy.x(), legacy.y(), legacy.velocity_x,
                                      legacy.velocity_y, legacy.on_ground)
     assert native.rig_view.actions == [("jump", True), ("fall", True), ("land", False)]
+    assert not native.rig_view.jump_active
 
 
 def test_finishing_horizontal_motion_does_not_pause_falling_or_landing():

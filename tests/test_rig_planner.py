@@ -112,6 +112,50 @@ def test_original_effect_recipes_and_source_identities_match(planners):
         assert qt.source_hashes[source] == node.source_hashes[source] == expected
 
 
+@pytest.mark.parametrize('action', ('jump', 'fall'))
+def test_host_jump_has_no_panic_flapping_or_second_jump_trajectory(planners, action):
+    qt, node = planners
+    near_angles = []
+    for time_step in range(121):
+        stamp = time_step / 60
+        state = {'action': action, 'time': stamp, 'externalPhysics': True,
+                 'jumpActive': True, 'emotion': 'happy'}
+        frame = node.sample(state)
+        _assert_close(frame, qt.sample(state))
+        rest = node.sample({'action': 'idle', 'time': stamp, 'emotion': 'happy'})
+        # Qt moves the entire host; the rig must not pin feet to a separate
+        # authored trajectory or alternate raised panic arms while descending.
+        assert frame['pose']['bodyY'] == rest['pose']['bodyY']
+        assert frame['pose']['footNearY'] == frame['pose']['footFarY'] == 0
+        assert frame['pose']['idleGesture'] >= .9
+        assert frame['pose']['airArms'] == 0
+        assert frame['pose']['framingZoom'] == 1
+        near_angles.append(frame['pose']['armNear'])
+    assert max(near_angles) - min(near_angles) < 3
+
+
+def test_host_landing_keeps_relaxed_arms_through_smooth_transitions(planners):
+    qt, node = planners
+    for action, active in [('idle', False), ('jump', True), ('fall', True),
+                           ('land', False), ('idle', False)]:
+        for step in range(100):
+            state = {'action': action, 'time': step / 60, 'emotion': 'neutral',
+                     'externalPhysics': True, 'jumpActive': active, 'smooth': True, 'dt': 1 / 60}
+            frame = node.sample(state)
+            _assert_close(frame, qt.sample(state))
+            if action != 'idle' or step > 60:
+                assert frame['pose']['idleGesture'] > .85
+                assert frame['pose']['airArms'] < .01
+
+
+@pytest.mark.parametrize('yaw', YAWS)
+def test_controlled_jump_and_landing_geometry_matches_both_engines(planners, yaw):
+    qt, node = planners
+    for action in ('jump', 'fall', 'land'):
+        _assert_plan_parity(qt, node, {'action': action, 'time': .3, 'yaw': yaw,
+                                     'externalPhysics': True, 'jumpActive': action != 'land'})
+
+
 def test_source_rectangle_reuses_existing_uvs_and_face_geometry(planners):
     qt, _ = planners
     result = qt._evaluate("""

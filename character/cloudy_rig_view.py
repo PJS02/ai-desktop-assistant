@@ -97,6 +97,7 @@ class CloudyRigView(QOpenGLWidget):
         self._action, self._emotion, self._yaw = "idle", "neutral", 0
         self._loop = True
         self._external_physics = False
+        self._jump_active = False
         self._speaking = False
         self._speech_start = time.perf_counter()
         self._started = time.perf_counter()
@@ -143,6 +144,10 @@ class CloudyRigView(QOpenGLWidget):
 
     def set_external_physics(self, enabled: bool):
         self._external_physics = bool(enabled)
+
+    def set_jump_active(self, active: bool):
+        """Distinguish a controlled jump from being dropped after dragging."""
+        self._jump_active = bool(active)
 
     def set_overlay_pixmap(self, pixmap: QPixmap):
         self._overlay = pixmap
@@ -195,6 +200,7 @@ class CloudyRigView(QOpenGLWidget):
         self._last_paint_time = now
         return {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
                 "time": self._time(), "externalPhysics": self._external_physics,
+                "jumpActive": self._jump_active,
                 "speaking": self._speaking,
                 "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
 
