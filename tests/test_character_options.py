@@ -244,8 +244,10 @@ def test_diagnostics_use_host_coordinates_and_toggle_removes_all_pixels(real_cha
         return image
     host.set_show_hitboxes(True)
     image = paint()
-    # Window overlay and character border use host coordinates.
+    # The yellow window is inside the host; the red border follows the painted
+    # character rather than transparent host padding.
     assert image.pixelColor(30, 125).alpha() > 0
-    assert image.pixelColor(host.width() - 2, host.height() // 2).red() > 200
+    rect = host._character_visual_rect()
+    assert image.pixelColor(rect.right() - 1, rect.center().y()).red() > 200
     host.set_show_hitboxes(False)
     assert not any(paint().pixelColor(x, y).alpha() for x, y in [(30, 125), (148, 150), (10, 10)])

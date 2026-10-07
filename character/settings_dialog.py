@@ -168,7 +168,7 @@ class SettingsDialog(QDialog):
 
     def _describe_size(self):
         percent = self.character_inputs['size_percent'].value()
-        self.size_preview.setText(f"표시 크기: {round(150 * percent / 100)} × {round(200 * percent / 100)}px · 가로세로 비율 유지")
+        self.size_preview.setText(f"크기 배율: {percent}% · 가로세로 비율 유지")
 
     def _set_resolution_preset(self):
         value = self.resolution_preset.currentData()

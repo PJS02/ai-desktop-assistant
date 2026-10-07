@@ -97,8 +97,9 @@ def test_external_root_height_requires_explicit_flag(planners, action):
     assert override['externalRootHeightAdjustment'] == pytest.approx(expected_adjustment)
     assert override['pose']['bodyY'] == pytest.approx(original['pose']['bodyY'] + expected_adjustment)
     for key, value in original['pose'].items():
-        if key != 'bodyY':
+        if key not in {'bodyY', 'framingZoom'}:
             assert override['pose'][key] == value
+    assert override['pose']['framingZoom'] == 1
 
 
 def test_original_effect_recipes_and_source_identities_match(planners):
@@ -154,6 +155,34 @@ def test_controlled_jump_and_landing_geometry_matches_both_engines(planners, yaw
     for action in ('jump', 'fall', 'land'):
         _assert_plan_parity(qt, node, {'action': action, 'time': .3, 'yaw': yaw,
                                      'externalPhysics': True, 'jumpActive': action != 'land'})
+
+
+@pytest.mark.parametrize('action', ('hovering', 'fall'))
+def test_host_air_actions_keep_full_scale_without_removing_flapping(planners, action):
+    qt, node = planners
+    arms = []
+    for stamp in (0, .1, .3, .6, 1.2):
+        state = {'action': action, 'time': stamp, 'externalPhysics': True}
+        frame = node.sample(state)
+        _assert_close(frame, qt.sample(state))
+        assert frame['originalPose']['framingZoom'] == pytest.approx(.86)
+        assert frame['pose']['framingZoom'] == 1
+        assert frame['pose']['airArms'] == 1
+        arms.append(frame['pose']['armNear'])
+    assert max(arms) - min(arms) > 10
+
+
+@pytest.mark.parametrize('yaw', YAWS)
+def test_character_box_excludes_companion_and_emotion_symbols(planners, yaw):
+    qt, node = planners
+    state = {'action': 'fall', 'time': .3, 'yaw': yaw, 'externalPhysics': True, 'emotion': 'scared'}
+    plain = node.plan({**state, 'companion': False, 'emotionEffects': False})
+    decorated = node.plan(state)
+    assert plain['characterBounds'] == decorated['characterBounds']
+    _assert_plan_parity(qt, node, state)
+    left, top, right, bottom = decorated['characterBounds']
+    assert 0 <= left < right <= 360
+    assert 0 <= top < bottom <= 540
 
 
 def test_source_rectangle_reuses_existing_uvs_and_face_geometry(planners):

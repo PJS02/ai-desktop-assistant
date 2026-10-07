@@ -8,7 +8,7 @@ import time
 import math
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
-from PyQt6.QtGui import QActionGroup, QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent
+from PyQt6.QtGui import QActionGroup, QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent, QRegion
 from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
@@ -1822,7 +1822,7 @@ class CharacterWidget(QLabel):
                 painter.drawRect(window_rect.translated(-origin))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(255, 90, 90), 2))
-        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        painter.drawRect(self._character_visual_rect().adjusted(0, 0, -1, -1))
         painter.setPen(QPen(QColor(255, 165, 0), 3))
         for surface in self.surfaces:
             if surface.name == 'ground':
@@ -1848,6 +1848,17 @@ class CharacterWidget(QLabel):
         painter.setPen(QColor(255, 245, 210))
         painter.drawText(text_rect.adjusted(3, 2, -3, -2), flags, text)
         painter.restore()
+
+    def _character_visual_rect(self):
+        """Character bounds exclude transparent host padding and effect icons."""
+        if self.rig_view is not None:
+            return self.rig_view.character_rect().toAlignedRect()
+        pixmap = self.pixmap()
+        if pixmap is not None and not pixmap.isNull():
+            mask = pixmap.mask()
+            if not mask.isNull():
+                return QRegion(mask).boundingRect()
+        return self.rect()
 
     def update_dragging(self):
         if self.is_dragging:

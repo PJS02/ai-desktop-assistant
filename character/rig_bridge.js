@@ -201,6 +201,9 @@
           adjustment = pose.bodyY - originalPose.bodyY;
         }
       }
+      // Air poses already fit the authored stage. Host interactions must keep
+      // the same display scale as walking/idle rather than zooming out by 14%.
+      pose.framingZoom = 1;
     }
     if (Number.isFinite(state.blink) && state.blink >= 0) pose.blink = Math.max(0, Math.min(1, state.blink));
     if (state.smooth === true) {
@@ -222,14 +225,25 @@
       companion: state.companion
     });
     var commands = gl.result(), required = Object.create(null);
+    var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     commands.forEach(function (command) {
       [command.base, command.replacement, command.bodyNegativeLower, command.bodyNegativeUpper]
         .forEach(function (name) { if (name) required[name] = true; });
+      // Character parts only: floating companions and emotion effects do not
+      // enlarge the body box. Use the very meshes submitted for this frame.
+      command.characterPart = command.opacity > 0 && /^(front|left|right)_(0\d|1[0-3])(?:_|$)/.test(command.base || '');
+      if (command.characterPart) {
+        for (var i = 0; i < command.vertices.length; i += 4) {
+          left = Math.min(left, command.vertices[i]); top = Math.min(top, command.vertices[i + 1]);
+          right = Math.max(right, command.vertices[i]); bottom = Math.max(bottom, command.vertices[i + 1]);
+        }
+      }
     });
     return {pose: frame.pose, originalPose: frame.originalPose,
       externalRootHeightAdjustment: frame.externalRootHeightAdjustment,
       action: frame.action, time: frame.time, yaw: yaw,
       logicalSize: [360, 540], groundY: root.CloudyRig.groundY,
+      characterBounds: Number.isFinite(left) ? [left, top, right, bottom] : null,
       commands: commands, requiredTextures: Object.keys(required)};
   }
 
