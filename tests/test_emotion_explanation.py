@@ -1,4 +1,6 @@
-from character.mood_system import MoodSystem
+import pytest
+
+from character.mood_system import MoodSystem, OccEmotionToMood
 from character.personality_system import PersonalitySystem
 
 
@@ -40,7 +42,27 @@ def test_decay_adds_recovery_step_and_updates_recovery_percent():
     snapshot = mood.get_emotion_explanation()
     assert snapshot["latest_change"]["category"] == "recovery"
     assert snapshot["latest_change"]["source"] == "시간 경과에 따른 자연 회복"
+    assert snapshot["latest_change"]["personality_factors"] == [
+        "부정 감정 95% · 긍정 감정 94% 유지"
+    ]
     assert snapshot["recovery_percent"] >= before
+
+
+def test_recovery_explanation_uses_the_factors_applied_to_emotion_intensity(monkeypatch):
+    monkeypatch.setattr(MoodSystem, "_NEGATIVE_EMOTION_RETENTION", 0.8)
+    monkeypatch.setattr(MoodSystem, "_POSITIVE_EMOTION_RETENTION", 0.7)
+    mood = MoodSystem()
+    mood.on_external_emotion("Anger", 1.0)
+    mood.occ_intensities[OccEmotionToMood.JOY] = 0.5
+    before_anger = mood.occ_intensities[OccEmotionToMood.ANGER]
+
+    mood.decay()
+
+    assert mood.occ_intensities[OccEmotionToMood.ANGER] == pytest.approx(before_anger * 0.8)
+    assert mood.occ_intensities[OccEmotionToMood.JOY] == pytest.approx(0.35)
+    assert mood.get_emotion_explanation()["latest_change"]["personality_factors"] == [
+        "부정 감정 80% · 긍정 감정 70% 유지"
+    ]
 
 
 def test_repeated_drag_samples_are_coalesced_for_readable_history():

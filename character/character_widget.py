@@ -252,15 +252,12 @@ class CharacterWidget(QLabel):
         self.current_surface = None  # 현재 캐릭터가 위에 있는 표면
         self._self_window_handle = None  # 자기 창 제외용 핸들
         
-        # 기본 표면: 작업표시줄 위 (화면 최하단)
-        # 다양한 해상도 대응을 위해 동적 계산
-        
-        # 작업표시줄을 제외한 실제 작업 영역을 기준으로 사용
+        # 캐릭터는 작업표시줄 영역을 포함한 화면 전체를 사용한다.
         screen = QApplication.primaryScreen()
         if screen is not None:
-            available_geometry = screen.availableGeometry()
-            available_width = available_geometry.width()
-            available_height = available_geometry.height()
+            screen_geometry = screen.geometry()
+            available_width = screen_geometry.width()
+            available_height = screen_geometry.height()
         else:
             available_width = screen_width or 1920
             available_height = screen_height or 1080
@@ -385,7 +382,6 @@ class CharacterWidget(QLabel):
                 "[외부 인식 수신기 비활성화] "
                 f"{self.perception_receiver.startup_error or '알 수 없는 오류'}"
             )
-
     
     def _initialize_character_renderer(self):
         """Keep the host window and its events; replace only character drawing."""
@@ -475,22 +471,28 @@ class CharacterWidget(QLabel):
         self.animation_controller.idle.stop()
         self._rig_manual_action = None if action == "idle" else action
         self.current_action = action
-        self.sprite_animator.set_yaw(self._rig_preferred_yaw)
+        self.sprite_animator.set_yaw(self._idle_rig_yaw())
         self.sprite_animator.set_emotion(self.mood_system.decide_emotion()["emotion"])
         self.sprite_animator.play(action, loop=action != "wave")
         if action == "idle":
             self.update_action(self.mood_system.decide_emotion())
 
-
     def _set_rig_direction(self, yaw):
         if self.rig_view is None:
             return
         self._rig_preferred_yaw = yaw
+        self._rig_direction_explicit = True
         self.is_flipped = yaw > 0
         self.sprite_animator.set_yaw(yaw)
         self._refresh_rig_overlay()
 
-
+    def _idle_rig_yaw(self):
+        """Keep the last facing direction unless the user chose an idle yaw."""
+        preferred = self._rig_preferred_yaw
+        if (getattr(self, '_rig_direction_explicit', False)
+                or preferred != 0 or self._manual_control_active()):
+            return preferred
+        return self.sprite_animator.yaw
 
     def _rig_landed(self):
         if self.rig_view is not None:
@@ -738,48 +740,26 @@ class CharacterWidget(QLabel):
         safe_title = safe_title[:24]
         return f"window_{safe_title}_{window_key.replace(':', '_')}"
     
+    def _physics_body_rect(self):
+        """Use the painted body, excluding transparent host padding and effects."""
+        measure = getattr(self, '_character_visual_rect', None)
+        body = measure() if measure is not None else QRect(0, 0, self.width(), self.height())
+        return body if not body.isEmpty() else QRect(0, 0, self.width(), self.height())
 
-    def get_landing_surface(self, y_pos: int, x_pos: int = None) -> Surface:
-        """
-        주어진 Y좌표에서 캐릭터가 착지할 표면을 찾음
-        X 좌표도 범위 내에 있는지 확인
-        
-        Args:
-            y_pos: 캐릭터 Y 좌표
-            x_pos: 캐릭터 X 좌표 (중심)
-        """
+    def get_landing_surface(self, y_pos: int, x_pos: int = None) -> Surface | None:
+        """Find the nearest surface at or below the feet, without snapping to it."""
         if x_pos is None:
             x_pos = self.x()
-        
-        # 현재 Y보다 아래에 있는 표면 중 가장 가까운 것 찾기
-        valid_surfaces = []
-        for s in self.surfaces:
-            # Y 범위 확인: 캐릭터 하단이 surface 상단 높이에 닿아야 함
-            if s.y_level >= y_pos - self.height():
-                # X 범위 확인
-                char_left = x_pos
-                char_right = x_pos + self.width()
-                
-                # 표면과 캐릭터가 X축에서 겹치는지 확인
-                if not (char_right < s.x_min or char_left > s.x_max):
-                    valid_surfaces.append(s)
-        
-        if valid_surfaces:
-            # Y 값이 가장 작은 (가장 위에 있는) surface에 착지
-            landing = min(valid_surfaces, key=lambda s: s.y_level)
-            
-            # 착지 표면이 변했을 때만 로그 출력
-            if landing.name != self._last_surface_name:
-                print(f"[착지!] {self._last_surface_name} -> {landing.name}")
-                self._last_surface_name = landing.name
-            return landing
-        else:
-            # 착지 표면이 없어졌을 때 로그 출력
-            if self._last_surface_name is not None:
-                print(f"[공중] {self._last_surface_name} -> 없음 (떨어지는 중)")
-                self._last_surface_name = None
-            return None
-
+        body = self._physics_body_rect()
+        foot_y = y_pos + body.y() + body.height()
+        left = x_pos + body.x()
+        right = left + body.width()
+        valid_surfaces = [
+            surface for surface in self.surfaces
+            if surface.y_level >= foot_y
+            and right > surface.x_min and left < surface.x_max
+        ]
+        return min(valid_surfaces, key=lambda surface: surface.y_level, default=None)
 
     # ====== 자동 대사 생성 시스템 ======
     def _load_gemini_config(self):
@@ -1025,7 +1005,7 @@ class CharacterWidget(QLabel):
                         and self.sprite_animator.is_playing))
             if not busy:
                 self.current_action = "idle"
-                self.sprite_animator.set_yaw(self._rig_preferred_yaw)
+                self.sprite_animator.set_yaw(self._idle_rig_yaw())
                 self.sprite_animator.play("idle")
             return
         action = self._animation_for_emotion(self._get_sprite_display_emotion(mood["emotion"]))
@@ -1036,7 +1016,6 @@ class CharacterWidget(QLabel):
             return
         self.current_action = action
         self.render()
-
 
     @staticmethod
     def _animation_for_emotion(emotion):
@@ -1543,7 +1522,7 @@ class CharacterWidget(QLabel):
         """Update bounds and personality without resetting the current mood."""
         screen = QApplication.primaryScreen()
         if screen is not None:
-            bounds = screen.availableGeometry()
+            bounds = screen.geometry()
             width, height = min(width, bounds.width()), min(height, bounds.height())
         self.personality_system.load_preset(personality)
         options = normalize_character_options({
@@ -1556,7 +1535,9 @@ class CharacterWidget(QLabel):
         }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
-        center_x, foot_y = self.x() + old_width / 2, self.y() + old_height
+        old_body = self._physics_body_rect()
+        center_x = self.x() + old_width / 2
+        foot_y = self.y() + old_body.y() + old_body.height()
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
         self.jump_height = options['jump_height']
@@ -1571,24 +1552,28 @@ class CharacterWidget(QLabel):
         self._move_timer.stop()
         self.is_moving = False
         self.setFixedSize(*self._scaled_character_size())
+        if self.rig_view is None and self.current_pixmap is not None:
+            self.set_pixmap_with_flip(self.current_pixmap)
         if self.current_surface is not None and self.on_ground:
             foot_y = self.current_surface.y_level
         for surface in self.surfaces:
             if surface.name == 'ground':
                 surface.y_level, surface.x_max = height, width
-        self.move(round(max(0, min(center_x - self.width() / 2, width - self.width()))),
-                  round(max(0, min(foot_y - self.height(), height - self.height()))))
+        body = self._physics_body_rect()
+        body_bottom = body.y() + body.height()
+        self.move(round(center_x - self.width() / 2), round(foot_y - body_bottom))
+        self._clamp_position_to_screen()
         self.velocity_x = self.velocity_y = 0
         self.on_ground = bool(was_grounded and standing_surface is not None
-                              and self.y() + self.height() == standing_surface.y_level)
+                              and self.y() + body_bottom == standing_surface.y_level)
         self.is_jumping = False
         self._jump_physics_y = None
         self.current_surface = standing_surface if self.on_ground else None
+        if self.on_ground:
+            self._grounded_body_bottom = body_bottom
+            self._grounded_surface_level = standing_surface.y_level
         self.animation_controller.update_base_pos(self.pos())
-        if self.rig_view is None and self.current_pixmap is not None:
-            self.set_pixmap_with_flip(self.current_pixmap)
         self.dialogue_system.update_dialogue_position()
-
 
 
     def select_ball(self):
@@ -2052,7 +2037,7 @@ class CharacterWidget(QLabel):
         self._move_timer.start(16)
 
     def move_toward_ball(self, ball_x: int) -> None:
-        """Use the same configured pixels/second as ordinary wandering."""
+        """Scale configured pixels/second by PJS02's emotion and intensity."""
         if self._manual_control_active() or self.is_dragging or self.is_jumping:
             self._chase_last_time = None
             return
@@ -2075,6 +2060,25 @@ class CharacterWidget(QLabel):
 
         emotion_info = self.mood_system.decide_emotion()
         emotion = emotion_info.get("emotion", "neutral")
+        intensity = max(0.0, min(1.0, emotion_info.get("intensity", 0.0)))
+        emotion_speed = {
+            "neutral": 4.0,
+            "calm": 3.0,
+            "peaceful": 2.5,
+            "contentment": 3.5,
+            "sadness": 2.5,
+            "melancholy": 2.0,
+            "despair": 1.5,
+            "anxiety": 6.0,
+            "fear": 7.0,
+            "interest": 8.0,
+            "joy": 10.0,
+            "delight": 9.0,
+            "excitement": 12.0,
+            "anger": 10.0,
+            "disgust": 8.0,
+        }.get(emotion, 4.0)
+        speed_scale = emotion_speed / 4.0 * (0.7 + intensity * 0.3)
         now = time.monotonic()
         previous = getattr(self, '_chase_last_time', None) if was_chasing else None
         elapsed = min(0.1, max(0, now - previous)) if previous is not None else 0.016
@@ -2082,14 +2086,13 @@ class CharacterWidget(QLabel):
         if not was_chasing:
             self._movement_x = float(self.x())
         self.is_flipped = delta_x > 0
-        self._advance_horizontal(target_x, elapsed)
+        self._advance_horizontal(target_x, elapsed, speed_scale=speed_scale)
         self.animation_controller.update_base_pos(self.pos())
 
         walk_animation = self._get_walk_animation(emotion)
         if self.current_action != walk_animation:
             self.current_action = walk_animation
             self.sprite_animator.play(walk_animation, fps=24, loop=True)
-
     
     def _get_walk_animation(self, emotion):
         """
@@ -2150,18 +2153,18 @@ class CharacterWidget(QLabel):
         return self._animation_for_emotion(self._get_sprite_display_emotion(emotion))
 
     
-    def _advance_horizontal(self, target_x, elapsed):
+    def _advance_horizontal(self, target_x, elapsed, *, speed_scale=1.0):
         """Keep fractional positions so short/left/right routes have equal speed."""
         current = getattr(self, '_movement_x', float(self.x()))
         if round(current) != self.x():
             current = float(self.x())
         distance = target_x - current
-        step = getattr(self, 'movement_speed', DEFAULT_CHARACTER_OPTIONS['movement_speed']) * elapsed
+        step = (getattr(self, 'movement_speed', DEFAULT_CHARACTER_OPTIONS['movement_speed'])
+                * speed_scale * elapsed)
         reached = abs(distance) <= step
         self._movement_x = float(target_x) if reached else current + math.copysign(step, distance)
         self.move(round(self._movement_x), self.y())
         return reached
-
 
     def _smooth_moving(self):
         """슬라이딩 이동 애니메이션"""
@@ -2193,86 +2196,62 @@ class CharacterWidget(QLabel):
         self.update()  
     
     def _apply_gravity(self):
-        """중력 및 경계 바운스 적용 - 캐릭터가 착지할 표면을 찾아 떨어짐"""
-        # 드래그 중이면 중력 작동 안 함 (이동 중은 중력 계속 작용)
+        """Land only when falling feet cross a surface from above."""
         if self.is_dragging:
             self.on_ground = False
             self.velocity_y = 0
             self.velocity_x = 0
             return
-        
+
         current_y = self.y()
         current_x = self.x()
-        screen_width, screen_height = self._get_screen_dimensions()
-        
-        # ===== X축 움직임 (드래그로 인한 관성) =====
-        if abs(self.velocity_x) > 0.1:  # 0.1 이상일 때만 움직임
+        screen_width, _ = self._get_screen_dimensions()
+        body = self._physics_body_rect()
+        body_bottom = body.y() + body.height()
+
+        if abs(self.velocity_x) > 0.1:
             new_x = current_x + self.velocity_x
-            
-            # 화면 경계 충돌 처리 (바운스)
-            char_width = self.width()
-            
-            # 좌측 경계
-            if new_x < 0:
-                new_x = 0
-                self.velocity_x = abs(self.velocity_x) * self.bounce_damping  # 반사 (우측 방향)
-            # 우측 경계
-            elif new_x + char_width > screen_width:
-                new_x = screen_width - char_width
-                self.velocity_x = -abs(self.velocity_x) * self.bounce_damping  # 반사 (좌측 방향)
-            
-            # 공기 저항 적용
+            if new_x + body.x() < 0:
+                new_x = -body.x()
+                self.velocity_x = abs(self.velocity_x) * self.bounce_damping
+            elif new_x + body.x() + body.width() > screen_width:
+                new_x = screen_width - body.x() - body.width()
+                self.velocity_x = -abs(self.velocity_x) * self.bounce_damping
             self.velocity_x *= self.friction
-            
             current_x = new_x
         else:
             self.velocity_x = 0
-        
-        current_surface = self.get_landing_surface(current_y, current_x)
-        
-        # 이미 착지했으면 중력 작동 안 함
-        # 착지 조건: 캐릭터 하단이 surface 상단보다 크거나 같을 때
-        if current_surface and current_y + self.height() >= current_surface.y_level:
-            # 처음 착지했을 때만 처리
-            if not self.on_ground:
-                self.on_ground = True
-                self.velocity_y = 0
-                self.velocity_x *= 0.8  # 착지 시 X속도 감소
-                self.current_surface = current_surface
-                self.is_jumping = False  # 착지 시 점프 상태 해제
-                self.can_jump = True  # 다시 점프 가능
-                # 표면에 정확히 맞춤 (캐릭터 하단이 surface 상단과 닿아야 함)
-                landing_y = int(current_surface.y_level - self.height())
-                self.move(int(current_x), landing_y)
-                
-                print(f"[착지!] 표면: {current_surface.name}, surface_y={current_surface.y_level}px -> char_y={landing_y}px, velocity_x={self.velocity_x:.2f}, velocity_y={self.velocity_y}")
-                
-                # 착지 후 현재 감정 상태로 복구 (이동 중이 아닐 때만)
-                if self.rig_view is not None or not self.is_moving:
-                    self._rig_landed()
-                
-                # 말풍선 위치 업데이트 (착지 후에도)
-                self.dialogue_system.update_dialogue_position()
-            else:
-                # 이미 착지 상태면 X속도 점진적 감소 (마찰)
-                self.velocity_x *= 0.95
-                self.move(int(current_x), current_y)
+
+        # Continue standing only on the same unmoved surface. A newly detected
+        # window above the feet, or a window moved upwards, cannot lift the pet.
+        standing = self.current_surface
+        previous_bottom = getattr(self, '_grounded_body_bottom', body_bottom)
+        previous_level = getattr(self, '_grounded_surface_level',
+                                 standing.y_level if standing is not None else None)
+        if (self.on_ground and not self.is_jumping and self.velocity_y >= 0
+                and standing is not None
+                and standing in getattr(self, 'surfaces', [standing])
+                and standing.y_level == previous_level
+                and abs(current_y + previous_bottom - standing.y_level) <= 1
+                and current_x + body.x() + body.width() > standing.x_min
+                and current_x + body.x() < standing.x_max):
+            self.velocity_y = 0
+            self.velocity_x *= 0.95
+            self._grounded_body_bottom = body_bottom
+            self._grounded_surface_level = standing.y_level
+            self.move(round(current_x), round(standing.y_level - body_bottom))
+            self.dialogue_system.update_dialogue_position()
             return
-        
-        # 중력 가속도 적용 (이동 중이어도 Y축 중력은 계속 적용)
+
         self.on_ground = False
+        self.current_surface = None
         self.velocity_y += self.gravity
         if (self.rig_view is not None and self.velocity_y > 0
                 and self.sprite_animator.current_action != "fall"):
             self.current_action = "fall"
             self.update_render("fall")
-        
-        # 속도 제한 (터미널 속도)
-        max_velocity = 20
-        if self.velocity_y > max_velocity:
-            self.velocity_y = max_velocity
-        
-        # 새 위치 계산
+        self.velocity_y = min(self.velocity_y, 20)
+
         jump_y = getattr(self, '_jump_physics_y', None)
         if self.is_jumping and jump_y is not None:
             new_y = jump_y + self.velocity_y
@@ -2282,57 +2261,42 @@ class CharacterWidget(QLabel):
             self._jump_physics_y = new_y
         else:
             new_y = current_y + self.velocity_y
-        
-        # 착지 표면 확인 (X 범위도 포함)
-        landing_surface = self.get_landing_surface(new_y, current_x)
-        if landing_surface and self.velocity_y >= 0 and new_y + self.height() >= landing_surface.y_level:
-            # 캐릭터 하단이 surface 상단과 닿아야 함
-            new_y = int(landing_surface.y_level - self.height())
+
+        # Select from the previous feet position, then test the downward crossing.
+        # This also catches fast falls through thin window tops without accepting
+        # side entry below their top or an upward jump through them.
+        landing_surface = self.get_landing_surface(current_y, current_x)
+        if (landing_surface is not None and self.velocity_y >= 0
+                and current_y + body_bottom <= landing_surface.y_level
+                and new_y + body_bottom >= landing_surface.y_level):
+            new_y = landing_surface.y_level - body_bottom
             self.on_ground = True
             self.velocity_y = 0
-            self.velocity_x *= 0.8  # 착지 시 X속도 감소
+            self.velocity_x *= 0.8
             self.current_surface = landing_surface
-            self.is_jumping = False  # 착지 시 점프 상태 해제
-            self.can_jump = True  # 다시 점프 가능
-            if self.rig_view is not None:
+            self.is_jumping = False
+            self._jump_physics_y = None
+            self.can_jump = True
+            self._grounded_body_bottom = body_bottom
+            self._grounded_surface_level = landing_surface.y_level
+            self._last_surface_name = landing_surface.name
+            print(f"[착지!] 표면: {landing_surface.name}, surface_y={landing_surface.y_level}px -> char_y={new_y}px")
+            if self.rig_view is not None or not self.is_moving:
                 self._rig_landed()
-        
-        self.move(int(current_x), int(new_y))
-        
-        # 말풍선 위치 업데이트 (중력 적용 중에도)
-        self.dialogue_system.update_dialogue_position()
-        
-        # 최종 경계 확인 (혹시 범위를 벗어났으면 조정)
-        self._clamp_position_to_screen()
-        
-        self.repaint()  # 화면 갱신 (디버그 표시 업데이트)
 
+        self.move(round(current_x), int(new_y))
+        self.dialogue_system.update_dialogue_position()
+        self._clamp_position_to_screen()
+        self.repaint()
     
     def _clamp_position_to_screen(self):
-        """캐릭터의 위치를 화면 범위 내로 강제 조정 (동적 해상도 지원)"""
+        """Keep the painted body inside the full screen, including the taskbar."""
         screen_width, screen_height = self._get_screen_dimensions()
-        char_width = self.width()
-        char_height = self.height()
-        
-        current_x = self.x()
-        current_y = self.y()
-        
-        # X 범위 조정
-        if current_x < 0:
-            current_x = 0
-        elif current_x + char_width > screen_width:
-            current_x = screen_width - char_width
-        
-        # Y 범위 조정
-        if current_y < 0:
-            current_y = 0
-        elif current_y + char_height > screen_height:
-            current_y = screen_height - char_height
-        
-        # 위치 재설정 (실제로 범위를 벗어났으면)
+        body = self._physics_body_rect()
+        current_x = max(-body.x(), min(self.x(), screen_width - body.x() - body.width()))
+        current_y = max(-body.y(), min(self.y(), screen_height - body.y() - body.height()))
         if self.x() != current_x or self.y() != current_y:
             self.move(int(current_x), int(current_y))
-
     
     # ====== 윈도우 감지 시스템 ======
     def _scan_windows(self):

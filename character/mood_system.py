@@ -110,6 +110,9 @@ class EmotionInfluence:
 
 class MoodSystem:
     """Russell 기반 감정 시스템 - 17개 감정 매핑"""
+
+    _NEGATIVE_EMOTION_RETENTION = 0.95
+    _POSITIVE_EMOTION_RETENTION = 0.94
     
     def __init__(self, personality_system=None):
         # Russell 감정 좌표 (Valence, Arousal)
@@ -842,11 +845,17 @@ class MoodSystem:
         
         for emotion in self.occ_intensities:
             if emotion in negative_emotions:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.95)
+                self.occ_intensities[emotion] = max(
+                    0.0, self.occ_intensities[emotion] * self._NEGATIVE_EMOTION_RETENTION
+                )
             elif emotion in positive_emotions:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.94)
+                self.occ_intensities[emotion] = max(
+                    0.0, self.occ_intensities[emotion] * self._POSITIVE_EMOTION_RETENTION
+                )
             else:
-                self.occ_intensities[emotion] = max(0.0, self.occ_intensities[emotion] * 0.94)
+                self.occ_intensities[emotion] = max(
+                    0.0, self.occ_intensities[emotion] * self._POSITIVE_EMOTION_RETENTION
+                )
 
         self._event_valence_bias *= 0.92
         self._event_arousal_bias *= 0.92
@@ -867,7 +876,10 @@ class MoodSystem:
                 base_weight=1.0,
                 adjusted_weight=1.0,
                 personality_multiplier=1.0,
-                personality_factors=["부정 감정 82% · 긍정 감정 88% 유지"],
+                personality_factors=[
+                    f"부정 감정 {self._NEGATIVE_EMOTION_RETENTION:.0%} · "
+                    f"긍정 감정 {self._POSITIVE_EMOTION_RETENTION:.0%} 유지"
+                ],
                 before=before,
                 before_occ=before_occ,
                 details="감정 강도를 중립 상태로 지수 감쇠",

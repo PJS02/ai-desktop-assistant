@@ -54,8 +54,13 @@ def test_fractional_motion_has_no_left_right_rounding_bias(direction):
     assert host.x() == 200 + direction * 32
 
 
-@pytest.mark.parametrize('emotion', ['neutral', 'joy', 'sadness', 'excitement'])
-def test_ball_chase_uses_the_same_configured_speed(emotion, monkeypatch):
+@pytest.mark.parametrize('emotion,base_speed', [
+    ('neutral', 4.0), ('calm', 3.0), ('peaceful', 2.5), ('contentment', 3.5),
+    ('sadness', 2.5), ('melancholy', 2.0), ('despair', 1.5), ('anxiety', 6.0),
+    ('fear', 7.0), ('interest', 8.0), ('joy', 10.0), ('delight', 9.0),
+    ('excitement', 12.0), ('anger', 10.0), ('disgust', 8.0), ('unknown', 4.0),
+])
+def test_ball_chase_preserves_pjs02_emotion_speed_ratios(emotion, base_speed, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(character_widget.time, 'monotonic', lambda: clock[0])
     host = moving_host(80)
@@ -63,7 +68,38 @@ def test_ball_chase_uses_the_same_configured_speed(emotion, monkeypatch):
     for _ in range(50):
         host.move_toward_ball(1500)
         clock[0] += .016
-    assert host.x() == 264  # 80 pixels/sec for .8 seconds.
+    assert host.x() == round(200 + 80 * .8 * base_speed / 4 * .7)
+
+
+@pytest.mark.parametrize('speed', [20, 80, 200])
+@pytest.mark.parametrize('intensity', [-.5, 0, .5, 1, 1.5])
+def test_ball_chase_scales_configured_speed_and_clamps_intensity(speed, intensity, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(character_widget.time, 'monotonic', lambda: clock[0])
+    host = moving_host(speed)
+    host.mood_system.decide_emotion = lambda: {'emotion': 'joy', 'intensity': intensity}
+    for _ in range(50):
+        host.move_toward_ball(1500)
+        clock[0] += .016
+    intensity_scale = .7 + max(0, min(1, intensity)) * .3
+    assert host.x() == round(200 + speed * .8 * 2.5 * intensity_scale)
+
+
+@pytest.mark.parametrize('direction', [-1, 1])
+@pytest.mark.parametrize('interval', [.008, .016, .04])
+def test_ball_chase_speed_is_independent_of_direction_and_tick_rate(direction, interval, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(character_widget.time, 'monotonic', lambda: clock[0])
+    host = moving_host(80)
+    host._x = 1000
+    host._movement_x = 1000.0
+    host._ball_chasing = True
+    host._chase_last_time = clock[0]
+    host.mood_system.decide_emotion = lambda: {'emotion': 'excitement', 'intensity': 1.0}
+    for _ in range(round(.8 / interval)):
+        clock[0] += interval
+        host.move_toward_ball(1000 + direction * 600)
+    assert host.x() == round(1000 + direction * 80 * .8 * 3)
 
 
 @pytest.mark.parametrize('height', [20, 60, 225, 450])
@@ -156,11 +192,12 @@ def real_character(tmp_path, monkeypatch):
 @pytest.mark.parametrize('scale', [50, 150, 200])
 def test_scaled_size_preserves_feet_hit_region_and_sprite_frames(real_character, scale):
     host, app = real_character
-    feet = host.y() + host.height()
+    feet = host.current_surface.y_level
     center = host.x() + host.width() / 2
     host.apply_character_settings(*host._get_screen_dimensions(), 'Russell (기본)', size_percent=scale)
     assert (host.width(), host.height()) == (round(150 * scale / 100), round(200 * scale / 100))
-    assert host.y() + host.height() == feet
+    body = host._character_visual_rect()
+    assert host.y() + body.y() + body.height() == feet
     assert abs(host.x() + host.width() / 2 - center) <= .5
     assert host.on_ground
     host.on_sprite_frame_changed(host.current_pixmap)
