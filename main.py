@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
 from dotenv import load_dotenv
 from character.character_widget import CharacterWidget
-from character.config_manager import load_config
+from character.config_manager import load_config, load_character_options
 from character.settings_controller import SettingsController
 from character.log_console import AppLogManager, LogWindow
 
@@ -166,6 +166,7 @@ def main():
         on_show_log_window=log_window.show_and_raise,
         on_close_log_window=log_window.shutdown,
         on_rps_command=mediapipe_manager.send_game_command,
+        character_options=load_character_options(),
     )
     settings_controller = SettingsController(character, mediapipe_manager)
     character._show_settings_callback = settings_controller.show

@@ -62,7 +62,7 @@ class HostHarness:
     for _name in ("update_action", "update_mood", "_play_rig_action",
                   "_set_rig_direction", "_rig_landed", "on_animation_finished",
                   "_get_walk_animation", "_get_falling_action", "_get_emotion_animation",
-                  "_apply_gravity", "random_move", "move_toward_ball", "_smooth_moving",
+                  "_apply_gravity", "random_move", "move_toward_ball", "_smooth_moving", "_advance_horizontal",
                   "mouseReleaseEvent", "_queue_sprite_fallback", "_use_sprite_renderer",
                   "_on_speaking_changed", "_shutdown_character_renderer", "jump",
                   "get_character_idle_time", "_mark_character_interaction",

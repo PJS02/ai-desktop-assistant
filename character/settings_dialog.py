@@ -4,11 +4,12 @@ from copy import deepcopy
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QLineEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .personality_system import PersonalitySystem
 from .tts_service import available_voices
+from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options
 
 
 class SettingsDialog(QDialog):
@@ -18,6 +19,7 @@ class SettingsDialog(QDialog):
     def __init__(self, local, parent=None):
         super().__init__(parent)
         local = deepcopy(local)
+        local['character'].update(normalize_character_options(local['character']))
         self.setWindowTitle('통합 설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
         self.resize(700, 640)
@@ -100,7 +102,37 @@ class SettingsDialog(QDialog):
         return combo
 
     def _character_page(self, local):
-        _, _, form = self._page('캐릭터', '캐릭터의 활동 범위와 성격을 설정하세요.')
+        _, _, form = self._page('캐릭터', '크기와 이동 속도는 바로 적용되고, 점프 높이는 다음 점프부터 반영됩니다. 활동 범위와 점프는 화면 안으로 제한됩니다.')
+        self.character_sliders = {}
+        self.character_inputs = {}
+        for key, label, suffix in (
+            ('size_percent', '캐릭터 크기', ' %'),
+            ('movement_speed', '이동 속도', ' px/초'),
+            ('jump_height', '점프 높이', ' px'),
+        ):
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            spin = QSpinBox()
+            low, high = CHARACTER_OPTION_RANGES[key]
+            slider.setRange(low, high)
+            spin.setRange(low, high)
+            spin.setSuffix(suffix)
+            spin.setMinimumWidth(120)
+            slider.setValue(local['character'][key])
+            spin.setValue(local['character'][key])
+            slider.valueChanged.connect(spin.setValue)
+            spin.valueChanged.connect(slider.setValue)
+            self.character_sliders[key] = slider
+            self.character_inputs[key] = spin
+            line.addWidget(slider, 1)
+            line.addWidget(spin)
+            form.addRow(label, row)
+        self.size_preview = QLabel()
+        form.addRow('', self.size_preview)
+        self.character_inputs['size_percent'].valueChanged.connect(self._describe_size)
+        self._describe_size()
         self.resolution_preset = self._combo([
             ('사용자 정의', None), ('720p · 1280 × 720', (1280, 720)),
             ('1080p · 1920 × 1080', (1920, 1080)), ('1440p · 2560 × 1440', (2560, 1440)),
@@ -127,6 +159,10 @@ class SettingsDialog(QDialog):
         form.addRow('', self.personality_description)
         self.personality.currentIndexChanged.connect(self._describe_personality)
         self._describe_personality()
+
+    def _describe_size(self):
+        percent = self.character_inputs['size_percent'].value()
+        self.size_preview.setText(f"표시 크기: {round(150 * percent / 100)} × {round(200 * percent / 100)}px · 가로세로 비율 유지")
 
     def _set_resolution_preset(self):
         value = self.resolution_preset.currentData()
@@ -237,6 +273,7 @@ class SettingsDialog(QDialog):
         local = {'character': {'width': self.width.value(), 'height': self.height.value(), 'personality': self.personality.currentData()},
                  'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData()},
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
+        local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
         remote = {}
         if self.remote_baseline is not None:

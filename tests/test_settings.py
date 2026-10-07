@@ -21,7 +21,8 @@ def qt_app():
 
 
 def local_settings():
-    return {'character': {'width': 1920, 'height': 1080, 'personality': 'Russell (기본)'},
+    return {'character': {'width': 1920, 'height': 1080, 'personality': 'Russell (기본)',
+                          'size_percent': 100, 'movement_speed': 80, 'jump_height': 225},
             'voice': {'enabled': True, 'voice_id': 'F1'}, 'ai': {'api_key': '', 'model': 'example-model'}}
 
 

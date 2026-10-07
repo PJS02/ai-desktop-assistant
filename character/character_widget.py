@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+import math
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
 from PyQt6.QtGui import QActionGroup, QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent
@@ -21,6 +22,7 @@ from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameDialog
+from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options
 
 
 # Context 모듈 import
@@ -108,8 +110,13 @@ class CharacterWidget(QLabel):
         on_close_log_window=None,
         on_rps_command=None,
         on_show_settings=None,
+        character_options=None,
     ):
         super().__init__()
+        options = normalize_character_options(character_options)
+        self.size_percent = options['size_percent']
+        self.movement_speed = options['movement_speed']
+        self.jump_height = options['jump_height']
 
         # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
         self._show_perception_console_callback = on_show_perception_console
@@ -184,11 +191,11 @@ class CharacterWidget(QLabel):
         self._rig_fallback_pending = False
         self._rig_overlay_key = None
         self._character_closing = False
-        self.setFixedSize(self.CHARACTER_WIDTH, self.CHARACTER_HEIGHT)
+        self.setFixedSize(*self._scaled_character_size())
         self._initialize_character_renderer()
         
         # 이미지 별도로 축소 대응
-        self.setFixedSize(self.CHARACTER_WIDTH, self.CHARACTER_HEIGHT)
+        self.setFixedSize(*self._scaled_character_size())
         self.update_render("idle")
         
         # 애니메이션 컨트롤러
@@ -221,9 +228,9 @@ class CharacterWidget(QLabel):
         # 이동 타이머 미리 생성
         self._move_timer = QTimer()
         self._move_timer.timeout.connect(self._smooth_moving)
-        self._remaining_steps = 0
-        self.step_x = 0
-        self.step_y = 0
+        self._movement_x = float(self.x())
+        self._walk_last_time = None
+        self._chase_last_time = None
 
         self.is_moving = False
         self._pet_last_position = None
@@ -305,7 +312,9 @@ class CharacterWidget(QLabel):
         self._gravity_timer.start(16)  # 16ms = 60fps (30ms에서 개선)
         
         # 점프 시스템
-        self.jump_force = 15  # 점프 초기 속도 (위로)
+        self.jump_force = math.sqrt(2 * self.gravity * self.jump_height) + self.gravity
+        self._jump_physics_y = None
+        self._jump_apex_y = None
         self.can_jump = True  # 점프 가능 여부 (지면에 있을 때만)
         self.is_jumping = False  # 현재 점프 중인지
         
@@ -544,7 +553,7 @@ class CharacterWidget(QLabel):
     def on_animation_position_changed(self, new_pos):
         """애니메이션이 위치 변경을 요청 (이동 중에는 멈춤)"""
         # 중력이 적용되도록, X좌표만 갱신하고 Y는 현재 유지
-        if not self.is_moving and not self.is_dragging:
+        if not self.is_moving and not self.is_dragging and not getattr(self, '_ball_chasing', False):
             # X만 변경, Y는 현재 값 유지 (중력 효과 보존)
             self.move(new_pos.x(), self.y())
     
@@ -1033,7 +1042,7 @@ class CharacterWidget(QLabel):
             print("pixmap: NONE!")
             return
         
-        # 일관된 크기로 스케일링 (150x200)
+        # Compose in the original host canvas, then scale the complete frame.
         target_width = self.CHARACTER_WIDTH
         target_height = self.CHARACTER_HEIGHT
         scaled_pixmap = pixmap.scaledToWidth(target_width, Qt.TransformationMode.SmoothTransformation)
@@ -1041,7 +1050,6 @@ class CharacterWidget(QLabel):
         if scaled_pixmap.height() != target_height:
             scaled_pixmap = scaled_pixmap.scaledToHeight(target_height, Qt.TransformationMode.SmoothTransformation)
         
-        self.setFixedSize(target_width, target_height)
         if self.is_flipped:
             # 좌우반전
             transform = QTransform()
@@ -1055,7 +1063,13 @@ class CharacterWidget(QLabel):
         if self.held_items:
             final_pixmap = self._overlay_icons_on_character(final_pixmap)
         
-        self.setPixmap(final_pixmap)
+        canvas = QPixmap(target_width, target_height)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.drawPixmap(0, 0, final_pixmap)
+        painter.end()
+        self.setPixmap(canvas.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation))
         self.repaint()
 
     def _get_item_icon(self, file_path):
@@ -1327,6 +1341,9 @@ class CharacterWidget(QLabel):
 
     def mouseReleaseEvent(self, event):
         self.is_dragging = False
+        self.is_jumping = False
+        self._jump_physics_y = None
+        self._chase_last_time = None
         self.drag_time = 0
         self.drag_pos = None
         self._mark_character_interaction()
@@ -1431,28 +1448,41 @@ class CharacterWidget(QLabel):
         self._context_menu = menu
         menu.popup(global_pos)
 
-
     def show_settings(self):
         if self._show_settings_callback is not None:
             self._show_settings_callback()
 
+    def _scaled_character_size(self):
+        scale = self.size_percent / 100
+        return round(self.CHARACTER_WIDTH * scale), round(self.CHARACTER_HEIGHT * scale)
 
-    def apply_character_settings(self, width, height, personality):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None):
         """Update bounds and personality without resetting the current mood."""
         screen = QApplication.primaryScreen()
         if screen is not None:
             bounds = screen.availableGeometry()
             width, height = min(width, bounds.width()), min(height, bounds.height())
         self.personality_system.load_preset(personality)
+        options = normalize_character_options({
+            'size_percent': self.size_percent if size_percent is None else size_percent,
+            'movement_speed': self.movement_speed if movement_speed is None else movement_speed,
+            'jump_height': self.jump_height if jump_height is None else jump_height,
+        }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
         center_x, foot_y = self.x() + old_width / 2, self.y() + old_height
+        self.size_percent = options['size_percent']
+        self.movement_speed = options['movement_speed']
+        self.jump_height = options['jump_height']
+        self.jump_force = math.sqrt(2 * self.gravity * self.jump_height) + self.gravity
         bounds_changed = (self.custom_screen_width, self.custom_screen_height) != (width, height)
         self.custom_screen_width, self.custom_screen_height = width, height
-        if not bounds_changed:
+        size_changed = self._scaled_character_size() != (old_width, old_height)
+        if not size_changed and not bounds_changed:
             return
         self._move_timer.stop()
         self.is_moving = False
+        self.setFixedSize(*self._scaled_character_size())
         if self.current_surface is not None and self.on_ground:
             foot_y = self.current_surface.y_level
         for surface in self.surfaces:
@@ -1464,8 +1494,11 @@ class CharacterWidget(QLabel):
         self.on_ground = bool(was_grounded and standing_surface is not None
                               and self.y() + self.height() == standing_surface.y_level)
         self.is_jumping = False
+        self._jump_physics_y = None
         self.current_surface = standing_surface if self.on_ground else None
         self.animation_controller.update_base_pos(self.pos())
+        if self.rig_view is None and self.current_pixmap is not None:
+            self.set_pixmap_with_flip(self.current_pixmap)
         self.dialogue_system.update_dialogue_position()
 
 
@@ -1721,7 +1754,11 @@ class CharacterWidget(QLabel):
             print(f"[점프 불가] on_ground={self.on_ground}")
             return
         
-        print(f"[점프!] velocity_y 설정: {-self.jump_force}")
+        jump_height = getattr(self, 'jump_height', DEFAULT_CHARACTER_OPTIONS['jump_height'])
+        self.jump_force = math.sqrt(2 * self.gravity * jump_height) + self.gravity
+        self._jump_apex_y = max(0.0, self.y() - jump_height)
+        self._jump_physics_y = float(self.y())
+        print(f"[점프!] 목표 높이: {jump_height}px")
         self.is_jumping = True
         self.on_ground = False
         self.velocity_y = -self.jump_force  # 음수 = 위로
@@ -1737,7 +1774,8 @@ class CharacterWidget(QLabel):
         self.update_render(self.current_action)
         
         # 점프 직후 화면 업데이트 (다음 _apply_gravity 호출까지 기다리지 않음)
-        self.move(self.x(), self.y() - 5)  # 즉시 5px 위로 이동
+        self._jump_physics_y = max(self._jump_apex_y, self._jump_physics_y - 5)
+        self.move(self.x(), round(self._jump_physics_y))
         self.repaint()
     
     # ====== 디버그 렌더링 ======
@@ -1868,14 +1906,11 @@ class CharacterWidget(QLabel):
         # 감정에 따라 움직이는 범위 결정 (X축만: 왼쪽/오른쪽)
         # Y축은 중력에 의해서만 제어됨
         dx = random.randint(-move_range, move_range)
-        dy = 0
 
         # 화면 경계 내로 이동 위치 제한 (커스텀 해상도 사용)
         screen_width = self.custom_screen_width
-        screen_height = self.custom_screen_height
         
         target_x = self.x() + dx
-        target_y = self.y() + dy  # dy = 0이므로 target_y = self.y()
         
         # 경계 체크 및 조정
         if target_x < 0:
@@ -1883,18 +1918,11 @@ class CharacterWidget(QLabel):
         elif target_x + self.width() > screen_width:
             target_x = screen_width - self.width()
         
-        if target_y < 0:
-            target_y = 0
-        elif target_y + self.height() > screen_height:
-            target_y = screen_height - self.height()
-        
         # 실제 이동 거리 재계산
         actual_dx = target_x - self.x()
-        actual_dy = target_y - self.y()
+        if actual_dx == 0:
+            return
         
-        # print(f"위치 이동: ({self.x()}, {self.y()}) -> ({target_x}, {target_y})")
-        # print(f"[이동] actual_dx={actual_dx}, actual_dy={actual_dy}, is_flipped={self.is_flipped}")
-
         # 이동 방향에 따라 좌우반전 결정
         if actual_dx > 0:
             self.is_flipped = True
@@ -1912,62 +1940,47 @@ class CharacterWidget(QLabel):
         
         self.sprite_animator.play(walk_animation, fps=24, loop=True)
         
-        # 이동 설정 (더 많은 스텝으로 천천히 이동 안바꾸니까 순간이동 하던데 ㅇㅇ..)
-        steps = 25
-        self.step_x = actual_dx // steps if steps > 0 else 0
-        self.step_y = 0  # *** Y축은 절대 변경 안 함 (중력만 제어) ***
-        self._remaining_steps = steps
         self._target_x = target_x
-        self._target_y = self.y()  # 현재 Y좌표 저장 (변경 없음)
+        self._movement_x = float(self.x())
+        self._walk_last_time = time.monotonic()
         
         # 이동 시작
         self.is_moving = True
         self.animation_controller.idle.stop()
-        # 이동 타이머 간격 증가 (20 → 50ms) //너무 빨리 움직이더라
-        self._move_timer.start(50)
+        self._move_timer.start(16)
 
     def move_toward_ball(self, ball_x: int) -> None:
-        """Move toward the ball at a speed shaped by the current emotion."""
+        """Use the same configured pixels/second as ordinary wandering."""
         if self.is_dragging or self.is_jumping:
+            self._chase_last_time = None
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or not self.on_ground
                 or (self.sprite_animator.current_action == "land"
                     and self.sprite_animator.is_playing)):
+            self._chase_last_time = None
             return
 
+        was_chasing = getattr(self, '_ball_chasing', False)
         self._ball_chasing = True
         target_x = ball_x - self.width() // 2
         screen_width, _ = self._get_screen_dimensions()
         target_x = max(0, min(target_x, screen_width - self.width()))
         delta_x = target_x - self.x()
-        if abs(delta_x) < 4:
+        if delta_x == 0:
+            self._chase_last_time = None
             return
 
         emotion_info = self.mood_system.decide_emotion()
         emotion = emotion_info.get("emotion", "neutral")
-        intensity = max(0.0, min(1.0, emotion_info.get("intensity", 0.0)))
-        base_speed = {
-            "neutral": 4.0,
-            "calm": 3.0,
-            "peaceful": 2.5,
-            "contentment": 3.5,
-            "sadness": 2.5,
-            "melancholy": 2.0,
-            "despair": 1.5,
-            "anxiety": 6.0,
-            "fear": 7.0,
-            "interest": 8.0,
-            "joy": 10.0,
-            "delight": 9.0,
-            "excitement": 12.0,
-            "anger": 10.0,
-            "disgust": 8.0,
-        }.get(emotion, 4.0)
-        chase_speed = base_speed * (0.7 + intensity * 0.3)
-        step = max(-chase_speed, min(chase_speed, delta_x))
-        self.is_flipped = step > 0
-        self.move(int(self.x() + step), self.y())
+        now = time.monotonic()
+        previous = getattr(self, '_chase_last_time', None) if was_chasing else None
+        elapsed = min(0.1, max(0, now - previous)) if previous is not None else 0.016
+        self._chase_last_time = now
+        if not was_chasing:
+            self._movement_x = float(self.x())
+        self.is_flipped = delta_x > 0
+        self._advance_horizontal(target_x, elapsed)
         self.animation_controller.update_base_pos(self.pos())
 
         walk_animation = self._get_walk_animation(emotion)
@@ -2034,9 +2047,30 @@ class CharacterWidget(QLabel):
         return self._animation_for_emotion(emotion)
 
     
+    def _advance_horizontal(self, target_x, elapsed):
+        """Keep fractional positions so short/left/right routes have equal speed."""
+        current = getattr(self, '_movement_x', float(self.x()))
+        if round(current) != self.x():
+            current = float(self.x())
+        distance = target_x - current
+        step = getattr(self, 'movement_speed', DEFAULT_CHARACTER_OPTIONS['movement_speed']) * elapsed
+        reached = abs(distance) <= step
+        self._movement_x = float(target_x) if reached else current + math.copysign(step, distance)
+        self.move(round(self._movement_x), self.y())
+        return reached
+
     def _smooth_moving(self):
         """슬라이딩 이동 애니메이션"""
-        if self._remaining_steps <= 0:
+        if not self.is_moving or self.is_dragging:
+            return
+        now = time.monotonic()
+        previous = getattr(self, '_walk_last_time', None)
+        elapsed = min(0.1, max(0, now - previous)) if previous is not None else 0.016
+        self._walk_last_time = now
+        target = getattr(self, '_target_x', self.x())
+        screen_width, _ = self._get_screen_dimensions()
+        target = max(0, min(target, screen_width - self.width()))
+        if self._advance_horizontal(target, elapsed):
             self._move_timer.stop()
             self.is_moving = False
             
@@ -2052,9 +2086,7 @@ class CharacterWidget(QLabel):
             self.animation_controller.start_idle()
             return
 
-        self.move(self.x() + self.step_x, self.y() + self.step_y)
         self.update()  
-        self._remaining_steps -= 1
     
     def _apply_gravity(self):
         """중력 및 경계 바운스 적용 - 캐릭터가 착지할 표면을 찾아 떨어짐"""
@@ -2137,11 +2169,19 @@ class CharacterWidget(QLabel):
             self.velocity_y = max_velocity
         
         # 새 위치 계산
-        new_y = current_y + self.velocity_y
+        jump_y = getattr(self, '_jump_physics_y', None)
+        if self.is_jumping and jump_y is not None:
+            new_y = jump_y + self.velocity_y
+            if self.velocity_y < 0 and new_y <= self._jump_apex_y:
+                new_y = self._jump_apex_y
+                self.velocity_y = 0
+            self._jump_physics_y = new_y
+        else:
+            new_y = current_y + self.velocity_y
         
         # 착지 표면 확인 (X 범위도 포함)
         landing_surface = self.get_landing_surface(new_y, current_x)
-        if landing_surface and new_y >= landing_surface.y_level:
+        if landing_surface and self.velocity_y >= 0 and new_y + self.height() >= landing_surface.y_level:
             # 캐릭터 하단이 surface 상단과 닿아야 함
             new_y = int(landing_surface.y_level - self.height())
             self.on_ground = True

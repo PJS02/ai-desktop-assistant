@@ -1,6 +1,7 @@
 # 해상도 설정 저장/불러오기
 import json
 from pathlib import Path
+from .motion_options import normalize_character_options
 
 
 CONFIG_FILE = Path.home() / ".ai_desktop_assistant" / "config.json"
@@ -33,7 +34,15 @@ def load_config():
     return 1920, 1080, 'Russell (기본)'
 
 
-def save_config(width, height, personality='Russell (기본)'):
+def load_character_options():
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+        return normalize_character_options(data.get('character_options', {}))
+    except (OSError, ValueError, AttributeError):
+        return normalize_character_options()
+
+
+def save_config(width, height, personality='Russell (기본)', character_options=None):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -41,6 +50,11 @@ def save_config(width, height, personality='Russell (기본)'):
         if not isinstance(config, dict):
             raise ValueError('설정 파일 형식이 올바르지 않습니다.')
         config.update(resolution={'width': width, 'height': height}, personality=personality)
+        if character_options is not None:
+            saved_options = config.get('character_options', {})
+            saved_options = saved_options.copy() if isinstance(saved_options, dict) else {}
+            saved_options.update(normalize_character_options(character_options, strict=True))
+            config['character_options'] = saved_options
         temporary = CONFIG_FILE.with_suffix('.json.tmp')
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
         temporary.replace(CONFIG_FILE)

@@ -1,0 +1,204 @@
+import json
+from unittest.mock import Mock
+
+import pytest
+from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
+
+from character import ai_settings, character_widget, config_manager, dialogue_system
+from character.character_widget import CharacterWidget
+from character.motion_options import DEFAULT_CHARACTER_OPTIONS
+from character.settings_dialog import SettingsDialog
+from character.tts_service import SupertonicTTS
+from test_character_rig_host import HostHarness
+from test_settings import local_settings
+
+
+def moving_host(speed=80):
+    host = HostHarness()
+    host.movement_speed = speed
+    host.current_pixmap = None
+    host.custom_screen_width, host.custom_screen_height = 1920, 1000
+    host._move_timer = Mock()
+    host.update = lambda: None
+    return host
+
+
+@pytest.mark.parametrize('distance', [7, 25, 100, -7, -25, -100])
+@pytest.mark.parametrize('speed', [20, 80, 200])
+def test_wandering_duration_depends_on_distance_not_speed(distance, speed, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(character_widget.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(character_widget.random, 'random', lambda: .5)
+    monkeypatch.setattr(character_widget.random, 'randint', lambda low, high: distance)
+    host = moving_host(speed)
+    host.random_move()
+    assert host.is_moving
+    ticks = 0
+    while host.is_moving and ticks < 1000:
+        clock[0] += .016
+        host._smooth_moving()
+        ticks += 1
+    assert not host.is_moving
+    assert host.x() == 200 + distance
+    assert abs(ticks * .016 - abs(distance) / speed) <= .017
+
+
+@pytest.mark.parametrize('direction', [-1, 1])
+def test_fractional_motion_has_no_left_right_rounding_bias(direction):
+    host = moving_host(20)
+    for _ in range(100):
+        host._advance_horizontal(200 + direction * 300, .016)
+    assert host.x() == 200 + direction * 32
+
+
+@pytest.mark.parametrize('emotion', ['neutral', 'joy', 'sadness', 'excitement'])
+def test_ball_chase_uses_the_same_configured_speed(emotion, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(character_widget.time, 'monotonic', lambda: clock[0])
+    host = moving_host(80)
+    host.mood_system.emotion = emotion
+    for _ in range(50):
+        host.move_toward_ball(1500)
+        clock[0] += .016
+    assert host.x() == 264  # 80 pixels/sec for .8 seconds.
+
+
+@pytest.mark.parametrize('height', [20, 60, 225, 450])
+def test_configured_jump_reaches_exact_apex_and_lands(height):
+    host = moving_host()
+    host.jump_height = height
+    origin = host.y()
+    host.jump()
+    peak = host.y()
+    for _ in range(200):
+        host._apply_gravity()
+        peak = min(peak, host.y())
+        if host.on_ground:
+            break
+    assert origin - peak == height
+    assert host.on_ground
+    assert host.y() + host.height() == host.surface.y_level
+    assert not host.is_jumping
+
+
+def test_dragging_interrupts_the_saved_jump_trajectory():
+    host = moving_host()
+    host.jump()
+    for _ in range(4):
+        host._apply_gravity()
+    host._y = 400
+    host.mouseReleaseEvent(None)
+    assert host.y() == 400
+    assert not host.is_jumping
+    assert host._jump_physics_y is None
+
+
+def test_jump_height_is_limited_by_available_screen_space():
+    host = moving_host()
+    host._y = 100
+    host.jump_height = 500
+    host.jump()
+    peak = host.y()
+    for _ in range(200):
+        host._apply_gravity()
+        peak = min(peak, host.y())
+        if host.on_ground:
+            break
+    assert peak == 0
+    assert host.on_ground
+
+
+def test_character_option_storage_migrates_and_preserves_extra_keys(tmp_path, monkeypatch):
+    path = tmp_path / 'settings.json'
+    path.write_text('{"width":1280,"height":720,"extra":42}', encoding='utf-8')
+    monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
+    assert config_manager.load_character_options() == DEFAULT_CHARACTER_OPTIONS
+    options = {'size_percent': 160, 'movement_speed': 125, 'jump_height': 300}
+    config_manager.save_config(1280, 720, character_options=options)
+    assert config_manager.load_character_options() == options
+    assert json.loads(path.read_text(encoding='utf-8'))['extra'] == 42
+    config_manager.save_config(1920, 1080)
+    assert config_manager.load_character_options() == options
+    with pytest.raises(ValueError):
+        config_manager.save_config(1920, 1080, character_options={'movement_speed': float('inf')})
+    assert config_manager.load_character_options() == options
+
+
+@pytest.fixture
+def real_character(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setenv('CLOUDY_RENDERER', 'sprite')
+    monkeypatch.setattr(character_widget, 'HAS_PYGETWINDOW', False)
+    monkeypatch.setattr(character_widget.QtPerceptionReceiver, 'start', lambda self: False)
+    path = tmp_path / 'ai.json'
+    path.write_text('{"api_key":"","model":"test"}', encoding='utf-8')
+    monkeypatch.setattr(ai_settings, 'GEMINI_PATHS', (path,))
+    settings = QSettings(str(tmp_path / 'voice.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(dialogue_system, 'SupertonicTTS', lambda: SupertonicTTS(settings=settings))
+    host = CharacterWidget(screen_width=1920, screen_height=1080)
+    host.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    host.show_debug = False
+    for name in ('timer', 'emotion_timer', 'move_timer', 'drag_timer', '_move_timer', '_gravity_timer', '_activity_monitor_timer'):
+        getattr(host, name).stop()
+    host.animation_controller.stop()
+    ground = next(surface for surface in host.surfaces if surface.name == 'ground')
+    host.move(400, ground.y_level - host.height())
+    host.on_ground = True
+    host.current_surface = ground
+    yield host, app
+    host.close()
+
+
+@pytest.mark.parametrize('scale', [50, 150, 200])
+def test_scaled_size_preserves_feet_hit_region_and_sprite_frames(real_character, scale):
+    host, app = real_character
+    feet = host.y() + host.height()
+    center = host.x() + host.width() / 2
+    host.apply_character_settings(*host._get_screen_dimensions(), 'Russell (기본)', size_percent=scale)
+    assert (host.width(), host.height()) == (round(150 * scale / 100), round(200 * scale / 100))
+    assert host.y() + host.height() == feet
+    assert abs(host.x() + host.width() / 2 - center) <= .5
+    assert host.on_ground
+    host.on_sprite_frame_changed(host.current_pixmap)
+    assert host.width() == round(150 * scale / 100)
+    assert host.pixmap().size() == host.size()
+    host.show()
+    app.processEvents()
+    QTest.mousePress(host, Qt.MouseButton.LeftButton, pos=host.rect().bottomRight())
+    assert host.is_dragging
+    QTest.mouseRelease(host, Qt.MouseButton.LeftButton)
+
+
+def test_settings_slider_numeric_input_apply_and_cancel(real_character):
+    _, _app = real_character
+    dialog = SettingsDialog(local_settings())
+    dialog.character_sliders['size_percent'].setValue(150)
+    dialog.character_inputs['movement_speed'].setValue(125)
+    dialog.character_sliders['jump_height'].setValue(300)
+    assert dialog.character_inputs['size_percent'].value() == 150
+    assert dialog.character_sliders['movement_speed'].value() == 125
+    emitted = []
+    dialog.apply_requested.connect(emitted.append)
+    dialog.submit(False)
+    values = emitted[0]['local']['character']
+    assert (values['size_percent'], values['movement_speed'], values['jump_height']) == (150, 125, 300)
+    dialog.complete('saved', local={'character': values})
+    assert dialog.changes()['local'] == {}
+    dialog.character_inputs['movement_speed'].setValue(300)
+    dialog.reject()
+    assert dialog.local_baseline['character']['movement_speed'] == 125
+
+
+def test_saved_character_options_apply_at_startup(real_character, tmp_path, monkeypatch):
+    path = tmp_path / 'character.json'
+    monkeypatch.setattr(config_manager, 'CONFIG_FILE', path)
+    options = {'size_percent': 200, 'movement_speed': 125, 'jump_height': 300}
+    config_manager.save_config(1920, 1080, character_options=options)
+    restarted = CharacterWidget(character_options=config_manager.load_character_options())
+    try:
+        assert (restarted.width(), restarted.height()) == (300, 400)
+        assert restarted.movement_speed == 125 and restarted.jump_height == 300
+    finally:
+        restarted.close()
