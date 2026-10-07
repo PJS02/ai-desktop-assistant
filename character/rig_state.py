@@ -42,6 +42,8 @@ class RigAnimator(QObject):
         self.current_animation = None
         self.current_action = "idle"
         self.current_emotion = "neutral"
+        self._requested_emotion = "neutral"
+        self._emotion_override = None
         self.is_looping = True
         self.is_playing = False
         self._paused = False
@@ -52,10 +54,16 @@ class RigAnimator(QObject):
     def set_emotion(self, name):
         if self._released:
             return
-        emotion = rig_emotion(name)
+        self._requested_emotion = rig_emotion(name)
+        emotion = self._emotion_override or self._requested_emotion
         if emotion != self.current_emotion:
             self.current_emotion = emotion
             self.view.set_emotion(emotion)
+
+    def set_emotion_override(self, name=None):
+        """Pin only the rendered face while continuing to receive real moods."""
+        self._emotion_override = rig_emotion(name) if name else None
+        self.set_emotion(self._requested_emotion)
 
     def set_direction(self, flipped=False, *, front=False):
         self.set_yaw(0 if front else (65 if flipped else -65))

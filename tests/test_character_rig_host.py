@@ -20,7 +20,7 @@ class Timer:
     def stop(self):
         self.stopped = True
 
-    def start(self):
+    def start(self, *args):
         self.stopped = False
 
 
@@ -71,7 +71,8 @@ class HostHarness:
                   "_on_speaking_changed", "_shutdown_character_renderer", "jump",
                   "get_character_idle_time", "_mark_character_interaction",
                   "_maybe_run_autonomous_event", "advance_emotion",
-                  "_request_user_greeting", "_try_user_greeting", "_show_perception_dialogue"):
+                  "_request_user_greeting", "_try_user_greeting", "_show_perception_dialogue", "_manual_control_active",
+                  "_get_sprite_display_emotion"):
         locals()[_name] = getattr(CharacterWidget, _name)
 
     def __init__(self, native=True):

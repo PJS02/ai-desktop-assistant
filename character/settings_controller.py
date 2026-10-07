@@ -44,6 +44,12 @@ class SettingsController(QObject):
         self.dialog = SettingsDialog(local, self.character)
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.refresh_requested.connect(self.refresh)
+        self.dialog.character_command_requested.connect(self.character.manual_control.execute)
+        self.character.manual_control.status_changed.connect(self.dialog.set_manual_status)
+        self.dialog.set_manual_status(self.character.manual_control.status)
+        self.dialog.display_emotion_requested.connect(self.character.manual_control.set_display_emotion)
+        self.character.manual_control.display_emotion_changed.connect(self.dialog.set_display_emotion_state)
+        self.dialog.set_display_emotion_state(self.character.manual_control.display_emotion or '')
         if ai_error:
             self.dialog.status.setText(ai_error)
             self.dialog.api_key.setEnabled(False)

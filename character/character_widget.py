@@ -23,6 +23,7 @@ from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
+from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 
 
 # Context 모듈 import
@@ -364,6 +365,7 @@ class CharacterWidget(QLabel):
         self._greeting_retry_timer = QTimer(self)
         self._greeting_retry_timer.setInterval(100)
         self._greeting_retry_timer.timeout.connect(self._try_user_greeting)
+        self.manual_control = ManualControl(self, self)
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
             mood_system=self.mood_system,
@@ -383,6 +385,7 @@ class CharacterWidget(QLabel):
                 "[외부 인식 수신기 비활성화] "
                 f"{self.perception_receiver.startup_error or '알 수 없는 오류'}"
             )
+
     
     def _initialize_character_renderer(self):
         """Keep the host window and its events; replace only character drawing."""
@@ -478,6 +481,7 @@ class CharacterWidget(QLabel):
         if action == "idle":
             self.update_action(self.mood_system.decide_emotion())
 
+
     def _set_rig_direction(self, yaw):
         if self.rig_view is None:
             return
@@ -485,6 +489,8 @@ class CharacterWidget(QLabel):
         self.is_flipped = yaw > 0
         self.sprite_animator.set_yaw(yaw)
         self._refresh_rig_overlay()
+
+
 
     def _rig_landed(self):
         if self.rig_view is not None:
@@ -533,7 +539,7 @@ class CharacterWidget(QLabel):
         self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
 
     def _request_user_greeting(self):
-        if self._character_closing:
+        if self._character_closing or self._manual_control_active():
             return
         self._pending_user_greeting_until = time.monotonic() + 10.0
         if not self._try_user_greeting():
@@ -577,6 +583,8 @@ class CharacterWidget(QLabel):
     def _shutdown_character_renderer(self):
         """Stop host callbacks before releasing the drawing backend."""
         self._character_closing = True
+        if hasattr(self, 'manual_control'):
+            self.manual_control.shutdown()
         self._pending_user_greeting_until = None
         for name in ("timer", "emotion_timer", "move_timer", "drag_timer", "_move_timer",
                      "_gravity_timer", "_window_scan_timer", "_activity_monitor_timer",
@@ -606,7 +614,7 @@ class CharacterWidget(QLabel):
     def on_animation_position_changed(self, new_pos):
         """애니메이션이 위치 변경을 요청 (이동 중에는 멈춤)"""
         # 중력이 적용되도록, X좌표만 갱신하고 Y는 현재 유지
-        if not self.is_moving and not self.is_dragging and not getattr(self, '_ball_chasing', False):
+        if not self._manual_control_active() and not self.is_moving and not self.is_dragging and not getattr(self, '_ball_chasing', False):
             # X만 변경, Y는 현재 값 유지 (중력 효과 보존)
             self.move(new_pos.x(), self.y())
     
@@ -730,6 +738,7 @@ class CharacterWidget(QLabel):
         safe_title = safe_title[:24]
         return f"window_{safe_title}_{window_key.replace(':', '_')}"
     
+
     def get_landing_surface(self, y_pos: int, x_pos: int = None) -> Surface:
         """
         주어진 Y좌표에서 캐릭터가 착지할 표면을 찾음
@@ -770,6 +779,7 @@ class CharacterWidget(QLabel):
                 print(f"[공중] {self._last_surface_name} -> 없음 (떨어지는 중)")
                 self._last_surface_name = None
             return None
+
 
     # ====== 자동 대사 생성 시스템 ======
     def _load_gemini_config(self):
@@ -942,6 +952,8 @@ class CharacterWidget(QLabel):
 
     def _maybe_run_autonomous_event(self, idle_seconds: float) -> None:
         """상호작용이 없을 때 낮은 빈도로 캐릭터 혼자 이벤트를 발생시킨다."""
+        if self._manual_control_active():
+            return
         now = time.monotonic()
         if idle_seconds < 15.0:
             return
@@ -992,7 +1004,11 @@ class CharacterWidget(QLabel):
 
     def _get_emotion_animation(self, emotion):
         """논리 감정을 실제로 존재하는 표정 애니메이션으로 변환한다."""
-        return self._get_emotion_response_profile(emotion)["animation"]
+        return self._get_emotion_response_profile(self._get_sprite_display_emotion(emotion))["animation"]
+
+    def _get_sprite_display_emotion(self, emotion):
+        override = getattr(getattr(self, 'manual_control', None), 'display_emotion', None)
+        return SPRITE_DISPLAY_EMOTIONS[override] if override else emotion
 
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
@@ -1012,11 +1028,15 @@ class CharacterWidget(QLabel):
                 self.sprite_animator.set_yaw(self._rig_preferred_yaw)
                 self.sprite_animator.play("idle")
             return
-        action = self._animation_for_emotion(mood["emotion"])
+        action = self._animation_for_emotion(self._get_sprite_display_emotion(mood["emotion"]))
+        if self._manual_control_active() and (self.is_moving or self.is_jumping or not self.on_ground
+                or self.current_action in {'wave', 'thinking', 'sleep'}):
+            return
         if action == self.current_action:
             return
         self.current_action = action
         self.render()
+
 
     @staticmethod
     def _animation_for_emotion(emotion):
@@ -1077,6 +1097,7 @@ class CharacterWidget(QLabel):
                     self.update_action(mood)
             return
         if self.current_action == 'wave':
+            self.current_action = 'idle'
             self.update_action(self.mood_system.decide_emotion())
         elif self.current_action.startswith("walk"):
             self.current_action = "idle"
@@ -1569,6 +1590,7 @@ class CharacterWidget(QLabel):
         self.dialogue_system.update_dialogue_position()
 
 
+
     def select_ball(self):
         """Select the sandbox ball for the next character click."""
         message = self.sandbox_manager.select_ball()
@@ -1816,12 +1838,17 @@ class CharacterWidget(QLabel):
             print(f"[오류] 아이템 반환 실패: {e}")
 
     # ====== 점프 시스템 ======
-    def jump(self):
+    def _manual_control_active(self):
+        return getattr(getattr(self, 'manual_control', None), 'active', False)
+
+    def jump(self, force=False):
         """캐릭터 점프 실행 (지면에 있을 때만)"""
-        if self._cursor_over_character:
+        if self._manual_control_active() and not force:
+            return
+        if self._cursor_over_character and not force:
             print("[점프 억제] 커서가 캐릭터 위에 있어 점프하지 않음")
             return
-        if time.monotonic() - self._last_pet_time <= 2.0:
+        if time.monotonic() - self._last_pet_time <= 2.0 and not force:
             print("[점프 억제] 쓰다듬기 중이므로 점프하지 않음")
             return
         if not self.on_ground:
@@ -1935,6 +1962,8 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
+        if self._manual_control_active():
+            return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or (self.sprite_animator.current_action == "land"
                     and self.sprite_animator.is_playing)):
@@ -2024,7 +2053,7 @@ class CharacterWidget(QLabel):
 
     def move_toward_ball(self, ball_x: int) -> None:
         """Use the same configured pixels/second as ordinary wandering."""
-        if self.is_dragging or self.is_jumping:
+        if self._manual_control_active() or self.is_dragging or self.is_jumping:
             self._chase_last_time = None
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
@@ -2060,6 +2089,7 @@ class CharacterWidget(QLabel):
         if self.current_action != walk_animation:
             self.current_action = walk_animation
             self.sprite_animator.play(walk_animation, fps=24, loop=True)
+
     
     def _get_walk_animation(self, emotion):
         """
@@ -2072,7 +2102,7 @@ class CharacterWidget(QLabel):
             self.sprite_animator.set_direction(self.is_flipped)
             self._refresh_rig_overlay()
             return "walk"
-        action = self._animation_for_emotion(emotion)
+        action = self._animation_for_emotion(self._get_sprite_display_emotion(emotion))
         emotion_walk = f"walk_{action}"
 
         emotion_walk_path = self.assets_path / emotion_walk
@@ -2117,7 +2147,7 @@ class CharacterWidget(QLabel):
         
 
         # 임시: 현재 감정 상태에 대응하는 대표 애니메이션 유지
-        return self._animation_for_emotion(emotion)
+        return self._animation_for_emotion(self._get_sprite_display_emotion(emotion))
 
     
     def _advance_horizontal(self, target_x, elapsed):
@@ -2131,6 +2161,7 @@ class CharacterWidget(QLabel):
         self._movement_x = float(target_x) if reached else current + math.copysign(step, distance)
         self.move(round(self._movement_x), self.y())
         return reached
+
 
     def _smooth_moving(self):
         """슬라이딩 이동 애니메이션"""
@@ -2275,6 +2306,7 @@ class CharacterWidget(QLabel):
         self._clamp_position_to_screen()
         
         self.repaint()  # 화면 갱신 (디버그 표시 업데이트)
+
     
     def _clamp_position_to_screen(self):
         """캐릭터의 위치를 화면 범위 내로 강제 조정 (동적 해상도 지원)"""
@@ -2300,6 +2332,7 @@ class CharacterWidget(QLabel):
         # 위치 재설정 (실제로 범위를 벗어났으면)
         if self.x() != current_x or self.y() != current_y:
             self.move(int(current_x), int(current_y))
+
     
     # ====== 윈도우 감지 시스템 ======
     def _scan_windows(self):

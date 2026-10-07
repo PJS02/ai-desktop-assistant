@@ -10,11 +10,14 @@ from PyQt6.QtWidgets import (
 from .personality_system import PersonalitySystem
 from .tts_service import available_voices
 from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
+from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
 
 
 class SettingsDialog(QDialog):
     apply_requested = pyqtSignal(dict)
     refresh_requested = pyqtSignal(bool)
+    character_command_requested = pyqtSignal(str)
+    display_emotion_requested = pyqtSignal(str)
 
     def __init__(self, local, parent=None):
         super().__init__(parent)
@@ -40,6 +43,7 @@ class SettingsDialog(QDialog):
         self._voice_page(local)
         self._recognition_page()
         self._ai_page(local)
+        self._manual_page()
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
         self.status.setWordWrap(True)
         self.status.setMinimumHeight(40)
@@ -180,6 +184,69 @@ class SettingsDialog(QDialog):
     def _describe_size(self):
         percent = self.character_inputs['size_percent'].value()
         self.size_preview.setText(f"크기 배율: {percent}% · 가로세로 비율 유지")
+
+    def _manual_page(self):
+        _, _, form = self._page('직접 조작',
+            '버튼을 누르면 즉시 실행합니다. 속도와 점프 높이는 현재 적용된 설정값을 사용합니다. '
+            '변경한 설정으로 조작하려면 먼저 적용을 누르세요.')
+        self.manual_status = QLabel('자동 행동 중')
+        self.manual_status.setWordWrap(True)
+        self.manual_status.setStyleSheet('font-weight: 600; color: #2463b6; padding: 8px 0;')
+        form.addRow(self.manual_status)
+        self.command_buttons = {}
+        for row in COMMAND_ROWS:
+            line = QWidget()
+            layout = QHBoxLayout(line)
+            layout.setContentsMargins(0, 0, 0, 0)
+            for command, label in row:
+                button = QPushButton(label)
+                button.setAutoDefault(False)
+                button.clicked.connect(lambda _checked=False, value=command: self.character_command_requested.emit(value))
+                self.command_buttons[command] = button
+                layout.addWidget(button, 1)
+            form.addRow(line)
+        hint = QLabel('직접 조작 중에는 랜덤 이동·자동 점프·공 따라가기·자동 인사를 멈춥니다.\n'
+                      '설정창을 닫아도 유지됩니다. 자동 행동 재개를 누르면 해제됩니다.\n'
+                      '가만히 있기는 공중에서 좌우 이동만 멈춥니다. 인사·생각·잠자기는 착지 후 실행합니다.\n'
+                      '기본 위치는 앱을 시작한 가로 위치의 바닥입니다.')
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        heading = QLabel('보이는 감정 설정')
+        heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
+        form.addRow(heading)
+        self.display_emotion = self._combo(
+            [('실제 감정 따르기', '')] + [(label, name) for name, label in DISPLAY_EMOTIONS], '')
+        self.display_emotion_apply = QPushButton('표정 적용')
+        self.display_emotion_apply.setAutoDefault(False)
+        self.display_emotion_apply.clicked.connect(
+            lambda: self.display_emotion_requested.emit(self.display_emotion.currentData()))
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.addWidget(self.display_emotion, 1)
+        line.addWidget(self.display_emotion_apply)
+        form.addRow(row)
+        self.display_emotion_reset = QPushButton('실제 감정 표정으로 돌아가기')
+        self.display_emotion_reset.setAutoDefault(False)
+        self.display_emotion_reset.clicked.connect(lambda: self.display_emotion_requested.emit(''))
+        form.addRow(self.display_emotion_reset)
+        self.display_emotion_status = QLabel()
+        self.display_emotion_status.setWordWrap(True)
+        form.addRow(self.display_emotion_status)
+        face_hint = QLabel('화면에 보이는 표정만 바꿉니다. 실제 감정값·판단·기록은 계속 갱신됩니다.\n'
+                           '설정창을 닫아도 유지되며 앱을 다시 실행하면 해제됩니다.\n'
+                           'PNG 캐릭터에서는 보유한 대표 표정으로 표시합니다.')
+        face_hint.setWordWrap(True)
+        form.addRow(face_hint)
+        self.set_display_emotion_state('')
+
+    def set_manual_status(self, message):
+        self.manual_status.setText(message)
+
+    def set_display_emotion_state(self, emotion):
+        self.display_emotion.setCurrentIndex(max(0, self.display_emotion.findData(emotion)))
+        self.display_emotion_status.setText(
+            f'표정 고정 중 · {DISPLAY_EMOTION_NAMES[emotion]}' if emotion else '현재 표정: 실제 감정 따르기')
 
     def _describe_movement_range(self):
         size = self.character_inputs['size_percent'].value()

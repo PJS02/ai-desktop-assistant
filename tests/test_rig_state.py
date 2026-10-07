@@ -53,6 +53,21 @@ def test_every_authored_face_remains_addressable(name):
     assert rig_emotion(name) == name
 
 
+def test_display_override_survives_mood_and_action_changes_and_restores_latest_mood():
+    view = FakeRigView()
+    animator = RigAnimator(view)
+    animator.set_emotion_override('sad')
+    animator.play('walk_happy')
+    animator.set_emotion('anger')
+    animator.play('wave', loop=False)
+    animator.set_emotion('calm')
+    assert animator.current_emotion == 'sad'
+    assert view.faces == ['sad']
+    animator.set_emotion_override(None)
+    assert animator.current_emotion == 'calm'
+    assert view.actions == [('walk', True), ('wave', False)]
+
+
 @pytest.mark.parametrize("host, face", [
     ("neutral", "neutral"), ("joy", "happy"), ("delight", "happy"),
     ("excitement", "excited"), ("interest", "excited"),
