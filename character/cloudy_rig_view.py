@@ -60,6 +60,7 @@ def _texture_storage_bytes(part):
 
 class CloudyRigView(QOpenGLWidget):
     animation_finished = pyqtSignal()
+    pose_bounds_changed = pyqtSignal()
     failed = pyqtSignal(str)
 
     def __init__(self, parent=None, *, rig_root: str | Path | None = None,
@@ -99,6 +100,8 @@ class CloudyRigView(QOpenGLWidget):
         self._loop = True
         self._external_physics = False
         self._jump_active = False
+        self._jump_phase = None
+        self._authored_jump = False
         self._speaking = False
         self._speech_start = time.perf_counter()
         self._started = time.perf_counter()
@@ -122,6 +125,9 @@ class CloudyRigView(QOpenGLWidget):
 
     def set_action(self, action: str, loop: bool = True):
         action = action if action in _ACTIONS else "idle"
+        if action not in {"jump", "fall", "land"}:
+            self._jump_phase = None
+            self._authored_jump = False
         if action == self._action and bool(loop) == self._loop and not self._finished:
             return
         self._action, self._loop = action, bool(loop)
@@ -152,6 +158,12 @@ class CloudyRigView(QOpenGLWidget):
     def set_jump_active(self, active: bool):
         """Distinguish a controlled jump from being dropped after dragging."""
         self._jump_active = bool(active)
+
+    def set_physics_jump_phase(self, phase, *, landing=False):
+        """Sample the authored jump from host flight progress instead of a loop."""
+        self._jump_phase = None if phase is None else max(.15, min(.70, float(phase)))
+        self._authored_jump = self._jump_phase is not None or bool(landing)
+        self.update()
 
     def set_overlay_pixmap(self, pixmap: QPixmap):
         self._overlay = pixmap
@@ -268,6 +280,7 @@ class CloudyRigView(QOpenGLWidget):
         return {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
                 "time": self._time(), "externalPhysics": self._external_physics,
                 "jumpActive": self._jump_active,
+                "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
                 "speaking": self._speaking,
                 "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
 
@@ -399,6 +412,9 @@ class CloudyRigView(QOpenGLWidget):
             # Restore the active texture unit before Qt composites the widget.
             gl.glActiveTexture(0x84C0)
             gl.glViewport(0, 0, width, height)
+            # Publish this frame's body bounds before Qt presents the host. A
+            # landing pose can extend the feet beyond the previous fall bounds.
+            self.pose_bounds_changed.emit()
             if not self._overlay.isNull() or self._debug_painter is not None:
                 painter = QPainter(self)
                 if not self._overlay.isNull():

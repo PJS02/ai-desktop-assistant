@@ -116,6 +116,10 @@ class MediaPipeProcessManager(QObject):
                 return False
         return self._send_command(command)
 
+    def set_character_speaking(self, speaking: bool) -> bool:
+        """Gate recognizer capture only while character audio actually plays."""
+        return self._send_command('tts_speaking ' + ('1' if speaking else '0'))
+
     def request_settings(self, refresh_devices=False):
         if not self.is_running and not self.start():
             return False
@@ -174,6 +178,7 @@ def main():
 
     # 캐릭터의 인식 수신기가 준비된 다음 MediaPipe GUI를 실행한다.
     mediapipe_manager.start()
+    character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
     app.aboutToQuit.connect(mediapipe_manager.stop)
 
     try:

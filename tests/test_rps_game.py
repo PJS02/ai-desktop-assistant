@@ -4,10 +4,9 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
-from character.rps_game import HandTracker, RpsGameDialog, judge
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtWidgets import QApplication, QDialog, QWidget
+from character.rps_game import HandTracker, RpsGameDialog, RpsGameOverlay, judge
 
 
 @pytest.mark.parametrize("player,opponent,expected", [
@@ -42,82 +41,217 @@ def test_requires_stable_recent_frames_and_rejects_replayed_or_ambiguous_hands()
     assert tracker.stable_hand(102.2) is None
 
 
-def test_dialog_round_images_retry_and_escape_restore_session(monkeypatch):
-    qt_app = QApplication.instance() or QApplication([])
+@pytest.fixture
+def game(monkeypatch):
+    app = QApplication.instance() or QApplication([])
     clock = [100.0]
     monkeypatch.setattr("character.rps_game.time.time", lambda: clock[0])
     monkeypatch.setattr("character.rps_game.secrets.choice", lambda _: "SCISSORS")
     commands = Mock(return_value=True)
-    dialog = RpsGameDialog(commands)
-    dialog.show()
-    dialog.start_game()
-    session = dialog.session
-    try:
-        assert all(not image.isNull() for image in dialog.images.values())
-        for stamp in (100.1, 100.4):
-            clock[0] = stamp
-            dialog.handle_payload(sample(stamp, session=session))
-        dialog.tick()
-        assert dialog.state == "countdown"
-        assert dialog.opponent_image.text() == "?"
-        for stamp in (103.1, 103.4):
-            clock[0] = stamp
-            dialog.handle_payload(sample(stamp, session=session))
-        dialog.tick()
-        assert dialog.state == "result"
-        assert dialog.title.text() == "당신의 승리!"
-        assert not dialog.opponent_image.pixmap().isNull()
-        dialog.retry.click()
-        assert dialog.state == "ready"
-        assert dialog.tracker.stable_hand(clock[0]) is None
-        QTest.keyClick(dialog, Qt.Key.Key_Escape)
-        qt_app.processEvents()
-        commands.assert_called_with(f"rps_end {session}")
-        assert not dialog.timer.isActive()
-    finally:
-        dialog.close()
+    overlay = RpsGameOverlay(commands)
+    yield overlay, clock, commands, app
+    overlay.close()
 
 
-def test_no_camera_times_out_without_loss(monkeypatch):
-    qt_app = QApplication.instance() or QApplication([])
-    clock = [100.0]
-    monkeypatch.setattr("character.rps_game.time.time", lambda: clock[0])
-    dialog = RpsGameDialog(Mock(return_value=True))
-    dialog.start_game()
-    clock[0] = 131
-    dialog.tick()
-    assert dialog.state == "result"
-    assert "판정하지" in dialog.title.text()
-    assert dialog.retry.isEnabled()
-    dialog.close()
+def advance(overlay, clock, stamp):
+    clock[0] = stamp
+    overlay.tick()
 
 
-def test_hand_arriving_after_deadline_is_not_scored(monkeypatch):
-    qt_app = QApplication.instance() or QApplication([])
-    clock = [100.0]
-    monkeypatch.setattr("character.rps_game.time.time", lambda: clock[0])
-    dialog = RpsGameDialog(Mock(return_value=True))
-    dialog.start_game()
-    dialog.state, dialog.deadline = "waiting", 105.0
-    for stamp in (104.8, 105.1):
-        clock[0] = stamp
-        dialog.handle_payload(sample(stamp, session=dialog.session))
-    dialog.tick()
-    assert "판정하지" in dialog.title.text()
-    dialog.close()
+def feed(overlay, clock, stamp, hand="ROCK", **kwargs):
+    clock[0] = stamp
+    overlay.handle_payload(sample(stamp, left=hand, session=overlay.session, **kwargs))
 
 
-def test_x_close_and_reopen_use_new_session():
-    qt_app = QApplication.instance() or QApplication([])
-    commands = Mock(return_value=True)
-    dialog = RpsGameDialog(commands)
-    dialog.show()
-    dialog.start_game()
-    old_session = dialog.session
-    dialog.close()
+def test_start_has_no_dialog_or_focus_and_countdown_is_visible_immediately(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    assert RpsGameDialog is RpsGameOverlay
+    assert not isinstance(overlay, QDialog)
+    assert overlay.isVisible() and overlay.is_active
+    assert overlay.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert overlay.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+    assert overlay.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    assert overlay.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    assert not overlay.findChildren(QDialog)
+    assert overlay.state == "countdown"
+    assert overlay.opponent_image.text() == "3"
+    for stamp, number in ((101.0, "2"), (102.0, "1")):
+        advance(overlay, clock, stamp)
+        assert overlay.opponent_image.text() == number
+    assert all(not image.isNull() for image in overlay.images.values())
+    commands.assert_called_once_with(f"rps_begin {overlay.session}")
+
+
+@pytest.mark.parametrize("hand,expected", [("ROCK", "승리!"), ("PAPER", "패배!"),
+                                           ("SCISSORS", "무승부!")])
+def test_fresh_hand_reveals_character_then_user_result_and_auto_hides(game, hand, expected):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    session = overlay.session
+    feed(overlay, clock, 103.1, hand)
+    feed(overlay, clock, 103.3, hand)
+    overlay.tick()
+    assert overlay.state == "reveal"
+    assert overlay.title.text() == "캐릭터 · 가위"
+    assert not overlay.opponent_image.pixmap().isNull()
+    commands.assert_called_with(f"rps_end {session}")
+    advance(overlay, clock, 104.0)
+    assert overlay.state == "result"
+    assert overlay.title.text() == expected
+    assert "사용자 기준" in overlay.hint.text()
+    advance(overlay, clock, 108.1)
+    assert overlay.state == "idle"
+    assert not overlay.isVisible() and not overlay.timer.isActive()
+    assert commands.call_count == 2  # 결과 이후 종료 명령을 다시 보내지 않는다.
+
+
+def test_countdown_frames_cannot_be_reused_at_capture(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    feed(overlay, clock, 102.5)
+    feed(overlay, clock, 102.8)
+    assert overlay.tracker.stable_hand(102.8) == "ROCK"
+    advance(overlay, clock, 103.0)
+    assert overlay.state == "waiting"
+    assert overlay.tracker.stable_hand(103.0) is None
+    clock[0] = 103.1
+    overlay.handle_payload(sample(102.9, session=overlay.session))
+    assert overlay.tracker.count == 0
+    feed(overlay, clock, 103.2, "PAPER")
+    feed(overlay, clock, 103.4, "PAPER")
+    overlay.tick()
+    assert overlay.player == "PAPER"
+
+
+def test_payload_can_open_capture_before_timer_and_invalid_samples_are_ignored(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    clock[0] = 103.1
+    overlay.handle_payload(None)
+    assert overlay.state == "waiting"
+    overlay.handle_payload(sample(103.1, session="wrong"))
+    assert overlay.tracker.count == 0
+    feed(overlay, clock, 103.2)
+    assert overlay.tracker.count == 1
+
+
+def test_no_camera_times_out_without_a_loss_and_restores_recognition(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    session = overlay.session
+    advance(overlay, clock, 108.0)
+    assert overlay.state == "error"
+    assert overlay.result is None and overlay.player is None
+    assert "다시" in overlay.title.text()
+    assert "다시 시작" in overlay.hint.text()
+    commands.assert_called_with(f"rps_end {session}")
+    advance(overlay, clock, 114.1)
+    assert not overlay.isVisible() and not overlay.timer.isActive()
+
+
+def test_hand_arriving_after_deadline_is_not_scored(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    feed(overlay, clock, 107.8)
+    feed(overlay, clock, 108.1)
+    overlay.tick()
+    assert overlay.state == "error" and overlay.result is None
+
+
+def test_restart_uses_new_session_and_clears_old_choice_and_result(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    old_session = overlay.session
+    feed(overlay, clock, 103.1)
+    feed(overlay, clock, 103.3)
+    overlay.tick()
+    overlay.start_round()
+    assert overlay.session != old_session
+    assert overlay.state == "countdown"
+    assert overlay.player is None and overlay.result is None
+    assert overlay.opponent_image.text() == "3"
+    clock[0] = 106.4
+    overlay.handle_payload(sample(106.4, session=old_session))
+    assert overlay.tracker.count == 0
+    assert commands.call_args_list[1].args == (f"rps_end {old_session}",)
+    commands.assert_called_with(f"rps_begin {overlay.session}")
+
+
+def test_menu_end_stops_timer_and_reopen_starts_new_session(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    old_session = overlay.session
+    overlay.close()
     commands.assert_called_with(f"rps_end {old_session}")
-    assert not dialog.timer.isActive()
-    dialog.show()
-    dialog.start_game()
-    assert dialog.session != old_session
-    dialog.close()
+    assert not overlay.timer.isActive() and overlay.state == "idle"
+    overlay.start_game()
+    assert overlay.isVisible() and overlay.session != old_session
+
+
+def test_restart_during_countdown_restores_previous_mode_and_starts_new_session(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    old_session = overlay.session
+    overlay.start_round()
+    new_session = overlay.session
+    assert new_session != old_session
+    assert [call.args[0] for call in commands.call_args_list] == [
+        f"rps_begin {old_session}", f"rps_end {old_session}", f"rps_begin {new_session}",
+    ]
+    overlay.close()
+    overlay.close()
+    assert commands.call_count == 4
+    commands.assert_called_with(f"rps_end {new_session}")
+
+
+@pytest.mark.parametrize("callback", [None, Mock(return_value=False), Mock(side_effect=RuntimeError("offline"))])
+def test_connection_failure_is_retryable_without_throwing(game, callback):
+    overlay, clock, commands, app = game
+    overlay.send_command = callback
+    overlay.start_game()
+    assert overlay.state == "error" and overlay.result is None
+    assert "연결하지 못" in overlay.hint.text()
+    assert overlay.timer.isActive()
+
+
+def test_ambiguous_or_disappeared_hands_are_never_scored(game):
+    overlay, clock, commands, app = game
+    overlay.start_game()
+    feed(overlay, clock, 103.1, right="PAPER")
+    feed(overlay, clock, 103.3, right="PAPER")
+    overlay.tick()
+    assert overlay.state == "waiting"
+    feed(overlay, clock, 103.5)
+    feed(overlay, clock, 103.7)
+    feed(overlay, clock, 103.8, "NONE")
+    overlay.tick()
+    assert overlay.state == "waiting" and overlay.player is None
+
+
+def test_overlay_tracks_painted_body_on_parent_move_and_clamps_edges(game):
+    overlay, clock, commands, app = game
+
+    class Character(QWidget):
+        def _physics_body_rect(self):
+            return QRect(50, 60, 100, 150)
+
+    character = Character()
+    character.resize(240, 280)
+    screen = app.primaryScreen().geometry()
+    character.move(screen.center())
+    character.show()
+    anchored = RpsGameOverlay(commands, character)
+    try:
+        anchored.start_game()
+        app.processEvents()
+        initial = anchored.pos()
+        character.move(character.x() - 50, character.y())
+        app.processEvents()
+        assert anchored.x() == initial.x() - 50
+        character.move(screen.topLeft())
+        app.processEvents()
+        assert screen.contains(anchored.geometry())
+    finally:
+        anchored.close()
+        character.close()

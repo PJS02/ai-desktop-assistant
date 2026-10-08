@@ -1,223 +1,143 @@
 # 캐릭터 대화 말풍선 UI
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget, QApplication, QLineEdit, QPushButton, QHBoxLayout
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget, QApplication, QLineEdit, QPushButton, QHBoxLayout, QTextBrowser, QFrame
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMetrics
 from PyQt6.QtCore import QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
 from pathlib import Path
+from .dialogue_styles import normalize_dialogue_style
+from .overlay_geometry import place_above_character
 
 
 class DialogueBubble(QWidget):
-    """캐릭터 대화 말풍선 위젯"""
-    
-    dialogue_closed = pyqtSignal()  # 말풍선이 닫힐 때 신호
-    
-    def __init__(self, text: str, duration: int = 5000, parent=None):
-        """
-        Args:
-            text: 표시할 대화 텍스트
-            duration: 표시 지속 시간 (밀리초) - 0이면 자동 종료 안함
-            parent: 부모 위젯
-        """
+    """One text/lifetime implementation with three selectable paint styles."""
+    dialogue_closed = pyqtSignal()
+
+    def __init__(self, text: str, duration: int = 5000, parent=None,
+                 style='legacy', preview=False):
         super().__init__(parent)
-        
-        self.text = text
+        self.text = str(text)
         self.duration = duration
+        self.preview = preview
+        self.style = normalize_dialogue_style(style)
         self.is_hovering = False
-        
-        # UI 설정
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
+        self._anchor = None
+        self._closed = False
+        if not preview:
+            self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                                | Qt.WindowType.WindowStaysOnTopHint
+                                | Qt.WindowType.WindowDoesNotAcceptFocus)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        
-        # 색상 및 스타일
-        self.bubble_color = QColor(50, 50, 60)  # 어두운 회색
-        self.text_color = QColor(255, 255, 255)  # 흰색
-        self.border_color = QColor(150, 150, 200)  # 밝은 파란색
-        self.border_width = 2
-        
-        # 글꼴
-        self.font = QFont("맑은 고딕", 11)
-        self.font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-        self.setFont(self.font)
-        
-        # 패딩
-        self.padding_x = 16
-        self.padding_y = 12
-        self.tail_height = 12  # 꼬리 높이
-        
-        # 텍스트 크기 계산
-        self._calculate_size()
-        
-        # 타이머 (자동 종료용)
-        self.close_timer = QTimer()
+        self.font = QFont('맑은 고딕', 11)
+        self.text_view = QTextBrowser(self)
+        self.text_view.setFrameShape(QFrame.Shape.NoFrame)
+        self.text_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.text_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.text_view.setOpenExternalLinks(False)
+        self.text_view.setFont(self.font)
+        self.text_view.setPlainText(self.text)
+        self.text_view.document().setDocumentMargin(0)
+        self.close_timer = QTimer(self)
+        self.close_timer.setSingleShot(True)
         self.close_timer.timeout.connect(self._auto_close)
-        if self.duration > 0:
-            self.close_timer.start(self.duration)
-        
-        # 마우스 호버 타이머 (자동 종료 연기용)
-        self.hover_timer = QTimer()
-        self.hover_timer.timeout.connect(self._check_hover)
-        self.hover_timer.start(100)
-    
-    def _calculate_size(self):
-        """텍스트 크기를 기반으로 말풍선 크기 계산"""
-        metrics = QFontMetrics(self.font)
-        
-        # 화면 크기 기반 최대 너비/높이 계산
-        try:
+        self.hover_timer = QTimer(self)  # Compatibility with existing clients.
+        self.set_style(self.style)
+        if duration > 0 and not preview:
+            self.close_timer.start(duration)
+
+    def set_style(self, style):
+        self.style = normalize_dialogue_style(style, strict=True)
+        rounded = self.style == 'rounded'
+        subtitle = self.style == 'subtitle'
+        self.bubble_color = QColor('#fffdf6' if rounded else '#32323c' if not subtitle else '#202936')
+        self.text_color = QColor('#263448' if rounded else '#ffffff')
+        self.border_color = QColor('#8ab4cc' if rounded else '#9696c8')
+        self.border_width = 0 if subtitle else 2
+        self.padding_x, self.padding_y = (14, 8) if subtitle else (16, 12)
+        self.tail_height = 0 if subtitle else 12
+        self.text_view.setStyleSheet(
+            'QTextBrowser { background: transparent; color: ' + self.text_color.name()
+            + '; border: none; } QScrollBar:vertical { width: 7px; }')
+        self._calculate_size()
+        if self._anchor is not None:
+            self.set_position_below_character(*self._anchor)
+        self.update()
+
+    def _calculate_size(self, bounds=None):
+        if bounds is None:
             screen = QApplication.primaryScreen()
-            screen_width = screen.geometry().width()
-            screen_height = screen.geometry().height()
-        except:
-            screen_width = 1920  # 기본값
-            screen_height = 1080
-        
-        max_text_width = int(screen_width * 0.35)
-        max_text_height = int(screen_height * 0.4)  # 화면 높이의 40% 이상 차지 방지
-        
-        # QFontMetrics.boundingRect()를 사용해 정확한 크기 계산
-        # WordWrap 플래그와 최대 너비를 적용한 실제 텍스트 크기
-        text_rect = metrics.boundingRect(
-            0, 0,
-            max_text_width,
-            max_text_height,  # 실제 최대 높이로 제한
-            Qt.TextFlag.TextWordWrap,
-            self.text
-        )
-        
-        # 계산된 텍스트 크기
-        text_width = text_rect.width()
-        text_height = min(text_rect.height(), max_text_height)  # 높이도 제한
-        
-        # 말풍선 전체 크기 (padding 추가)
+            bounds = screen.geometry() if screen else QRect(0, 0, 1280, 720)
+        metrics = QFontMetrics(self.font)
+        max_width = min(520, max(140, int(bounds.width() * .38)))
+        if self.preview:
+            max_width = min(max_width, 360)
+        max_width = min(max_width, max(60, bounds.width() - 20))
+        widest = max((metrics.horizontalAdvance(line) for line in self.text.splitlines()), default=60)
+        text_width = min(max_width - self.padding_x * 2, max(65, widest))
+        self.text_view.document().setTextWidth(text_width)
+        text_height = int(self.text_view.document().size().height() + .999)
+        max_height = max(40, int(bounds.height() * .4) - self.padding_y * 2 - self.tail_height - 10)
         self.bubble_width = text_width + self.padding_x * 2
-        self.bubble_height = text_height + self.padding_y * 2
-        
-        # 최소/최대 크기 제한
-        self.bubble_width = max(self.bubble_width, 100)  # 최소 너비
-        self.bubble_width = min(self.bubble_width, max_text_width + self.padding_x * 2)  # 최대 너비
-        self.bubble_height = max(self.bubble_height, 50)  # 최소 높이
-        self.bubble_height = min(self.bubble_height, max_text_height + self.padding_y * 2)  # 최대 높이
-        
-        # 전체 위젯 크기 (꼬리 포함)
-        total_width = self.bubble_width + 10
-        total_height = self.bubble_height + self.tail_height + 10
-        
-        self.setFixedSize(total_width, total_height)
-    
+        self.bubble_height = min(text_height, max_height) + self.padding_y * 2
+        self.setFixedSize(self.bubble_width + 10, self.bubble_height + self.tail_height + 10)
+        self.text_view.setGeometry(5 + self.padding_x, 5 + self.padding_y,
+                                   text_width, min(text_height, max_height))
+
     def paintEvent(self, event):
-        """말풍선 그리기"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # 말풍선 경로 (둥근 모서리)
-        bubble_rect = QRectF(
-            5, 5,
-            self.bubble_width,
-            self.bubble_height
-        )
-        
         path = QPainterPath()
-        corner_radius = 10
-        path.addRoundedRect(bubble_rect, corner_radius, corner_radius)
-        
-        # 꼬리 (아래쪽 삼각형)
-        tail_left = self.bubble_width * 0.3 + 5
-        tail_right = self.bubble_width * 0.6 + 5
-        tail_bottom = self.bubble_height + self.tail_height + 5
-        
-        path.moveTo(tail_left, self.bubble_height + 5)
-        path.lineTo(tail_right, self.bubble_height + 5)
-        path.lineTo((tail_left + tail_right) / 2, tail_bottom)
-        path.closeSubpath()
-        
-        # 배경 채우기
+        radius = 20 if self.style == 'rounded' else 5 if self.style == 'subtitle' else 10
+        path.addRoundedRect(QRectF(5, 5, self.bubble_width, self.bubble_height), radius, radius)
+        if self.tail_height:
+            center = self.bubble_width * .45 + 5
+            half = self.bubble_width * .15 if self.style == 'legacy' else 10
+            path.moveTo(center - half, self.bubble_height + 5)
+            path.lineTo(center + half, self.bubble_height + 5)
+            path.lineTo(center, self.bubble_height + self.tail_height + 5)
+            path.closeSubpath()
         painter.fillPath(path, self.bubble_color)
-        
-        # 테두리 그리기
-        pen = painter.pen()
-        pen.setColor(self.border_color)
-        pen.setWidth(self.border_width)
-        painter.setPen(pen)
-        painter.drawPath(path)
-        
-        # 텍스트 그리기
-        text_rect = QRect(
-            5 + self.padding_x,
-            5 + self.padding_y,
-            self.bubble_width - self.padding_x * 2,
-            self.bubble_height - self.padding_y * 2
-        )
-        
-        painter.setPen(self.text_color)
-        painter.setFont(self.font)
-        painter.drawText(text_rect, Qt.TextFlag.TextWordWrap, self.text)
-        
-        painter.end()
-    
-    def mousePressEvent(self, event):
-        """마우스 클릭으로 말풍선 종료"""
-        self.close()
-    
-    def mouseDoubleClickEvent(self, event):
-        """더블 클릭도 반응"""
-        self.close()
-    
+        if self.border_width:
+            pen = painter.pen()
+            pen.setColor(self.border_color)
+            pen.setWidth(self.border_width)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
     def enterEvent(self, event):
-        """마우스 진입 - 자동 종료 연기"""
         self.is_hovering = True
+        self._remaining = self.close_timer.remainingTime()
         self.close_timer.stop()
-    
+
     def leaveEvent(self, event):
-        """마우스 이탈 - 자동 종료 재개"""
         self.is_hovering = False
-        if self.duration > 0:
-            self.close_timer.start(self.duration)
-    
-    def _check_hover(self):
-        """호버 상태 확인"""
-        # 호버 타이머는 단순히 상태 유지용
-        pass
-    
+        if self.duration > 0 and not self.preview:
+            self.close_timer.start(max(1, getattr(self, '_remaining', self.duration)))
+
     def _auto_close(self):
-        """자동 종료"""
         if not self.is_hovering:
             self.close()
-    
+
     def closeEvent(self, event):
-        """종료 이벤트"""
         self.close_timer.stop()
         self.hover_timer.stop()
-        self.dialogue_closed.emit()
+        if not self._closed:
+            self._closed = True
+            self.dialogue_closed.emit()
         super().closeEvent(event)
-    
-    def set_position_below_character(self, character_x: int, character_y: int, character_width: int):
-        """캐릭터 바로 위에 말풍선 위치 지정"""
-        # 캐릭터 중앙 상단에 배치
-        x = character_x + character_width // 2 - self.width() // 2
-        y = character_y - self.height() - 10
-        
-        # 화면 범위 체크
-        try:
-            screen_geometry = QApplication.primaryScreen().geometry()
-        except:
-            # 기본 화면 크기
-            screen_geometry = QRect(0, 0, 1920, 1080)
-        
-        if x < 0:
-            x = 0
-        if x + self.width() > screen_geometry.width():
-            x = screen_geometry.width() - self.width()
-        if y < 0:
-            y = character_y + 100  # 아래에 배치
-        
-        self.move(x, y)
-    
-    def update_position_with_character(self, character_x: int, character_y: int, character_width: int):
-        """캐릭터 위치 변화에 따라 말풍선 위치 업데이트 (드래그 중 호출됨)"""
-        self.set_position_below_character(character_x, character_y, character_width)
+
+    def set_position_below_character(self, character_x, character_y, character_width,
+                                     character_height=100, avoid=None):
+        # Kept under the old method name for compatibility; prefer above the body.
+        self._anchor = (character_x, character_y, character_width, character_height, avoid)
+        anchor = QRect(character_x, character_y, character_width, character_height)
+        screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
+        bounds = screen.geometry() if screen else QRect(0, 0, 1280, 720)
+        self._calculate_size(bounds)
+        self.move(place_above_character(anchor, self.size(), bounds, avoid))
+
+    def update_position_with_character(self, *args, **kwargs):
+        self.set_position_below_character(*args, **kwargs)
 
 
 class DialogueNarrationBox(QWidget):

@@ -6,7 +6,7 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, pyqtSignal
+from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 
@@ -50,6 +50,8 @@ class SupertonicTTS(QObject):
 
     audio_ready = pyqtSignal(int, bytes, int)  # 요청 번호, 16비트 PCM, 샘플레이트
     speaking_changed = pyqtSignal(bool)  # 실제 오디오 재생 상태 (합성 대기 제외)
+    busy_changed = pyqtSignal(bool)  # synthesis or playback; ordered dialogue waits for both
+    request_finished = pyqtSignal(int)
 
     def __init__(self, settings=None, model_factory=None):
         super().__init__()
@@ -65,7 +67,9 @@ class SupertonicTTS(QObject):
         self._audio_sink: QAudioSink | None = None
         self._audio_buffer: QBuffer | None = None
         self._speaking = False
+        self._busy = False
         self.audio_ready.connect(self._play_audio)
+        self.request_finished.connect(self._finish_request, Qt.ConnectionType.QueuedConnection)
 
     @property
     def enabled(self) -> bool:
@@ -75,12 +79,17 @@ class SupertonicTTS(QObject):
     def voice_id(self) -> str:
         return self._voice_id
 
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
         self._settings.setValue("tts/enabled", self._enabled)
         if not self._enabled:
             self._generation += 1
             self._stop_playback()
+            self._set_busy(False)
             if self._thread is not None:
                 self._enqueue("stop", self._generation, "", "")
 
@@ -102,6 +111,7 @@ class SupertonicTTS(QObject):
         if not prepared:
             return
         self._generation += 1
+        self._set_busy(True)
         self._stop_playback()
         if self._thread is None or not self._thread.is_alive():
             self._thread = threading.Thread(target=self._run, daemon=True, name="supertonic-tts")
@@ -114,6 +124,7 @@ class SupertonicTTS(QObject):
         self._closed = True
         self._generation += 1
         self._stop_playback()
+        self._set_busy(False)
         if self._thread is not None:
             self._enqueue("close", self._generation, "", "")
             self._thread.join(timeout=2.0)
@@ -160,14 +171,17 @@ class SupertonicTTS(QObject):
                     self.audio_ready.emit(generation, pcm, model.sample_rate)
                 except Exception as exc:
                     print(f"[TTS] 음성 합성 실패: {exc}")
+                    self.request_finished.emit(generation)
         except Exception as exc:
             print(f"[TTS] Supertonic 3 모델을 시작하지 못했습니다: {exc}")
+            self.request_finished.emit(self._generation)
 
     def _play_audio(self, generation: int, pcm: bytes, sample_rate: int) -> None:
         if self._closed or not self._enabled or generation != self._generation:
             return
         self._stop_playback()
         if not pcm:
+            self._set_busy(False)
             return
         audio_format = QAudioFormat()
         audio_format.setSampleRate(sample_rate)
@@ -176,6 +190,7 @@ class SupertonicTTS(QObject):
         device = QMediaDevices.defaultAudioOutput()
         if device.isNull() or not device.isFormatSupported(audio_format):
             print("[TTS] 44.1kHz 모노 오디오 출력을 사용할 수 없습니다.")
+            self._set_busy(False)
             return
 
         self._audio_buffer = QBuffer(self)
@@ -193,6 +208,7 @@ class SupertonicTTS(QObject):
             self._audio_state_changed(generation, sink, sink.state())
         except Exception as exc:
             self._stop_playback()
+            self._set_busy(False)
             print(f"[TTS] 오디오 재생을 시작하지 못했습니다: {exc}")
 
     def _audio_state_changed(self, generation: int, sink: QAudioSink, state) -> None:
@@ -206,6 +222,18 @@ class SupertonicTTS(QObject):
             and state == QAudio.State.ActiveState
             and sink.error() == QAudio.Error.NoError
         )
+        if state in (QAudio.State.IdleState, QAudio.State.StoppedState):
+            self._set_busy(False)
+
+    def _finish_request(self, generation):
+        if generation == self._generation:
+            self._set_busy(False)
+
+    def _set_busy(self, busy):
+        busy = bool(busy)
+        if busy != self._busy:
+            self._busy = busy
+            self.busy_changed.emit(busy)
 
     def _set_speaking(self, speaking: bool) -> None:
         speaking = bool(speaking)

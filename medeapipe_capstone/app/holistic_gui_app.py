@@ -5,6 +5,7 @@ from pathlib import Path
 import queue
 import threading
 import time
+import uuid
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from types import SimpleNamespace
@@ -139,6 +140,7 @@ class HolisticGuiApp(SettingsBridge):
         self.latest_speech_text = ""
         self.speech_sequence = 0
         self.speech_recognized_at = None
+        self.speech_session = uuid.uuid4().hex
         self.last_sent_interaction_events = {}
 
         self.camera_var = tk.StringVar()
@@ -300,6 +302,8 @@ class HolisticGuiApp(SettingsBridge):
                 self.end_rps_game(command.split(" ", 1)[1])
             elif command.startswith('settings '):
                 self.handle_settings_command(command[len('settings '):])
+            elif command in ('tts_speaking 1', 'tts_speaking 0'):
+                self.stt.set_character_speaking(command.endswith('1'))
             elif command == "shutdown":
                 self.on_close()
                 return
@@ -907,6 +911,12 @@ class HolisticGuiApp(SettingsBridge):
             if kind == "text":
                 self.append_stt_text(value)
             elif kind == "speech":
+                if isinstance(value, dict):
+                    if not self.stt.accepts_speech_event(value):
+                        continue
+                    value = value.get('text', '')
+                if not isinstance(value, str) or not value.strip():
+                    continue
                 self.latest_speech_text = value
                 # 같은 문장을 다시 말해도 별개의 발화로 전송되도록 순번을 증가시킨다.
                 self.speech_sequence += 1
@@ -1327,6 +1337,8 @@ class HolisticGuiApp(SettingsBridge):
                 "latest_text": self.latest_speech_text,
                 "sequence": self.speech_sequence,
                 "recognized_at": getattr(self, 'speech_recognized_at', None),
+                "session": getattr(self, 'speech_session', None),
+                "final": True,
             },
         }
 

@@ -21,7 +21,7 @@ from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
-from .rps_game import RpsGameDialog
+from .rps_game import RpsGameOverlay
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 
@@ -71,6 +71,7 @@ class Surface:
 class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
+    automatic_response_ready = pyqtSignal(object)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -275,13 +276,17 @@ class CharacterWidget(QLabel):
         # 커스텀 해상도 저장 (나중에 경계 확인 시 사용)
         self.custom_screen_width = screen_width
         self.custom_screen_height = screen_height
+        self._screen_origin = screen_geometry.topLeft() if screen is not None else QPoint(0, 0)
+        self._screen_auto_width = screen_width >= available_width
+        self._screen_auto_height = screen_height >= available_height
         print(f"[해상도 초기화] custom: {self.custom_screen_width}x{self.custom_screen_height}px")
         
         # 지면 Y좌표 = 화면 맨 아래 (커스텀 해상도 사용)
-        ground_y = screen_height  # 화면 완전 바닥
+        ground_y = self._screen_origin.y() + screen_height
         
         # 기본 ground surface 추가 (화면 전체 너비)
-        ground_surface = Surface("ground", ground_y, x_min=0, x_max=screen_width)
+        ground_surface = Surface("ground", ground_y, x_min=self._screen_origin.x(),
+                                 x_max=self._screen_origin.x() + screen_width)
         self.add_surface(ground_surface)
         self.current_surface = ground_surface
         
@@ -303,6 +308,9 @@ class CharacterWidget(QLabel):
         self.velocity_x = 0  # 수평 속도 (드래그에서 나옴)
         self.velocity_y = 0  # 수직 속도 (중력 영향)
         self.gravity = 0.5   # 중력 가속도
+        self._gravity_last_time = time.monotonic()
+        self._physics_position_y = None
+        self._physics_position_x = None
         self.bounce_damping = 0.6  # 경계 충돌 시 속도 감소 (0.6 = 60% 유지)
         self.friction = 0.98  # 공기 저항 (0.98 = 2% 감소)
         self.on_ground = False  # 시작할 때는 떨어진 상태 (중력 작동)
@@ -313,7 +321,7 @@ class CharacterWidget(QLabel):
         self._gravity_timer.start(16)  # 16ms = 60fps (30ms에서 개선)
         
         # 점프 시스템
-        self.jump_force = math.sqrt(2 * self.gravity * self.jump_height) + self.gravity
+        self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)
         self._jump_physics_y = None
         self._jump_apex_y = None
         self.can_jump = True  # 점프 가능 여부 (지면에 있을 때만)
@@ -350,10 +358,14 @@ class CharacterWidget(QLabel):
         
         # ====== 대화 시스템 초기화 ======
         self.dialogue_system = DialogueSystem(self)
+        self._automatic_request_generation = 0
+        self._automatic_request_active = False
         print("[대화 시스템 초기화 완료]")
         
         # 신호 연결
-        self.show_ai_response.connect(self.dialogue_system.show_ai_response)
+        self.show_ai_response.connect(self._show_automatic_ai_response)
+        self.automatic_response_ready.connect(
+            self._finish_automatic_response, Qt.ConnectionType.QueuedConnection)
         if hasattr(self.dialogue_system.tts, "speaking_changed"):
             self.dialogue_system.tts.speaking_changed.connect(self._on_speaking_changed)
 
@@ -368,7 +380,10 @@ class CharacterWidget(QLabel):
             mood_system=self.mood_system,
             on_dialogue=self._show_perception_dialogue,
             on_greeting=self._request_user_greeting,
+            on_speech=self.dialogue_system.submit_speech,
         )
+        self.dialogue_system.tts.speaking_changed.connect(self.perception_controller.set_speech_suppressed)
+        self.dialogue_system.user_input_received.connect(lambda text, source: self._mark_character_interaction())
         self.perception_receiver = QtPerceptionReceiver(parent=self)
         # TCP 콜백은 백그라운드 스레드에서 실행되므로 UI 처리는 Qt 메인 스레드에 예약한다.
         self.perception_receiver.event_received.connect(
@@ -399,6 +414,7 @@ class CharacterWidget(QLabel):
                 self.sprite_animator = RigAnimator(view, parent=self)
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
                 view.failed.connect(self._queue_sprite_fallback)
+                view.pose_bounds_changed.connect(self._align_grounded_pose, Qt.ConnectionType.DirectConnection)
                 view.show()
                 return
             except Exception as exc:
@@ -497,6 +513,9 @@ class CharacterWidget(QLabel):
     def _rig_landed(self):
         if self.rig_view is not None:
             self.rig_view.set_jump_active(False)
+            phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
+            if phase_setter is not None:
+                phase_setter(None, landing=getattr(self, '_authored_jump_landing', False))
             self._rig_manual_action = None
             self.current_action = "land"
             self.sprite_animator.play("land", loop=False)
@@ -509,16 +528,32 @@ class CharacterWidget(QLabel):
             self.rig_view.setGeometry(self.rect())
 
     def _get_screen_dimensions(self):
-        """
-        현재 화면 해상도를 반환
-        커스텀 해상도가 설정되어 있으면 그것을 사용, 아니면 primaryScreen에서 동적으로 가져옴
-        """
-        if hasattr(self, 'custom_screen_width') and hasattr(self, 'custom_screen_height'):
-            return self.custom_screen_width, self.custom_screen_height
+        """Use logical Qt dimensions, refreshing resolution and scaling changes."""
+        geometry = self._get_screen_geometry()
+        return geometry.width(), geometry.height()
+
+    def _get_screen_geometry(self):
+        """Full desktop surface (including taskbar), with its real screen origin."""
+        # Windowless callers can supply dimensions without needing a QApplication.
+        if not hasattr(self, '_screen_origin'):
+            return QRect(0, 0, *self._get_screen_dimensions())
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geometry = screen.geometry()
+            self._screen_origin = geometry.topLeft()
+            width = (geometry.width() if self._screen_auto_width else
+                     min(self.custom_screen_width, geometry.width()))
+            height = (geometry.height() if self._screen_auto_height else
+                      min(self.custom_screen_height, geometry.height()))
         else:
-            # 커스텀 해상도가 없으면 실시간으로 가져옴 (해상도 변경 반영)
-            screen = QApplication.primaryScreen()
-            return screen.geometry().width(), screen.geometry().height()
+            width, height = self.custom_screen_width, self.custom_screen_height
+        geometry = QRect(self._screen_origin.x(), self._screen_origin.y(), width, height)
+        for surface in getattr(self, 'surfaces', ()):
+            if surface.name == 'ground':
+                surface.y_level = geometry.y() + geometry.height()
+                surface.x_min = geometry.x()
+                surface.x_max = geometry.x() + geometry.width()
+        return geometry
 
     @pyqtSlot(object)
     def _handle_perception_payload(self, payload):
@@ -538,7 +573,27 @@ class CharacterWidget(QLabel):
         print(f"[외부 인식 수신기 오류] {message}")
 
     def _show_perception_dialogue(self, text):
+        if CharacterWidget._dialogue_is_busy(self):
+            return
         self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
+
+    def _dialogue_is_busy(self):
+        dialogue = getattr(self, 'dialogue_system', None)
+        if dialogue is None:
+            return False
+        checker = getattr(dialogue, 'is_conversation_busy', None)
+        if checker is not None:
+            return bool(checker())
+        return bool(getattr(dialogue, 'is_ai_responding', False)
+                    or getattr(dialogue, 'pending_inputs', ())
+                    or getattr(dialogue, '_tts_busy', False)
+                    or getattr(dialogue, '_speaking', False)
+                    or time.monotonic() < getattr(dialogue, '_response_hold_until', 0))
+
+    @pyqtSlot(str)
+    def _show_automatic_ai_response(self, text):
+        if not getattr(self, '_character_closing', False) and not CharacterWidget._dialogue_is_busy(self):
+            self.dialogue_system.show_automatic_response(text)
 
     def _request_user_greeting(self):
         if self._character_closing or self._manual_control_active():
@@ -585,8 +640,12 @@ class CharacterWidget(QLabel):
     def _shutdown_character_renderer(self):
         """Stop host callbacks before releasing the drawing backend."""
         self._character_closing = True
+        self._automatic_request_generation = getattr(self, '_automatic_request_generation', 0) + 1
+        self._automatic_request_active = False
         if hasattr(self, 'manual_control'):
             self.manual_control.shutdown()
+        if hasattr(getattr(self, 'dialogue_system', None), 'shutdown'):
+            self.dialogue_system.shutdown()
         self._pending_user_greeting_until = None
         for name in ("timer", "emotion_timer", "move_timer", "drag_timer", "_move_timer",
                      "_gravity_timer", "_window_scan_timer", "_activity_monitor_timer",
@@ -746,6 +805,38 @@ class CharacterWidget(QLabel):
         body = measure() if measure is not None else QRect(0, 0, self.width(), self.height())
         return body if not body.isEmpty() else QRect(0, 0, self.width(), self.height())
 
+    def _align_grounded_pose(self):
+        """Keep rendered feet on their existing support in the same paint frame.
+
+        Only an established, unmoved surface may compensate for pose changes.
+        New windows, lost support and flight remain entirely under gravity.
+        """
+        if (not getattr(self, 'on_ground', False) or getattr(self, 'is_dragging', False)
+                or getattr(self, 'is_jumping', False) or getattr(self, '_character_closing', False)
+                or getattr(self, 'velocity_y', 0) != 0):
+            return
+        standing = getattr(self, 'current_surface', None)
+        if standing is None or standing not in getattr(self, 'surfaces', ()):
+            return
+        previous_level = getattr(self, '_grounded_surface_level', None)
+        previous_bottom = getattr(self, '_grounded_body_bottom', None)
+        if (standing.y_level != previous_level or previous_bottom is None
+                or abs(self.y() + previous_bottom - standing.y_level) > 1):
+            return
+        body = self._physics_body_rect()
+        if (self.x() + body.x() + body.width() <= standing.x_min
+                or self.x() + body.x() >= standing.x_max):
+            return
+        body_bottom = body.y() + body.height()
+        aligned_y = standing.y_level - body_bottom
+        self._grounded_body_bottom = body_bottom
+        self._physics_position_y = float(aligned_y)
+        if aligned_y != self.y():
+            self.move(self.x(), aligned_y)
+            dialogue = getattr(self, 'dialogue_system', None)
+            if dialogue is not None:
+                dialogue.update_dialogue_position()
+
     def get_landing_surface(self, y_pos: int, x_pos: int = None) -> Surface | None:
         """Find the nearest surface at or below the feet, without snapping to it."""
         if x_pos is None:
@@ -772,30 +863,40 @@ class CharacterWidget(QLabel):
             print(f"[오류] Gemini 설정 로드 실패: {e}")
     
     def _on_activity_monitor(self):
-        """활성 창 모니터링 타이머 콜백 (10초마다)"""
-        if not HAS_CONTEXT or not self.gemini_config.get('api_key'):
+        """Start ambient work only when the user conversation has released the UI."""
+        if (not HAS_CONTEXT or not self.gemini_config.get('api_key')
+                or getattr(self, '_character_closing', False)
+                or CharacterWidget._dialogue_is_busy(self)
+                or getattr(self, '_automatic_request_active', False)):
             return
-        
-        # 비동기 스레드에서 실행 (UI 블로킹 방지)
-        thread = threading.Thread(target=self._check_active_window_async, daemon=True)
+        if time.time() - self.last_auto_dialogue_time < self.auto_dialogue_cooldown:
+            return
+
+        # Capture character/config state on the Qt thread. A new user input epoch
+        # invalidates this result even if its conversation has already finished.
+        self._automatic_request_generation += 1
+        generation = self._automatic_request_generation
+        epoch = self.dialogue_system.user_input_epoch
+        emotion = self.mood_system.get_emotion_description_for_prompt()
+        tone = self.mood_system.get_emotion_tone_instructions()
+        self._automatic_request_active = True
+        thread = threading.Thread(
+            target=self._check_active_window_async,
+            args=(generation, epoch, dict(self.gemini_config), emotion, tone),
+            daemon=True, name=f'character-activity-{generation}')
         thread.start()
     
-    def _check_active_window_async(self):
-        """활성 창 정보 수집 및 대사 생성 (스레드에서 실행) - 감정 기반 프롬프트 적용"""
+    def _check_active_window_async(self, generation, input_epoch, config,
+                                   emotion_description, tone_instruction):
+        """A worker collects activity; all UI/result state is handled by a Qt slot."""
+        info = None
+        dialogue_text = None
+        request_time = None
         try:
-            import time
-            current_time = time.time()
-            
-            # 자동 감지 쿨다운 체크 (60초)
-            if current_time - self.last_auto_dialogue_time < self.auto_dialogue_cooldown:
-                return
-            
             # 활성 창 정보 수집
             info = get_active_window_info()
             if not info:
                 return
-            
-            self.last_detected_activity = info
             
             # 프로세스 이름으로 활동 분류
             process = info.get('process', '').lower()
@@ -814,11 +915,6 @@ class CharacterWidget(QLabel):
             else:
                 category = "work"
             
-            # 현재 캐릭터의 감정 상태 가져오기
-            mood_system = self.mood_system
-            emotion_description = mood_system.get_emotion_description_for_prompt()
-            tone_instruction = mood_system.get_emotion_tone_instructions()
-            
             # 감정 정보가 포함된 향상된 프롬프트 생성
             prompt = (
                 f"입력 정보:\n"
@@ -834,37 +930,36 @@ class CharacterWidget(QLabel):
             print(f"[활동 감지] {category}: {process} - {title[:50]}")
             print(f"[API 요청] Gemini 호출 중... (자동 감지, 감정 기반)")
             
-            response = call_gemini(prompt, self.gemini_config)
+            request_time = time.time()
+            response = call_gemini(prompt, config)
             print(f"[Gemini 응답] {response[:100] if response else '(없음)'}")
             
-            # 쿨다운 업데이트
-            self.last_auto_dialogue_time = current_time
-            
-            if response and not response.startswith("[gemini error]"):
-                # JSON에서 대사 추출
-                dialogue_text = extract_dialogue(response)
-                
-                if dialogue_text:
-                    print(f"[대사 생성] {dialogue_text}")
-                    
-                    # 신호를 통해 메인 스레드에서 대사 표시
-                    self.show_ai_response.emit(dialogue_text)
-                else:
-                    print(f"[경고] 응답에서 대사를 추출하지 못함: {response[:100]}")
-            elif response:
-                # Gemini 에러가 발생한 경우 - 캐릭터가 에러 메시지를 말함
-                print(f"[Gemini 에러] {response}")
-                
-                # 에러 메시지를 사용자 친화적으로 변환
-                error_message = self._convert_error_to_dialogue(response)
-                
-                # 신호를 통해 메인 스레드에서 에러 메시지 표시
-                self.show_ai_response.emit(error_message)
+            if response:
+                # The same decoder handles plain, JSON and fenced JSON output.
+                dialogue_text = self.dialogue_system._process_gemini_response(response)
         
         except Exception as e:
             print(f"[오류] 활동 모니터링 실패: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            if not getattr(self, '_character_closing', False):
+                self.automatic_response_ready.emit(
+                    (generation, input_epoch, dialogue_text, info, request_time))
+
+    @pyqtSlot(object)
+    def _finish_automatic_response(self, result):
+        generation, epoch, text, info, request_time = result
+        if (getattr(self, '_character_closing', False)
+                or generation != self._automatic_request_generation):
+            return
+        self._automatic_request_active = False
+        if request_time is not None:
+            self.last_auto_dialogue_time = request_time
+        if info:
+            self.last_detected_activity = info
+        if text:
+            self.dialogue_system.show_automatic_response(text, expected_input_epoch=epoch)
     
     def _convert_error_to_dialogue(self, error_response: str) -> str:
         """Gemini 에러를 캐릭터 대사로 변환"""
@@ -941,7 +1036,7 @@ class CharacterWidget(QLabel):
             return
         if self._cursor_over_character or self.is_dragging or self.is_moving:
             return
-        if getattr(self.dialogue_system, "is_ai_responding", False):
+        if CharacterWidget._dialogue_is_busy(self):
             return
         if random.random() > 0.06:
             return
@@ -1306,23 +1401,8 @@ class CharacterWidget(QLabel):
             
             # 캐릭터를 이동하되, 화면 범위 내로 제한
             new_pos = self.pos() + delta
-            screen_width, screen_height = self._get_screen_dimensions()
-            
-            # X 범위 제한
-            char_width = self.width()
-            if new_pos.x() < 0:
-                new_pos.setX(0)
-            elif new_pos.x() + char_width > screen_width:
-                new_pos.setX(screen_width - char_width)
-            
-            # Y 범위 제한 (위쪽은 0, 아래쪽은 화면 높이)
-            char_height = self.height()
-            if new_pos.y() < 0:
-                new_pos.setY(0)
-            elif new_pos.y() + char_height > screen_height:
-                new_pos.setY(screen_height - char_height)
-            
             self.move(new_pos)
+            self._clamp_position_to_screen()
             self.drag_pos = current_pos
             self.animation_controller.update_base_pos(self.pos())
             
@@ -1399,6 +1479,13 @@ class CharacterWidget(QLabel):
         self.is_dragging = False
         self.is_jumping = False
         self._jump_physics_y = None
+        self._physics_position_y = None
+        self._physics_position_x = None
+        if hasattr(self, '_gravity_last_time'):
+            self._gravity_last_time = time.monotonic()
+        phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
+        if phase_setter is not None:
+            phase_setter(None)
         self._chase_last_time = None
         self.drag_time = 0
         self.drag_pos = None
@@ -1438,12 +1525,16 @@ class CharacterWidget(QLabel):
     # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
     def show_rps_game(self):
         if self.rps_game is None:
-            self.rps_game = RpsGameDialog(self._rps_command_callback, self)
-        if not self.rps_game.isVisible():
-            self.rps_game.show()
-            self.rps_game.start_game()
+            self.rps_game = RpsGameOverlay(self._rps_command_callback, self)
+        self._mark_character_interaction()
+        self.rps_game.start_game()
+        self.dialogue_system.update_dialogue_position()
         self.rps_game.raise_()
-        self.rps_game.activateWindow()
+
+    def end_rps_game(self):
+        if self.rps_game is not None:
+            self.rps_game.close()
+        self.dialogue_system.update_dialogue_position()
 
     def show_perception_console(self):
         """백그라운드에서 실행 중인 사용자 인식 창의 표시를 요청한다."""
@@ -1478,12 +1569,20 @@ class CharacterWidget(QLabel):
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
+        if getattr(self.dialogue_system, '_last_failed_input', None) is not None:
+            retry_action = menu.addAction("실패한 대화 다시 보내기")
+            retry_action.triggered.connect(self.dialogue_system.retry_last_input)
         console_action = menu.addAction("사용자인식 콘솔")
         console_action.triggered.connect(self.show_perception_console)
         log_action = menu.addAction("로그창 보기")
         log_action.triggered.connect(self.show_log_window)
         rps_action = menu.addAction("가위바위보 하기")
         rps_action.triggered.connect(self.show_rps_game)
+        if self.rps_game is not None and self.rps_game.isVisible():
+            restart_action = menu.addAction("가위바위보 다시 하기")
+            restart_action.triggered.connect(self.show_rps_game)
+            end_action = menu.addAction("가위바위보 종료")
+            end_action.triggered.connect(self.end_rps_game)
         if self.rig_view is not None:
             rig_menu = menu.addMenu("캐릭터 동작")
             for label, action in (("인사", "wave"), ("생각", "thinking"),
@@ -1520,6 +1619,9 @@ class CharacterWidget(QLabel):
 
     def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None):
         """Update bounds and personality without resetting the current mood."""
+        requested_width, requested_height = width, height
+        same_width = self.custom_screen_width == requested_width
+        same_height = self.custom_screen_height == requested_height
         screen = QApplication.primaryScreen()
         if screen is not None:
             bounds = screen.geometry()
@@ -1543,9 +1645,17 @@ class CharacterWidget(QLabel):
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.set_show_hitboxes(options['show_hitboxes'])
-        self.jump_force = math.sqrt(2 * self.gravity * self.jump_height) + self.gravity
-        bounds_changed = (self.custom_screen_width, self.custom_screen_height) != (width, height)
-        self.custom_screen_width, self.custom_screen_height = width, height
+        self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)
+        bounds_changed = not (same_width and same_height)
+        self.custom_screen_width, self.custom_screen_height = requested_width, requested_height
+        if screen is not None:
+            self._screen_origin = bounds.topLeft()
+            # Applying other character settings while a display is temporarily
+            # smaller must preserve the user's existing activity-range intent.
+            if not same_width:
+                self._screen_auto_width = requested_width >= bounds.width()
+            if not same_height:
+                self._screen_auto_height = requested_height >= bounds.height()
         size_changed = self._scaled_character_size() != (old_width, old_height)
         if not size_changed and not bounds_changed:
             return
@@ -1558,7 +1668,9 @@ class CharacterWidget(QLabel):
             foot_y = self.current_surface.y_level
         for surface in self.surfaces:
             if surface.name == 'ground':
-                surface.y_level, surface.x_max = height, width
+                surface.y_level = self._screen_origin.y() + height
+                surface.x_min = self._screen_origin.x()
+                surface.x_max = self._screen_origin.x() + width
         body = self._physics_body_rect()
         body_bottom = body.y() + body.height()
         self.move(round(center_x - self.width() / 2), round(foot_y - body_bottom))
@@ -1568,6 +1680,7 @@ class CharacterWidget(QLabel):
                               and self.y() + body_bottom == standing_surface.y_level)
         self.is_jumping = False
         self._jump_physics_y = None
+        self._physics_position_y = self._physics_position_x = None
         self.current_surface = standing_surface if self.on_ground else None
         if self.on_ground:
             self._grounded_body_bottom = body_bottom
@@ -1841,27 +1954,36 @@ class CharacterWidget(QLabel):
             return
         
         jump_height = getattr(self, 'jump_height', DEFAULT_CHARACTER_OPTIONS['jump_height'])
-        self.jump_force = math.sqrt(2 * self.gravity * jump_height) + self.gravity
-        self._jump_apex_y = max(0.0, self.y() - jump_height)
+        geometry = CharacterWidget._get_screen_geometry(self)
+        body = self._physics_body_rect()
+        jump_height = min(jump_height, max(0, self.y() + body.y() - geometry.y()))
+        self.jump_force = math.sqrt(2 * self.gravity * jump_height)
+        self._jump_apex_y = self.y() - jump_height
         self._jump_physics_y = float(self.y())
+        self._physics_position_y = float(self.y())
+        self._physics_position_x = float(self.x())
+        self._jump_initial_velocity = self.jump_force
+        self._authored_jump_landing = False
+        if hasattr(self, '_gravity_last_time'):
+            self._gravity_last_time = time.monotonic()
         print(f"[점프!] 목표 높이: {jump_height}px")
         self.is_jumping = True
         self.on_ground = False
         self.velocity_y = -self.jump_force  # 음수 = 위로
         self.can_jump = False
         
-        # 점프 애니메이션 (나중에 jump/ 폴더가 생기면 사용)
-        # 지금은 현재 감정 상태로 표시
+        # The authored rig pose follows flight progress; physics owns translation.
         mood = self.mood_system.decide_emotion()
         emotion = mood["emotion"]
         self.current_action = "jump" if self.rig_view is not None else self._get_emotion_animation(emotion)
         if self.rig_view is not None:
             self.sprite_animator.set_emotion(emotion)
+            phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
+            if phase_setter is not None:
+                phase_setter(.15)
         self.update_render(self.current_action)
         
         # 점프 직후 화면 업데이트 (다음 _apply_gravity 호출까지 기다리지 않음)
-        self._jump_physics_y = max(self._jump_apex_y, self._jump_physics_y - 5)
-        self.move(self.x(), round(self._jump_physics_y))
         self.repaint()
     
     # ====== 디버그 렌더링 ======
@@ -1947,7 +2069,7 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
-        if self._manual_control_active():
+        if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or (self.sprite_animator.current_action == "land"
@@ -1995,15 +2117,9 @@ class CharacterWidget(QLabel):
         dx = random.randint(-move_range, move_range)
 
         # 화면 경계 내로 이동 위치 제한 (커스텀 해상도 사용)
-        screen_width = self.custom_screen_width
-        
         target_x = self.x() + dx
-        
-        # 경계 체크 및 조정
-        if target_x < 0:
-            target_x = 0
-        elif target_x + self.width() > screen_width:
-            target_x = screen_width - self.width()
+        left, right = CharacterWidget._horizontal_limits(self)
+        target_x = max(left, min(target_x, right))
         
         # 실제 이동 거리 재계산
         actual_dx = target_x - self.x()
@@ -2051,8 +2167,8 @@ class CharacterWidget(QLabel):
         was_chasing = getattr(self, '_ball_chasing', False)
         self._ball_chasing = True
         target_x = ball_x - self.width() // 2
-        screen_width, _ = self._get_screen_dimensions()
-        target_x = max(0, min(target_x, screen_width - self.width()))
+        left, right = CharacterWidget._horizontal_limits(self)
+        target_x = max(left, min(target_x, right))
         delta_x = target_x - self.x()
         if delta_x == 0:
             self._chase_last_time = None
@@ -2153,6 +2269,12 @@ class CharacterWidget(QLabel):
         return self._animation_for_emotion(self._get_sprite_display_emotion(emotion))
 
     
+    def _horizontal_limits(self):
+        bounds = CharacterWidget._get_screen_geometry(self)
+        body = CharacterWidget._physics_body_rect(self)
+        return (bounds.x() - body.x(),
+                bounds.x() + bounds.width() - body.x() - body.width())
+
     def _advance_horizontal(self, target_x, elapsed, *, speed_scale=1.0):
         """Keep fractional positions so short/left/right routes have equal speed."""
         current = getattr(self, '_movement_x', float(self.x()))
@@ -2175,8 +2297,8 @@ class CharacterWidget(QLabel):
         elapsed = min(0.1, max(0, now - previous)) if previous is not None else 0.016
         self._walk_last_time = now
         target = getattr(self, '_target_x', self.x())
-        screen_width, _ = self._get_screen_dimensions()
-        target = max(0, min(target, screen_width - self.width()))
+        left, right = CharacterWidget._horizontal_limits(self)
+        target = max(left, min(target, right))
         if self._advance_horizontal(target, elapsed):
             self._move_timer.stop()
             self.is_moving = False
@@ -2195,29 +2317,60 @@ class CharacterWidget(QLabel):
 
         self.update()  
     
-    def _apply_gravity(self):
-        """Land only when falling feet cross a surface from above."""
+    def _apply_gravity(self, dt=None):
+        """Integrate elapsed time, with small steps for downward-only landings.
+
+        Legacy velocities are pixels per 1/60 second and gravity is pixels per
+        reference frame squared. Fractional positions survive between callbacks.
+        """
+        if dt is None:
+            if hasattr(self, '_gravity_last_time'):
+                now = time.monotonic()
+                dt = max(0.0, now - self._gravity_last_time)
+                self._gravity_last_time = now
+            else:
+                dt = 1 / 60  # Deterministic windowless callers.
         if self.is_dragging:
             self.on_ground = False
             self.velocity_y = 0
             self.velocity_x = 0
+            self._physics_position_y = self._physics_position_x = None
             return
+        dt = max(0.0, min(float(dt), 1.0))
+        if not dt:
+            return
+        steps = max(1, math.ceil(dt * 120))
+        for _ in range(steps):
+            CharacterWidget._gravity_step(self, dt * 60 / steps)
+        self.dialogue_system.update_dialogue_position()
+        self.repaint()
 
-        current_y = self.y()
-        current_x = self.x()
-        screen_width, _ = self._get_screen_dimensions()
+    def _gravity_step(self, frames):
+        geometry = CharacterWidget._get_screen_geometry(self)
+        screen_left, screen_top = geometry.x(), geometry.y()
+        screen_right = geometry.x() + geometry.width()
+        current_y = getattr(self, '_physics_position_y', None)
+        if current_y is None or round(current_y) != self.y():
+            current_y = float(self.y())
+        current_x = getattr(self, '_physics_position_x', None)
+        if current_x is None or round(current_x) != self.x():
+            current_x = float(self.x())
         body = self._physics_body_rect()
         body_bottom = body.y() + body.height()
 
         if abs(self.velocity_x) > 0.1:
-            new_x = current_x + self.velocity_x
-            if new_x + body.x() < 0:
-                new_x = -body.x()
+            # Exponential damping has the same total effect at any callback rate.
+            friction = max(.001, min(1.0, self.friction))
+            distance = (frames if friction == 1 else
+                        (friction ** frames - 1) / math.log(friction))
+            new_x = current_x + self.velocity_x * distance
+            if new_x + body.x() < screen_left:
+                new_x = screen_left - body.x()
                 self.velocity_x = abs(self.velocity_x) * self.bounce_damping
-            elif new_x + body.x() + body.width() > screen_width:
-                new_x = screen_width - body.x() - body.width()
+            elif new_x + body.x() + body.width() > screen_right:
+                new_x = screen_right - body.x() - body.width()
                 self.velocity_x = -abs(self.velocity_x) * self.bounce_damping
-            self.velocity_x *= self.friction
+            self.velocity_x *= friction ** frames
             current_x = new_x
         else:
             self.velocity_x = 0
@@ -2236,31 +2389,38 @@ class CharacterWidget(QLabel):
                 and current_x + body.x() + body.width() > standing.x_min
                 and current_x + body.x() < standing.x_max):
             self.velocity_y = 0
-            self.velocity_x *= 0.95
+            self.velocity_x *= 0.95 ** frames
             self._grounded_body_bottom = body_bottom
             self._grounded_surface_level = standing.y_level
-            self.move(round(current_x), round(standing.y_level - body_bottom))
-            self.dialogue_system.update_dialogue_position()
+            self._physics_position_x = current_x
+            self._physics_position_y = standing.y_level - body_bottom
+            self.move(round(current_x), round(self._physics_position_y))
             return
 
         self.on_ground = False
         self.current_surface = None
-        self.velocity_y += self.gravity
+        velocity = self.velocity_y
+        # Exact constant acceleration, including time spent at terminal speed.
+        terminal = 20.0
+        until_terminal = max(0.0, (terminal - velocity) / self.gravity)
+        accelerated = min(frames, until_terminal)
+        new_y = (current_y + velocity * accelerated + .5 * self.gravity * accelerated ** 2
+                 + terminal * (frames - accelerated))
+        self.velocity_y = min(velocity + self.gravity * frames, terminal)
         if (self.rig_view is not None and self.velocity_y > 0
                 and self.sprite_animator.current_action != "fall"):
             self.current_action = "fall"
             self.update_render("fall")
-        self.velocity_y = min(self.velocity_y, 20)
-
-        jump_y = getattr(self, '_jump_physics_y', None)
-        if self.is_jumping and jump_y is not None:
-            new_y = jump_y + self.velocity_y
-            if self.velocity_y < 0 and new_y <= self._jump_apex_y:
-                new_y = self._jump_apex_y
-                self.velocity_y = 0
+        if self.is_jumping:
+            if new_y + body.y() < screen_top:
+                new_y = screen_top - body.y()
+                self.velocity_y = max(0, self.velocity_y)
             self._jump_physics_y = new_y
-        else:
-            new_y = current_y + self.velocity_y
+            phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
+            initial = getattr(self, '_jump_initial_velocity', self.jump_force)
+            if phase_setter is not None:
+                progress = (1 + self.velocity_y / max(initial, .001)) / 2
+                phase_setter(.15 + .55 * max(0, min(1, progress)))
 
         # Select from the previous feet position, then test the downward crossing.
         # This also catches fast falls through thin window tops without accepting
@@ -2274,6 +2434,7 @@ class CharacterWidget(QLabel):
             self.velocity_y = 0
             self.velocity_x *= 0.8
             self.current_surface = landing_surface
+            self._authored_jump_landing = self.is_jumping
             self.is_jumping = False
             self._jump_physics_y = None
             self.can_jump = True
@@ -2284,17 +2445,16 @@ class CharacterWidget(QLabel):
             if self.rig_view is not None or not self.is_moving:
                 self._rig_landed()
 
-        self.move(round(current_x), int(new_y))
-        self.dialogue_system.update_dialogue_position()
+        self._physics_position_x, self._physics_position_y = current_x, new_y
+        self.move(round(current_x), round(new_y))
         self._clamp_position_to_screen()
-        self.repaint()
     
     def _clamp_position_to_screen(self):
         """Keep the painted body inside the full screen, including the taskbar."""
-        screen_width, screen_height = self._get_screen_dimensions()
+        geometry = CharacterWidget._get_screen_geometry(self)
         body = self._physics_body_rect()
-        current_x = max(-body.x(), min(self.x(), screen_width - body.x() - body.width()))
-        current_y = max(-body.y(), min(self.y(), screen_height - body.y() - body.height()))
+        current_x = max(geometry.x() - body.x(), min(self.x(), geometry.x() + geometry.width() - body.x() - body.width()))
+        current_y = max(geometry.y() - body.y(), min(self.y(), geometry.y() + geometry.height() - body.y() - body.height()))
         if self.x() != current_x or self.y() != current_y:
             self.move(int(current_x), int(current_y))
     
@@ -2306,12 +2466,13 @@ class CharacterWidget(QLabel):
         
         try:
             # 현재 활성 창 목록
-            windows = gw.getAllWindows()
+            from .desktop_geometry import logical_window
+            windows = [logical_window(window) for window in gw.getAllWindows()]
             current_window_keys = set()
             screen_width, screen_height = self._get_screen_dimensions()
             # QRect 객체 생성 (0,0부터 screen_width, screen_height까지)
             from PyQt6.QtCore import QRect
-            screen_geometry = QRect(0, 0, screen_width, screen_height)
+            screen_geometry = CharacterWidget._get_screen_geometry(self)
             self_hwnd = self._get_self_window_handle()
 
             # 첫 스캔 여부 확인

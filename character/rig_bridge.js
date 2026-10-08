@@ -179,16 +179,25 @@
     ['emotion', 'speaking', 'speechTime', 'walkAmount'].forEach(function (key) {
       if (state[key] !== undefined) options[key] = state[key];
     });
-    var pose = root.CloudyMotion.pose(action, time, options);
+    var authoredFlight = state.jumpActive === true && Number.isFinite(state.jumpPhase);
+    var sampleAction = authoredFlight ? 'jump' : action;
+    var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
+    var pose = root.CloudyMotion.pose(sampleAction, sampleTime, options);
     var originalPose = copy(pose), adjustment = 0;
     if (state.externalPhysics === true) {
       if (Number.isFinite(state.externalRootHeight)) adjustment = -state.externalRootHeight;
-      else if (action === 'jump') adjustment = 62 * pose.airborne;
+      else if (action === 'jump' || authoredFlight) adjustment = 62 * pose.airborne;
       else if (action === 'fall') adjustment = 29;
       else if (action === 'hovering') adjustment = 24;
       pose.bodyY += adjustment;
+      if (authoredFlight) {
+        // The source moves body and feet independently by the same flight height.
+        // Remove both root translations; keep the authored tuck, arms and lean.
+        pose.footNearY += adjustment;
+        pose.footFarY += adjustment;
+      }
       var controlledJump = state.jumpActive === true && (action === 'jump' || action === 'fall');
-      if (controlledJump || action === 'land') {
+      if ((controlledJump || action === 'land') && state.authoredJump !== true && !authoredFlight) {
         // Host physics moves the whole character. Keep the relaxed arm pose
         // through takeoff, descent and landing instead of the panic fall cycle.
         var rest = root.CloudyMotion.pose('idle', time, options);

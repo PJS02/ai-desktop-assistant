@@ -3,7 +3,7 @@ from uuid import uuid4
 from PyQt6.QtCore import QObject, QTimer
 
 from .ai_settings import load_ai_settings, save_ai_settings
-from .config_manager import load_config, load_character_options, save_config
+from .config_manager import load_config, load_character_options, load_dialogue_style, save_config
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
 
@@ -41,6 +41,7 @@ class SettingsController(QObject):
                  'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
+        local['dialogue'] = {'style': load_dialogue_style()}
         self.dialog = SettingsDialog(local, self.character)
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.refresh_requested.connect(self.refresh)
@@ -85,6 +86,10 @@ class SettingsController(QObject):
                     tts.set_voice(value['voice_id'])
                     tts.set_enabled(value['enabled'])
                     tts.sync_settings()
+                elif section == 'dialogue':
+                    width, height, personality = load_config()
+                    save_config(width, height, personality, dialogue_style=value['style'])
+                    self.character.dialogue_system.set_bubble_style(value['style'])
                 elif section == 'ai':
                     save_ai_settings(value['api_key'], value['model'])
                     self.character._load_gemini_config()

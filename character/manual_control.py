@@ -2,6 +2,7 @@
 import time
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QRect
 
 
 COMMAND_ROWS = (
@@ -93,6 +94,14 @@ class ManualControl(QObject):
                 and not (host.rig_view is not None and host.sprite_animator.is_playing
                          and host.sprite_animator.current_action == 'land'))
 
+    def _screen_body(self):
+        host = self.host
+        bounds = (host._get_screen_geometry() if hasattr(host, '_get_screen_geometry')
+                  else QRect(0, 0, *host._get_screen_dimensions()))
+        body = (host._physics_body_rect() if hasattr(host, '_physics_body_rect')
+                else QRect(0, 0, host.width(), host.height()))
+        return bounds, body
+
     def _idle(self):
         if self._ground_ready():
             self.host.current_action = 'idle'
@@ -150,13 +159,19 @@ class ManualControl(QObject):
         self._stop_horizontal()
         self._status(f'직접 조작 중 · {COMMAND_LABELS[command]}')
         if command == 'home':
-            width, height = host._get_screen_dimensions()
-            host.move(round(max(0, min(self.home_x, width - host.width()))), max(0, height - host.height()))
+            bounds, body = self._screen_body()
+            left, right = bounds.x() - body.x(), bounds.x() + bounds.width() - body.x() - body.width()
+            body_bottom = body.y() + body.height()
+            host.move(round(max(left, min(self.home_x, right))), bounds.y() + bounds.height() - body_bottom)
             ground = next(surface for surface in host.surfaces if surface.name == 'ground')
             host.current_surface = ground
             host.on_ground, host.is_jumping, host.can_jump = True, False, True
             host.velocity_y = 0
             host._jump_physics_y = None
+            host._grounded_body_bottom = body_bottom
+            host._grounded_surface_level = ground.y_level
+            host._gravity_last_time = time.monotonic()
+            host._physics_position_y = float(host.y())
             if host.rig_view is not None:
                 host.rig_view.set_jump_active(False)
             host.current_action = 'idle'
@@ -234,8 +249,9 @@ class ManualControl(QObject):
                 host.update_render(host.current_action)
         if not self.direction:
             return
-        width, _ = host._get_screen_dimensions()
-        target = 0 if self.direction < 0 else max(0, width - host.width())
+        bounds, body = self._screen_body()
+        target = (bounds.x() - body.x() if self.direction < 0 else
+                  bounds.x() + bounds.width() - body.x() - body.width())
         reached = host._advance_horizontal(target, elapsed)
         host.animation_controller.update_base_pos(host.pos())
         host.dialogue_system.update_dialogue_position()

@@ -11,6 +11,8 @@ from .personality_system import PersonalitySystem
 from .tts_service import available_voices
 from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
 from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
+from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
+from .dialogue_widget import DialogueBubble
 
 
 class SettingsDialog(QDialog):
@@ -180,6 +182,22 @@ class SettingsDialog(QDialog):
         form.addRow('', self.personality_description)
         self.personality.currentIndexChanged.connect(self._describe_personality)
         self._describe_personality()
+        self.dialogue_style = self._combo(DIALOGUE_STYLES,
+            normalize_dialogue_style(local.get('dialogue', {}).get('style')))
+        form.addRow('말풍선 UI', self.dialogue_style)
+        self.dialogue_preview = DialogueBubble(
+            '안녕하세요! 오늘은 어떤 이야기를 나눌까요?\n선택한 말풍선으로 대화를 표시합니다.',
+            duration=0, preview=True)
+        form.addRow('미리보기', self.dialogue_preview)
+        self.dialogue_style.currentIndexChanged.connect(self._preview_dialogue_style)
+        self._preview_dialogue_style()
+        bubble_hint = QLabel('대화 내용과 음성 출력은 그대로 유지됩니다.\n'
+                             '적용한 스타일은 다음 실행에도 유지됩니다. 긴 대화는 스크롤해서 읽을 수 있습니다.')
+        bubble_hint.setWordWrap(True)
+        form.addRow('', bubble_hint)
+
+    def _preview_dialogue_style(self):
+        self.dialogue_preview.set_style(self.dialogue_style.currentData())
 
     def _describe_size(self):
         percent = self.character_inputs['size_percent'].value()
@@ -369,6 +387,10 @@ class SettingsDialog(QDialog):
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
+        dialogue = {'style': self.dialogue_style.currentData()}
+        baseline = {'style': normalize_dialogue_style(self.local_baseline.get('dialogue', {}).get('style'))}
+        if dialogue != baseline:
+            changed['dialogue'] = dialogue
         remote = {}
         if self.remote_baseline is not None:
             for key, control in self.controls.items():

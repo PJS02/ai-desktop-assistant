@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 
@@ -59,14 +60,19 @@ class AudioDevice:
 
 
 class RealtimeSTT:
-    def __init__(self):
+    def __init__(self, time_provider=time.monotonic):
         self.audio_devices: list[AudioDevice] = []
         self.audio_queue: queue.Queue = queue.Queue()
-        self.ui_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.ui_queue: queue.Queue[tuple[str, str | dict]] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.stream = None
         self.is_running = False
+        self._time_provider = time_provider
+        self._capture_lock = threading.Lock()
+        self._capture_generation = 0
+        self._character_speaking = False
+        self._suppressed_until = 0.0
 
         self.active_provider = "google"
         self.active_silence_label = "0.8 sec"
@@ -75,6 +81,29 @@ class RealtimeSTT:
         self.active_language = "ko-KR"
         self.active_timestamps = True
         self.recognizer = sr.Recognizer() if sr is not None else None
+
+    @property
+    def input_suppressed(self):
+        return self._character_speaking or self._time_provider() < self._suppressed_until
+
+    def set_character_speaking(self, speaking: bool):
+        """Drop playback audio, buffered fragments and overlapping network results."""
+        with self._capture_lock:
+            speaking = bool(speaking)
+            if speaking == self._character_speaking:
+                return
+            self._character_speaking = speaking
+            self._suppressed_until = self._time_provider() + 0.8
+            self._capture_generation += 1
+            while True:
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+    def accepts_speech_event(self, value):
+        return (not self.input_suppressed and isinstance(value, dict)
+                and value.get('generation') == self._capture_generation)
 
     def dependency_error(self) -> str | None:
         missing = []
@@ -144,8 +173,8 @@ class RealtimeSTT:
         self._stop_stream()
         self.ui_queue.put(("status", "STT stopping..."))
 
-    def drain_events(self) -> list[tuple[str, str]]:
-        events: list[tuple[str, str]] = []
+    def drain_events(self) -> list[tuple[str, str | dict]]:
+        events: list[tuple[str, str | dict]] = []
         while True:
             try:
                 events.append(self.ui_queue.get_nowait())
@@ -177,12 +206,25 @@ class RealtimeSTT:
             silence_samples = 0
             audio_offset = 0.0
             utterance_start = 0.0
+            buffer_generation = self._capture_generation
 
             while not self.stop_event.is_set():
                 try:
-                    chunk = self.audio_queue.get(timeout=0.2)
+                    generation, chunk = self.audio_queue.get(timeout=0.2)
                 except queue.Empty:
                     continue
+
+                if generation != self._capture_generation or self.input_suppressed:
+                    continue
+                if generation != buffer_generation:
+                    # Playback may have begun while transcription blocked the
+                    # worker. Never join its old fragment to a new user utterance.
+                    pre_roll.clear()
+                    pre_roll_samples = 0
+                    in_speech = False
+                    speech_chunks = []
+                    speech_samples = silence_samples = 0
+                    buffer_generation = generation
 
                 chunk_start = audio_offset
                 audio_offset += len(chunk) / SAMPLE_RATE
@@ -216,16 +258,17 @@ class RealtimeSTT:
                 if silence_samples >= silence_limit:
                     audio = np.concatenate(speech_chunks)
                     if speech_samples >= min_utterance_samples:
-                        self._transcribe_audio(audio, utterance_start)
+                        self._transcribe_audio(audio, utterance_start, buffer_generation)
                     in_speech = False
                     speech_chunks = []
                     speech_samples = 0
                     silence_samples = 0
                     self.ui_queue.put(("status", "STT listening"))
 
-            if speech_chunks and speech_samples >= min_utterance_samples:
+            if (speech_chunks and speech_samples >= min_utterance_samples
+                    and buffer_generation == self._capture_generation and not self.input_suppressed):
                 audio = np.concatenate(speech_chunks)
-                self._transcribe_audio(audio, utterance_start)
+                self._transcribe_audio(audio, utterance_start, buffer_generation)
 
         except Exception as exc:
             self.ui_queue.put(("error", str(exc)))
@@ -246,8 +289,11 @@ class RealtimeSTT:
         def callback(indata, frames, time_info, status) -> None:
             if status:
                 self.ui_queue.put(("status", f"Audio warning: {status}"))
-            mono = indata[:, 0].astype(np.float32, copy=True)
-            self.audio_queue.put(mono)
+            with self._capture_lock:
+                if self.input_suppressed:
+                    return
+                mono = indata[:, 0].astype(np.float32, copy=True)
+                self.audio_queue.put((self._capture_generation, mono))
 
         self.stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -267,8 +313,9 @@ class RealtimeSTT:
         finally:
             self.stream = None
 
-    def _transcribe_audio(self, audio, offset: float) -> None:
-        if audio.size == 0:
+    def _transcribe_audio(self, audio, offset: float, generation=None) -> None:
+        generation = self._capture_generation if generation is None else generation
+        if audio.size == 0 or self.input_suppressed or generation != self._capture_generation:
             return
 
         rms = float(np.sqrt(np.mean(np.square(audio))))
@@ -299,9 +346,12 @@ class RealtimeSTT:
             line = f"[{offset:05.2f} - {offset + duration:05.2f}] {text}"
         else:
             line = text
-        self.ui_queue.put(("text", line + "\n"))
-        self.ui_queue.put(("speech", text))
-        self.ui_queue.put(("status", "STT transcribed with Google Web Speech"))
+        with self._capture_lock:
+            if self.input_suppressed or generation != self._capture_generation:
+                return
+            self.ui_queue.put(("text", line + "\n"))
+            self.ui_queue.put(("speech", {'text': text, 'generation': generation}))
+            self.ui_queue.put(("status", "STT transcribed with Google Web Speech"))
 
     def _to_audio_data(self, audio):
         clipped = np.clip(audio, -1.0, 1.0)

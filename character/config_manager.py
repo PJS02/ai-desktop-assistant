@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 from .motion_options import normalize_character_options
+from .dialogue_styles import normalize_dialogue_style
 
 
 CONFIG_FILE = Path.home() / ".ai_desktop_assistant" / "config.json"
@@ -42,7 +43,16 @@ def load_character_options():
         return normalize_character_options()
 
 
-def save_config(width, height, personality='Russell (기본)', character_options=None):
+def load_dialogue_style():
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+        return normalize_dialogue_style(data.get('dialogue', {}).get('style'))
+    except (OSError, ValueError, AttributeError):
+        return normalize_dialogue_style(None)
+
+
+def save_config(width, height, personality='Russell (기본)', character_options=None,
+                dialogue_style=None):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -50,6 +60,11 @@ def save_config(width, height, personality='Russell (기본)', character_options
         if not isinstance(config, dict):
             raise ValueError('설정 파일 형식이 올바르지 않습니다.')
         config.update(resolution={'width': width, 'height': height}, personality=personality)
+        if dialogue_style is not None:
+            dialogue = config.get('dialogue', {})
+            dialogue = dialogue.copy() if isinstance(dialogue, dict) else {}
+            dialogue['style'] = normalize_dialogue_style(dialogue_style, strict=True)
+            config['dialogue'] = dialogue
         if character_options is not None:
             saved_options = config.get('character_options', {})
             saved_options = saved_options.copy() if isinstance(saved_options, dict) else {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 import math
 import time
+import json
 from typing import Callable
 
 from .events import PerceptionEvent, parse_perception_event
@@ -23,6 +24,7 @@ class PerceptionController:
         time_provider: Callable[[], float] = time.time,
         on_greeting: Callable[[], None] | None = None,
         greeting_cooldown: float = 6.0,
+        on_speech: Callable[[str], None] | None = None,
     ) -> None:
         self.mood_system = mood_system
         self.on_dialogue = on_dialogue or (lambda _text: None)
@@ -33,6 +35,7 @@ class PerceptionController:
         self.time_provider = time_provider
         self.on_greeting = on_greeting or (lambda: self.on_dialogue("안녕! 👋"))
         self.greeting_cooldown = greeting_cooldown
+        self.on_speech = on_speech or (lambda _text: None)
         self._greeting_sources = {}
         self._last_greeting_at = -math.inf
         # 얼굴 감정은 프레임마다 흔들릴 수 있으므로 최근 결과를 모아 안정성을 확인한다.
@@ -44,6 +47,10 @@ class PerceptionController:
         self._last_head_motion: str | None = None
         self._last_attention: str | None = None
         self._last_speech_key = None
+        self._speech_keys = set()
+        self._speech_key_history = deque()
+        self._speech_suppressed = False
+        self._speech_ignore_until = -math.inf
         self.last_event: PerceptionEvent | None = None
 
     def handle_payload(self, payload: dict) -> PerceptionEvent:
@@ -140,16 +147,40 @@ class PerceptionController:
             print("[외부 상태 인식] 사용자가 자리를 비움")
 
     def _handle_speech(self, event: PerceptionEvent) -> bool:
-        if event.speech is None:
+        if event.speech is None or not event.speech_final:
             return False
-        # 발화 순번이 있으면 같은 문장을 다시 말해도 새로운 음성으로 처리한다.
-        identity = event.speech_id if event.speech_id is not None else event.speech
-        speech_key = (event.source, identity)
-        if speech_key == self._last_speech_key:
+        # Session + sequence survives retransmission/out-of-order delivery while
+        # allowing an intentional repetition and a restarted recognizer's seq 1.
+        identity = (event.speech_id if event.speech_id is not None else
+                    event.speech_recognized_at if event.speech_recognized_at is not None else
+                    event.speech)
+        speech_key = (event.source, event.speech_session,
+                      json.dumps(identity, sort_keys=True, ensure_ascii=False))
+        if speech_key in self._speech_keys:
             return False
         self._last_speech_key = speech_key
+        self._speech_keys.add(speech_key)
+        self._speech_key_history.append(speech_key)
+        if len(self._speech_key_history) > 256:
+            self._speech_keys.discard(self._speech_key_history.popleft())
+        now = self.time_provider()
+        observed = event.speech_recognized_at
+        # Consume suppressed event IDs too, so cached echoes cannot reappear on
+        # later camera frames after playback stops. Speech has its own age: the
+        # camera's fresh frame timestamp must not revive an old transcript.
+        if self._speech_suppressed or now < self._speech_ignore_until:
+            return False
+        if observed is not None and (
+                now - observed > self.max_event_age or observed < self._speech_ignore_until):
+            return False
         print(f"[외부 음성 인식] {event.speech} (출처: {event.source})")
+        self.on_speech(event.speech)
         return True
+
+    def set_speech_suppressed(self, speaking: bool) -> None:
+        self._speech_suppressed = bool(speaking)
+        # Acoustic tail and delayed final results are ignored after actual TTS.
+        self._speech_ignore_until = self.time_provider() + 0.8
 
     def _record_positive_gesture(self, label):
         if hasattr(self.mood_system, "on_positive_gesture"):
