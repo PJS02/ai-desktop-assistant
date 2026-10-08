@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from context.rules_config import get_rules
+from app_logging import log_event, new_trace_id, register_secret
 
 
 def get_active_window_info():
@@ -222,10 +223,15 @@ def encode_image_base64(image):
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def call_gemini(prompt, config, image=None):
+def call_gemini(prompt, config, image=None, *, log_context=None):
     # Gemini API 호출 후 응답 텍스트를 반환합니다.
     api_key = config.get("api_key", "")
+    context = dict(log_context or {})
+    trace_id = context.get("trace_id") or new_trace_id("gemini")
+    register_secret(api_key)
     if not api_key:
+        log_event("gemini.skipped", "Gemini 호출 생략", category="대화·AI",
+                  level="WARNING", trace_id=trace_id, reason="missing_api_key")
         return ""
 
     model = config.get("model", "gemma-3-4b-it")
@@ -252,6 +258,9 @@ def call_gemini(prompt, config, image=None):
             "parts": [{"text": build_system_instruction()}]
         },
     }
+    log_event("gemini.request", "Gemini 실제 요청 본문", category="대화·AI",
+              trace_id=trace_id, model=model, payload=payload,
+              source=context.get("source"), timeout_seconds=30)
     req = Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
@@ -260,27 +269,62 @@ def call_gemini(prompt, config, image=None):
     req.add_header("Content-Type", "application/json")
 
     for attempt in range(3):
+        started = time.monotonic()
+        log_event("gemini.attempt_started", "Gemini HTTP 요청 시작", category="대화·AI",
+                  trace_id=trace_id, attempt=attempt + 1, model=model)
         try:
             with urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                raw_body = resp.read().decode("utf-8")
+                status = getattr(resp, "status", None)
+            log_event("gemini.http_response", "Gemini HTTP 응답 전체", category="대화·AI",
+                      trace_id=trace_id, attempt=attempt + 1, status=status,
+                      elapsed_ms=round((time.monotonic() - started) * 1000, 2), body=raw_body)
+            data = json.loads(raw_body)
             break
         except HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = ""
+            log_event("gemini.http_failed", "Gemini HTTP 요청 실패", category="대화·AI",
+                      level="ERROR", trace_id=trace_id, attempt=attempt + 1,
+                      status=exc.code, error=str(exc), body=error_body,
+                      elapsed_ms=round((time.monotonic() - started) * 1000, 2))
             if exc.code == 500 and attempt < 2:
+                log_event("gemini.retry_scheduled", "Gemini 서버 오류 재시도", category="대화·AI",
+                          level="WARNING", trace_id=trace_id, attempt=attempt + 1,
+                          next_attempt=attempt + 2, delay_seconds=1 + attempt)
                 time.sleep(1 + attempt)
                 continue
             return f"[gemini error] {exc}"
         except URLError as exc:
+            log_event("gemini.connection_failed", "Gemini 연결 실패", category="대화·AI",
+                      level="ERROR", trace_id=trace_id, attempt=attempt + 1, error=str(exc),
+                      elapsed_ms=round((time.monotonic() - started) * 1000, 2))
             return f"[gemini error] {exc}"
         except Exception as exc:
+            log_event("gemini.failed", "Gemini 응답 처리 실패", category="대화·AI",
+                      level="ERROR", trace_id=trace_id, attempt=attempt + 1, error=str(exc),
+                      elapsed_ms=round((time.monotonic() - started) * 1000, 2))
             return f"[gemini error] {exc}"
 
     candidates = data.get("candidates", [])
     if not candidates:
+        log_event("gemini.empty_response", "Gemini 응답 후보 없음", category="대화·AI",
+                  level="ERROR", trace_id=trace_id, reason="no_candidates", response=data)
         return "[gemini error] no candidates"
     parts = candidates[0].get("content", {}).get("parts", [])
     if not parts:
+        log_event("gemini.empty_response", "Gemini 응답 내용 없음", category="대화·AI",
+                  level="ERROR", trace_id=trace_id, reason="empty_content", response=data)
         return "[gemini error] empty content"
-    return parts[0].get("text", "").strip()
+    selected = parts[0].get("text", "").strip()
+    log_event("gemini.text_extracted", "Gemini 첫 후보의 첫 텍스트 추출", category="대화·AI",
+              level="INFO" if selected else "WARNING", trace_id=trace_id,
+              candidate_index=0, part_index=0, text=selected,
+              finish_reason=candidates[0].get("finishReason"),
+              usage=data.get("usageMetadata"), prompt_feedback=data.get("promptFeedback"))
+    return selected
 
 
 def generate_dialogue_json(start_server=False):

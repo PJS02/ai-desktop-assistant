@@ -1,5 +1,6 @@
 """One settings entry point; remote controls use acknowledged process messages."""
 from copy import deepcopy
+from app_logging import log_event
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -17,6 +18,7 @@ from .dialogue_widget import DialogueBubble
 
 class SettingsDialog(QDialog):
     apply_requested = pyqtSignal(dict)
+    apply_timeout = pyqtSignal(str)
     refresh_requested = pyqtSignal(bool)
     character_command_requested = pyqtSignal(str)
     display_emotion_requested = pyqtSignal(str)
@@ -32,6 +34,7 @@ class SettingsDialog(QDialog):
         self.local_baseline = deepcopy(local)
         self.remote_baseline = None
         self.pending = False
+        self.log_trace_id = None
         self.close_on_success = False
         self.tabs = QTabWidget()
         self.controls = {}
@@ -444,6 +447,9 @@ class SettingsDialog(QDialog):
             self.accept()
 
     def _timed_out(self):
+        log_event('settings.remote.timeout', '인식 설정 응답 시간이 지나 실제 적용 여부를 알 수 없습니다.',
+                  trace_id=self.log_trace_id, level='WARNING', result='unknown', timeout_seconds=45)
+        self.apply_timeout.emit(self.log_trace_id or '')
         self.close_on_success = False
         self.complete('인식 기능의 응답이 지연되고 있습니다. 실제 적용 여부를 확인하려면 설정을 다시 열어 주세요.', False)
 

@@ -5,6 +5,8 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+import uuid
+from app_logging import log_event, log_throttled, new_trace_id
 
 try:
     import numpy as np
@@ -73,6 +75,10 @@ class RealtimeSTT:
         self._capture_generation = 0
         self._character_speaking = False
         self._suppressed_until = 0.0
+        self.speech_session = uuid.uuid4().hex
+        self._request_sequence = 0
+        self._suppressed_chunks = 0
+        self._pending_suppressed_chunks = 0
 
         self.active_provider = "google"
         self.active_silence_label = "0.8 sec"
@@ -95,11 +101,16 @@ class RealtimeSTT:
             self._character_speaking = speaking
             self._suppressed_until = self._time_provider() + 0.8
             self._capture_generation += 1
+            discarded = 0
             while True:
                 try:
                     self.audio_queue.get_nowait()
+                    discarded += 1
                 except queue.Empty:
                     break
+        log_event('stt.suppression.changed', 'TTS 음성 입력 억제 변경', category='사용자 인식',
+                  speaking=speaking, generation=self._capture_generation,
+                  suppressed_until=self._suppressed_until, discarded_chunks=discarded)
 
     def accepts_speech_event(self, value):
         return (not self.input_suppressed and isinstance(value, dict)
@@ -164,6 +175,9 @@ class RealtimeSTT:
         self.audio_queue = queue.Queue()
         self.is_running = True
         self.worker_thread = threading.Thread(target=self._run_stt, daemon=True)
+        log_event('stt.start.requested', '음성 인식 시작 요청', category='사용자 인식',
+                  microphone=mic_label, provider=provider, language=language,
+                  silence=silence_label, sensitivity=sensitivity, speech_session=self.speech_session)
         self.worker_thread.start()
 
     def stop(self) -> None:
@@ -172,12 +186,28 @@ class RealtimeSTT:
         self.stop_event.set()
         self._stop_stream()
         self.ui_queue.put(("status", "STT stopping..."))
+        log_event('stt.stop.requested', '음성 인식 중지 요청', category='사용자 인식',
+                  speech_session=self.speech_session)
 
     def drain_events(self) -> list[tuple[str, str | dict]]:
         events: list[tuple[str, str | dict]] = []
+        with self._capture_lock:
+            suppressed = self._suppressed_chunks
+            self._suppressed_chunks = 0
+        self._pending_suppressed_chunks += suppressed
+        if suppressed:
+            recorded = log_throttled('stt.audio.suppressed', 'TTS 재생 중 오디오 청크 생략',
+                          category='사용자 인식', key=f'stt-audio:{id(self)}',
+                          suppressed_chunks=self._pending_suppressed_chunks, generation=self._capture_generation)
+            if recorded is not None:
+                self._pending_suppressed_chunks = 0
         while True:
             try:
-                events.append(self.ui_queue.get_nowait())
+                item = self.ui_queue.get_nowait()
+                if item[0] == 'log':
+                    log_throttled(**item[1])
+                else:
+                    events.append(item)
             except queue.Empty:
                 return events
 
@@ -271,10 +301,14 @@ class RealtimeSTT:
                 self._transcribe_audio(audio, utterance_start, buffer_generation)
 
         except Exception as exc:
+            log_event('stt.worker.failed', '음성 인식 작업 실패', category='오류', level='ERROR',
+                      error=str(exc), speech_session=self.speech_session)
             self.ui_queue.put(("error", str(exc)))
         finally:
             self._stop_stream()
             self.is_running = False
+            log_event('stt.stopped', '음성 인식 중지 완료', category='사용자 인식',
+                      speech_session=self.speech_session)
             self.ui_queue.put(("status", "STT stopped"))
             self.ui_queue.put(("running", "false"))
             self.ui_queue.put(("text", "[STT stopped]\n"))
@@ -289,8 +323,14 @@ class RealtimeSTT:
         def callback(indata, frames, time_info, status) -> None:
             if status:
                 self.ui_queue.put(("status", f"Audio warning: {status}"))
+                # The device callback only queues metadata; disk/protocol I/O
+                # happens when the GUI drains this event.
+                self.ui_queue.put(('log', {'event': 'stt.audio.warning',
+                    'message': '마이크 오디오 경고', 'category': '오류', 'level': 'WARNING',
+                    'key': f'stt-warning:{id(self)}', 'status': str(status), 'frames': frames}))
             with self._capture_lock:
                 if self.input_suppressed:
+                    self._suppressed_chunks += 1
                     return
                 mono = indata[:, 0].astype(np.float32, copy=True)
                 self.audio_queue.put((self._capture_generation, mono))
@@ -303,6 +343,13 @@ class RealtimeSTT:
             callback=callback,
         )
         self.stream.start()
+        log_event('stt.microphone.opened', '마이크 녹음 시작', category='사용자 인식',
+                  requested_label=selected, requested_index=device_index,
+                  actual_index=getattr(self.stream, 'device', device_index),
+                  selection_reason='label_match' if device_index is not None else 'system_default',
+                  sample_rate=SAMPLE_RATE, actual_sample_rate=getattr(self.stream, 'samplerate', SAMPLE_RATE),
+                  channels=CHANNELS, dtype='float32',
+                  speech_session=self.speech_session)
 
     def _stop_stream(self) -> None:
         if self.stream is None:
@@ -312,32 +359,57 @@ class RealtimeSTT:
             self.stream.close()
         finally:
             self.stream = None
+            log_event('stt.microphone.closed', '마이크 스트림 해제', category='사용자 인식',
+                      speech_session=self.speech_session)
 
     def _transcribe_audio(self, audio, offset: float, generation=None) -> None:
         generation = self._capture_generation if generation is None else generation
         if audio.size == 0 or self.input_suppressed or generation != self._capture_generation:
+            log_throttled('stt.utterance.discarded', '음성 인식 요청 생략', category='사용자 인식',
+                          key=f'stt-discard:{id(self)}', reason='empty' if audio.size == 0 else
+                          'tts_suppressed' if self.input_suppressed else 'generation_changed',
+                          generation=generation, current_generation=self._capture_generation)
             return
 
         rms = float(np.sqrt(np.mean(np.square(audio))))
         if rms < 0.003:
+            log_throttled('stt.utterance.silence', '낮은 음량으로 인식 요청 생략', category='사용자 인식',
+                          key=f'stt-silence:{id(self)}', rms=rms, threshold=0.003)
             self.ui_queue.put(("status", "STT silence detected"))
             return
 
         self.ui_queue.put(("status", "STT sending audio to Google Web Speech"))
         audio_data = self._to_audio_data(audio)
+        trace_id = new_trace_id('speech')
+        self._request_sequence += 1
+        request_started = time.monotonic()
+        log_event('stt.google.request', 'Google 음성 인식 요청', category='사용자 인식', trace_id=trace_id,
+                  speech_session=self.speech_session, request_sequence=self._request_sequence,
+                  duration=len(audio) / SAMPLE_RATE, rms=rms, offset=offset,
+                  sample_rate=SAMPLE_RATE, language=self.active_language, generation=generation)
         try:
             text = self.recognizer.recognize_google(
                 audio_data,
                 language=self.active_language,
             ).strip()
         except sr.UnknownValueError:
+            log_event('stt.google.unrecognized', '음성을 해석하지 못함', category='사용자 인식', trace_id=trace_id,
+                      elapsed=time.monotonic() - request_started, reason='unknown_value')
             self.ui_queue.put(("status", "STT could not understand speech"))
             return
         except sr.RequestError as exc:
+            log_event('stt.google.failed', 'Google 음성 인식 요청 실패', category='오류', level='ERROR',
+                      trace_id=trace_id, elapsed=time.monotonic() - request_started, error=str(exc))
             self.ui_queue.put(("error", f"Google Web Speech request failed: {exc}"))
             return
+        except Exception as exc:
+            log_event('stt.google.failed', '음성 인식 응답 처리 오류', category='오류', level='ERROR',
+                      trace_id=trace_id, elapsed=time.monotonic() - request_started, error=str(exc))
+            raise
 
         if not text:
+            log_event('stt.google.empty', '음성 인식 결과 없음', category='사용자 인식', trace_id=trace_id,
+                      elapsed=time.monotonic() - request_started)
             self.ui_queue.put(("status", "STT no speech"))
             return
 
@@ -348,9 +420,18 @@ class RealtimeSTT:
             line = text
         with self._capture_lock:
             if self.input_suppressed or generation != self._capture_generation:
+                log_event('stt.google.discarded', '재생과 겹친 음성 인식 결과 폐기', category='사용자 인식',
+                          trace_id=trace_id, text=text, reason='tts_suppressed' if self.input_suppressed else
+                          'generation_changed', generation=generation, current_generation=self._capture_generation,
+                          elapsed=time.monotonic() - request_started)
                 return
+            recognized_at = time.time()
+            log_event('stt.google.result', '음성 인식 완료', category='사용자 인식', trace_id=trace_id,
+                      text=text, recognized_at=recognized_at, speech_session=self.speech_session,
+                      elapsed=time.monotonic() - request_started)
             self.ui_queue.put(("text", line + "\n"))
-            self.ui_queue.put(("speech", {'text': text, 'generation': generation}))
+            self.ui_queue.put(("speech", {'text': text, 'generation': generation, 'trace_id': trace_id,
+                                       'recognized_at': recognized_at, 'session': self.speech_session}))
             self.ui_queue.put(("status", "STT transcribed with Google Web Speech"))
 
     def _to_audio_data(self, audio):

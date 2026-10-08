@@ -68,6 +68,17 @@ class PerceptionEvent:
     speech_recognized_at: float | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
+    @property
+    def trace_id(self) -> str | None:
+        value = self.raw.get('trace_id') or self.raw.get('event_id')
+        return str(value) if value is not None else None
+
+    @property
+    def speech_trace_id(self) -> str | None:
+        speech = self.raw.get('speech')
+        value = speech.get('trace_id') if isinstance(speech, Mapping) else None
+        return str(value) if value is not None else self.trace_id
+
 
 def _canonical_label(value: Any) -> str | None:
     """모델마다 다른 대소문자와 구분자를 내부 표준 형태로 맞춘다."""

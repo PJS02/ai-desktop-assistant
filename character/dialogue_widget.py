@@ -116,6 +116,7 @@ class DialogueBubble(QWidget):
 
     def _auto_close(self):
         if not self.is_hovering:
+            self._log_close_reason = 'duration_elapsed'
             self.close()
 
     def closeEvent(self, event):
@@ -258,10 +259,12 @@ class DialogueNarrationBox(QWidget):
     
     def mousePressEvent(self, event):
         """클릭으로 종료"""
+        self._log_close_reason = 'user_click'
         self.close()
     
     def _auto_close(self):
         """자동 종료"""
+        self._log_close_reason = 'duration_elapsed'
         self.close()
     
     def closeEvent(self, event):

@@ -2,6 +2,7 @@
 # Russell 2D 감정 모델(Valence × Arousal) 기반
 import math
 import time
+from app_logging import log_event, log_throttled, new_trace_id
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -171,6 +172,8 @@ class MoodSystem:
         # 캐릭터 실행 중 일어난 사건을 최신 30건까지 보여준다.
         self._emotion_influences: deque[EmotionInfluence] = deque(maxlen=30)
         self._last_recovery_trace_at = 0.0
+        self._last_influence_trace_id = None
+        self._decay_block_reason = None
 
     def _clamp_russell_to_circle(self) -> None:
         """Russell 좌표를 단위원 내부로 정규화한다."""
@@ -246,6 +249,8 @@ class MoodSystem:
         """커서로 부드럽게 쓰다듬을 때 작은 기쁨과 친밀감을 누적한다."""
         if self.should_refuse_pet():
             return 0.0
+        before = self.get_russell_state()
+        before_occ = dict(self.occ_intensities)
 
         elapsed_seconds = max(0.0, min(1.0, float(elapsed_seconds)))
         movement_speed = max(0.0, float(movement_speed))
@@ -283,6 +288,14 @@ class MoodSystem:
             self._event_arousal_bias + 0.03 * amount,
         )
         self._update_russell_from_occ()
+        log_throttled('mood.pet', '쓰다듬기 보상을 감정 상태에 반영했습니다.',
+                      key=f'pet:{id(self)}', interval=1.5, category='캐릭터 상태',
+                      movement_speed=movement_speed, elapsed_seconds=elapsed_seconds,
+                      comfort=comfort, amount=amount, before=before,
+                      after=self.get_russell_state(), target=[self._target_valence, self._target_arousal],
+                      occ_changes={emotion.value: self.occ_intensities[emotion] - before_occ[emotion]
+                                   for emotion in self.occ_intensities},
+                      final_emotion=self.decide_emotion())
         return amount
 
     def should_refuse_pet(self) -> bool:
@@ -554,6 +567,8 @@ class MoodSystem:
             before_occ=before_occ,
             details=f"인식 신뢰도 {confidence * 100:.0f}%",
             merge_window=1.5,
+            event_input={'label': label, 'normalized_label': emotion, 'confidence': confidence,
+                         'occ_weights': {key.value: value for key, value in weights.items()}},
         )
         return True
 
@@ -584,6 +599,7 @@ class MoodSystem:
             before_occ=before_occ,
             details=f"드래그 지속 {elapsed_seconds:.1f}초",
             merge_window=1.5,
+            event_input={'elapsed_seconds': elapsed_seconds, 'progress': progress, 'step': step},
         )
 
     # ========================
@@ -670,6 +686,7 @@ class MoodSystem:
             before=before,
             before_occ=before_occ,
             details=details,
+            event_input=asdict(event),
         )
 
         # 사건 직후에는 감정이 바로 사라지지 않도록 잠시 유지한다.
@@ -696,6 +713,7 @@ class MoodSystem:
         before_occ: dict[OccEmotionToMood, float],
         details: str = "",
         merge_window: float = 0.0,
+        event_input: dict | None = None,
     ) -> None:
         """좌표와 OCC의 전후 차이를 계산해 설명 기록을 추가한다."""
         now = time.time()
@@ -720,12 +738,13 @@ class MoodSystem:
             details=details,
         )
 
-        if (
+        merged = bool(
             merge_window > 0
             and self._emotion_influences
             and self._emotion_influences[-1].source == source
             and now - self._emotion_influences[-1].timestamp <= merge_window
-        ):
+        )
+        if merged:
             previous = self._emotion_influences[-1]
             merged_occ = dict(previous.occ_changes)
             for name, delta in occ_changes.items():
@@ -738,6 +757,18 @@ class MoodSystem:
             self._emotion_influences[-1] = item
         else:
             self._emotion_influences.append(item)
+            self._last_influence_trace_id = new_trace_id('mood')
+        data = dict(influence=item.to_dict(), merged=merged, event_input=event_input,
+                    occ_after={emotion.value: intensity for emotion, intensity in self.occ_intensities.items()},
+                    target={'valence': self._target_valence, 'arousal': self._target_arousal},
+                    final_emotion=self.decide_emotion())
+        if merge_window > 0 and merged:
+            log_throttled('mood.influence', '연속 감정 입력을 평가했습니다.',
+                          key=f'mood:{self._last_influence_trace_id}', interval=merge_window,
+                          category='캐릭터 상태', trace_id=self._last_influence_trace_id, **data)
+        else:
+            log_event('mood.influence', '감정 사건을 평가했습니다.', category='캐릭터 상태',
+                      trace_id=self._last_influence_trace_id, **data)
 
 
     def _apply_occ_to_mood(self) -> None:
@@ -828,6 +859,14 @@ class MoodSystem:
 
     def decay(self):
         """시간에 따른 감정 자연 감소"""
+        blocked = ('manual_override' if self._manual_russell_override else
+                   'emotion_hold' if time.monotonic() < self._emotion_hold_until else None)
+        if blocked != self._decay_block_reason:
+            log_event('mood.recovery.deferred' if blocked else 'mood.recovery.resumed',
+                      '감정 자연 회복을 보류합니다.' if blocked else '감정 자연 회복을 재개합니다.',
+                      category='캐릭터 상태', reason=blocked, previous_reason=self._decay_block_reason,
+                      hold_until=self._emotion_hold_until)
+            self._decay_block_reason = blocked
         if self._manual_russell_override:
             return
 
@@ -997,7 +1036,12 @@ class MoodSystem:
 
     def clear_manual_russell_state(self) -> None:
         """수동 Russell 조작을 종료하고 자동 감정 갱신을 재개한다."""
+        was_manual = self._manual_russell_override
         self._manual_russell_override = False
+        if was_manual:
+            log_event('mood.manual.released', '수동 감정 좌표 조정을 종료했습니다.',
+                      category='캐릭터 상태', trace_id=self._last_influence_trace_id,
+                      state=self.get_russell_state(), final_emotion=self.decide_emotion())
 
     def get_emotion_explanation(self, limit: int | None = None) -> dict:
         """UI가 바로 표시할 수 있는 현재 판단 근거 스냅샷을 반환한다."""

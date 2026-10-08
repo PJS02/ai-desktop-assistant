@@ -9,6 +9,7 @@ import uuid
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from types import SimpleNamespace
+from app_logging import log_event, log_throttled, new_trace_id
 
 import cv2
 import numpy as np
@@ -141,6 +142,7 @@ class HolisticGuiApp(SettingsBridge):
         self.speech_sequence = 0
         self.speech_recognized_at = None
         self.speech_session = uuid.uuid4().hex
+        self.latest_speech_trace_id = None
         self.last_sent_interaction_events = {}
 
         self.camera_var = tk.StringVar()
@@ -212,6 +214,7 @@ class HolisticGuiApp(SettingsBridge):
             value=self.saved_bool(saved_recognition, "always_recognition", True)
         )
         self.stt = RealtimeSTT()
+        self.stt.speech_session = self.speech_session
 
         self.holistic = core.mp_holistic.Holistic(
             static_image_mode=False,
@@ -254,11 +257,17 @@ class HolisticGuiApp(SettingsBridge):
     @staticmethod
     def saved_option(settings, key, choices, default):
         value = settings.get(key, default)
+        if value not in choices:
+            log_event('device.settings.option_default', '저장된 선택이 유효하지 않아 기본값 사용',
+                      category='시스템', field=key, saved=value, default=default)
         return value if value in choices else default
 
     @staticmethod
     def saved_bool(settings, key, default):
         value = settings.get(key, default)
+        if not isinstance(value, bool):
+            log_event('device.settings.option_default', '저장된 토글 형식 오류로 기본값 사용',
+                      category='시스템', field=key, saved=value, default=default)
         return value if isinstance(value, bool) else default
 
     def start_control_reader(self):
@@ -278,9 +287,11 @@ class HolisticGuiApp(SettingsBridge):
                 command = line.strip()
                 if command:
                     self.control_commands.put(command)
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as exc:
+            log_event('recognition.control.failed', '인식 제어 명령 읽기 실패',
+                      category='오류', level='ERROR', error=str(exc))
         finally:
+            log_event('recognition.control.closed', '부모 제어 스트림 종료', category='사용자 인식')
             # 부모 프로세스가 비정상 종료되어 파이프가 닫히면 자식도 남지 않게 한다.
             self.control_commands.put("shutdown")
 
@@ -292,6 +303,7 @@ class HolisticGuiApp(SettingsBridge):
                 command = self.control_commands.get_nowait()
             except queue.Empty:
                 break
+            log_event('recognition.control.received', '인식 제어 명령 수신', category='사용자 인식', command=command)
             if command == "show":
                 self.show_console()
             elif command == "hide":
@@ -307,6 +319,9 @@ class HolisticGuiApp(SettingsBridge):
             elif command == "shutdown":
                 self.on_close()
                 return
+            else:
+                log_event('recognition.control.ignored', '지원하지 않는 인식 명령',
+                          category='오류', level='WARNING', command=command)
         self.root.after(100, self.poll_control_commands)
 
     def begin_rps_game(self, session):
@@ -317,17 +332,23 @@ class HolisticGuiApp(SettingsBridge):
         self.rps_sample = None
         self.active_mode = "rps"
         self.update_mode_status()
+        log_event('recognition.game.started', '게임 인식 시작', category='사용자 인식',
+                  trace_id=session, mode='rps', previous_mode=self.rps_previous_mode)
         if self.cap is None:
             self.start_selected_camera()
         print("[가위바위보] 게임 인식 시작")
 
     def end_rps_game(self, session):
         if session != self.rps_session:
+            log_event('recognition.game.ignored', '이전 게임 종료 명령 생략', category='사용자 인식',
+                      trace_id=session, active_session=self.rps_session)
             return
         self.active_mode = self.rps_previous_mode
         self.rps_session = None
         self.rps_sample = None
         self.update_mode_status()
+        log_event('recognition.game.finished', '게임 인식 종료 및 모드 복원',
+                  category='사용자 인식', trace_id=session, restored_mode=self.active_mode)
         print("[가위바위보] 이전 인식 모드 복원")
 
     def show_console(self):
@@ -742,6 +763,7 @@ class HolisticGuiApp(SettingsBridge):
         self.render_frame(frame)
 
     def refresh_cameras(self, stop_after_first=False):
+        log_event('device.camera.discovery.started', '카메라 검색 시작', category='사용자 인식', stop_after_first=stop_after_first)
         saved_camera = self.device_settings.get("camera", {})
         saved_camera = saved_camera if isinstance(saved_camera, dict) else {}
         self.camera_candidates = core.discover_webcams(
@@ -751,6 +773,7 @@ class HolisticGuiApp(SettingsBridge):
             preferred_backend_label=saved_camera.get("backend_label"),
         )
         self.apply_camera_candidates(self.camera_candidates)
+        log_event('device.camera.discovery.completed', '카메라 검색 완료', category='사용자 인식', candidates=self.camera_candidates, count=len(self.camera_candidates))
         print(f"[카메라 검색] 시작 전 전체 목록: {len(self.camera_candidates)}개")
 
     def apply_camera_candidates(self, candidates, preserve_current=False):
@@ -762,6 +785,7 @@ class HolisticGuiApp(SettingsBridge):
 
         if not self.camera_candidates:
             label = "\uc0ac\uc6a9 \uac00\ub2a5\ud55c \uc6f9\ucea0 \uc5c6\uc74c"
+            log_event('device.camera.discovery.empty', '사용 가능한 카메라 없음', category='사용자 인식', level='WARNING')
             self.camera_var.set(label)
             menu.add_command(label=label, command=lambda value=label: self.camera_var.set(value))
             self.status_var.set("\uc6f9\ucea0\uc744 \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
@@ -777,6 +801,7 @@ class HolisticGuiApp(SettingsBridge):
             for candidate in self.camera_candidates
         }
         if preserve_current and current_label in available_labels:
+            log_event('device.camera.selection', '현재 카메라 선택 유지', category='사용자 인식', reason='preserve_current', selected=current_label)
             self.camera_var.set(current_label)
             self.status_var.set(f"\uc6f9\ucea0 {len(self.camera_candidates)}\uac1c \uac10\uc9c0")
             return
@@ -791,6 +816,7 @@ class HolisticGuiApp(SettingsBridge):
             self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
             return
         # Windows 카메라 백엔드는 실행 중인 장치를 다시 열지 못할 수 있으므로
+        log_event('device.camera.discovery.started', '카메라 전체 재검색 시작', category='사용자 인식', active_camera=getattr(self, 'active_camera_candidate', None), restarting=self.cap is not None)
         # 새로고침 동안만 해제하고 검색 후 같은 선택으로 자동 재시작한다.
         self.restart_camera_after_discovery = self.cap is not None
         if self.restart_camera_after_discovery:
@@ -820,6 +846,7 @@ class HolisticGuiApp(SettingsBridge):
             except queue.Empty:
                 break
             if kind == "error":
+                log_event('device.camera.discovery.failed', '카메라 검색 실패', category='오류', level='ERROR', error=value)
                 self.status_var.set(f"\uce74\uba54\ub77c \uac80\uc0c9 \uc2e4\ud328: {value}")
                 print(f"[카메라 검색 오류] {value}")
                 if self.restart_camera_after_discovery:
@@ -831,6 +858,7 @@ class HolisticGuiApp(SettingsBridge):
                 continue
             candidates = merge_camera_candidates(value, self.active_camera_candidate)
             self.apply_camera_candidates(candidates, preserve_current=True)
+            log_event('device.camera.discovery.completed', '카메라 전체 검색 완료', category='사용자 인식', candidates=candidates, count=len(candidates))
             print(f"[카메라 검색] 전체 목록 갱신: {len(candidates)}개")
             if self.restart_camera_after_discovery:
                 self.restart_camera_after_discovery = False
@@ -841,12 +869,14 @@ class HolisticGuiApp(SettingsBridge):
         self.root.after(200, self.poll_camera_discovery)
 
     def refresh_stt_microphones(self, show_error=True):
+        log_event('device.microphone.discovery.started', '마이크 검색 시작', category='사용자 인식')
         menu = self.stt_mic_menu["menu"]
         menu.delete(0, "end")
 
         try:
             labels = self.stt.refresh_microphones()
         except Exception as exc:
+            log_event('device.microphone.discovery.failed', '마이크 검색 실패', category='오류', level='ERROR', error=str(exc))
             label = "\ub9c8\uc774\ud06c \uc0ac\uc6a9 \ubd88\uac00"
             self.stt_mic_var.set(label)
             menu.add_command(label=label, command=lambda value=label: self.stt_mic_var.set(value))
@@ -856,6 +886,7 @@ class HolisticGuiApp(SettingsBridge):
             return
 
         if not labels:
+            log_event('device.microphone.discovery.empty', '사용 가능한 마이크 없음', category='사용자 인식', level='WARNING')
             label = "\uc0ac\uc6a9 \uac00\ub2a5\ud55c \ub9c8\uc774\ud06c \uc5c6\uc74c"
             self.stt_mic_var.set(label)
             menu.add_command(label=label, command=lambda value=label: self.stt_mic_var.set(value))
@@ -868,6 +899,7 @@ class HolisticGuiApp(SettingsBridge):
                 command=lambda value=label: self.select_stt_microphone(value),
             )
         saved_microphone = self.device_settings.get("microphone", {})
+        log_event('device.microphone.discovery.completed', '마이크 검색 완료', category='사용자 인식', labels=labels)
         selected_label = select_saved_microphone(labels, saved_microphone)
         self.stt_mic_var.set(selected_label)
         self.stt_status_var.set(f"STT: \ub9c8\uc774\ud06c {len(labels)}\uac1c \uac10\uc9c0")
@@ -889,6 +921,7 @@ class HolisticGuiApp(SettingsBridge):
                 self.stt_timestamps_var.get(),
             )
         except Exception as exc:
+            log_event('stt.start.failed', '음성 인식 시작 실패', category='오류', level='ERROR', microphone=self.stt_mic_var.get(), error=str(exc))
             self.stt_status_var.set(f"STT \uc2dc\uc791 \uc2e4\ud328: {exc}")
             print(f"[STT 오류] 시작 실패: {exc}")
             if show_error:
@@ -911,21 +944,28 @@ class HolisticGuiApp(SettingsBridge):
             if kind == "text":
                 self.append_stt_text(value)
             elif kind == "speech":
+                speech_meta = value if isinstance(value, dict) else {}
                 if isinstance(value, dict):
                     if not self.stt.accepts_speech_event(value):
+                        log_event('stt.result.discarded', '대기 중 음성 인식 결과 폐기', category='사용자 인식', trace_id=value.get('trace_id'), reason='suppression_or_generation', metadata=value)
                         continue
                     value = value.get('text', '')
                 if not isinstance(value, str) or not value.strip():
+                    log_event('stt.result.discarded', '비어 있는 음성 인식 결과 폐기', category='사용자 인식', reason='empty')
                     continue
                 self.latest_speech_text = value
                 # 같은 문장을 다시 말해도 별개의 발화로 전송되도록 순번을 증가시킨다.
                 self.speech_sequence += 1
-                self.speech_recognized_at = time.time()
+                self.speech_recognized_at = speech_meta.get('recognized_at') or time.time()
+                self.latest_speech_trace_id = speech_meta.get('trace_id') or new_trace_id('speech')
+                log_event('stt.result.forwarded', '음성 입력 전달 준비', category='사용자 인식', trace_id=self.latest_speech_trace_id, text=value, speech_session=getattr(self, 'speech_session', None), speech_sequence=self.speech_sequence, recognized_at=self.speech_recognized_at)
                 # 카메라 프레임 처리 여부와 관계없이 완성된 음성을 즉시 전달한다.
                 self.send_recognition_state()
             elif kind == "status":
+                log_throttled('stt.status', '음성 인식 상태', category='사용자 인식', key=f'stt-status:{value}', status=value)
                 self.stt_status_var.set(value)
             elif kind == "error":
+                log_event('stt.error', '음성 인식 오류', category='오류', level='ERROR', error=value)
                 self.append_stt_text(f"\n[STT error] {value}\n")
                 self.stt_status_var.set(f"STT error: {value}")
                 print(f"[STT 오류] {value}")
@@ -963,6 +1003,8 @@ class HolisticGuiApp(SettingsBridge):
 
     def load_emotion_model(self):
         model_key = EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()]
+        started = time.monotonic()
+        log_event('recognition.model.loading', '감정 모델 불러오기 시작', category='사용자 인식', model=model_key)
         try:
             if model_key == "emotieff_b2":
                 recognizer = EmotiEffNetB2Recognizer(EMOTIEFF_MODEL_PATH)
@@ -972,11 +1014,13 @@ class HolisticGuiApp(SettingsBridge):
             previous_label = getattr(self, "loaded_emotion_model_label", None)
             if previous_label is not None:
                 self.emotion_model_var.set(previous_label)
+            log_event('recognition.model.failed', '감정 모델 로드 실패', category='오류', level='ERROR', model=model_key, error=str(exc), previous_model=previous_label, restored=previous_label is not None, elapsed=time.monotonic() - started)
             self.status_var.set(f"\uac10\uc815 \ubaa8\ub378 \ub85c\ub4dc \uc2e4\ud328: {exc}")
             return
         self.emotion_recognizer = recognizer
         self.loaded_emotion_model_label = self.emotion_model_var.get()
         self.loaded_emotion_model_key = model_key
+        log_event('recognition.model.ready', '감정 모델 준비 완료', category='사용자 인식', model=model_key, path=str(EMOTIEFF_MODEL_PATH if model_key == 'emotieff_b2' else EMOTION_MODEL_PATH), elapsed=time.monotonic() - started)
 
     def change_emotion_model(self, _selection):
         self.load_emotion_model()
@@ -997,6 +1041,9 @@ class HolisticGuiApp(SettingsBridge):
                 selected_candidate = candidate
                 break
 
+        log_event('device.camera.starting', '선택한 카메라 열기', category='사용자 인식', requested=selected_label, selected=selected_candidate,
+                  reason='label_match' if selected_label == f"index {selected_candidate['index']} / {selected_candidate['backend_label']}" else 'first_available',
+                  requested_width=self.capture_settings.camera_width, requested_height=self.capture_settings.camera_height)
         self.release_camera()
         result = core.try_open_webcam(
             selected_candidate["index"],
@@ -1007,6 +1054,7 @@ class HolisticGuiApp(SettingsBridge):
         )
 
         if result is None:
+            log_event('device.camera.failed', '카메라 열기 실패', category='오류', level='ERROR', selected=selected_candidate)
             self.status_var.set("\uc120\ud0dd\ud55c \uce74\uba54\ub77c\ub97c \uc5f4\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
             return
 
@@ -1023,6 +1071,7 @@ class HolisticGuiApp(SettingsBridge):
             f"\uc18c\uc2a4: webcam index {selected_candidate['index']} via {selected_candidate['backend_label']}"
         )
         self.status_var.set("\uce74\uba54\ub77c \uc2e4\ud589 \uc911")
+        log_event('device.camera.started', '카메라 캡처 시작', category='사용자 인식', requested=selected_label, selected=selected_candidate, requested_width=self.capture_settings.camera_width, requested_height=self.capture_settings.camera_height, fps=self.capture_fps, actual_width=self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), actual_height=self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.save_camera_device_settings(selected_candidate)
 
     def save_camera_device_settings(self, candidate):
@@ -1030,11 +1079,10 @@ class HolisticGuiApp(SettingsBridge):
             "index": candidate["index"],
             "backend_label": candidate["backend_label"],
         }
-        self.save_device_settings_safely()
-        print(
-            "[장치 설정] 카메라 저장: "
-            f"index {candidate['index']} / {candidate['backend_label']}"
-        )
+        outcome = self.save_device_settings_safely()
+        if outcome == 'saved':
+            print("[장치 설정] 카메라 저장: " f"index {candidate['index']} / {candidate['backend_label']}")
+        return outcome
 
     def save_stt_device_settings(self):
         mic_label = self.stt_mic_var.get()
@@ -1058,8 +1106,10 @@ class HolisticGuiApp(SettingsBridge):
             "sensitivity": self.stt_sensitivity_var.get(),
             "timestamps": bool(self.stt_timestamps_var.get()),
         }
-        self.save_device_settings_safely()
-        print(f"[설정 저장] STT/마이크: {mic_label}")
+        outcome = self.save_device_settings_safely()
+        if outcome == 'saved':
+            print(f"[설정 저장] STT/마이크: {mic_label}")
+        return outcome
 
     def save_recognition_settings(self):
         """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
@@ -1073,16 +1123,22 @@ class HolisticGuiApp(SettingsBridge):
             "emotion_model": EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()],
             "always_recognition": bool(self.always_recognition_var.get()),
         }
-        self.save_device_settings_safely()
-        print(f"[설정 저장] 사용자 인식 모드/도구: {self.active_mode or '없음'}")
+        outcome = self.save_device_settings_safely()
+        if outcome == 'saved':
+            print(f"[설정 저장] 사용자 인식 모드/도구: {self.active_mode or '없음'}")
+        return outcome
 
     def save_device_settings_safely(self):
         if getattr(self, 'settings_collecting', False):
-            return
+            log_event('device.settings.deferred', '설정 일괄 저장 대기', category='시스템', trace_id=getattr(self, '_settings_request_id', None), outcome='deferred')
+            return 'deferred'
         try:
             save_device_settings(self.device_settings)
         except OSError as exc:
+            log_event('device.settings.failed', '장치 설정 저장 실패', category='오류', level='ERROR', trace_id=getattr(self, '_settings_request_id', None), error=str(exc), outcome='failed')
             print(f"[장치 설정 오류] 저장 실패: {exc}")
+            return 'failed'
+        return 'saved'
 
     def set_mode(self, mode_key):
         if self.rps_session is not None:
@@ -1097,6 +1153,10 @@ class HolisticGuiApp(SettingsBridge):
         self.save_recognition_settings()
 
     def update_mode_status(self):
+        previous = getattr(self, '_logged_active_mode', None)
+        if previous != self.active_mode:
+            log_event('recognition.mode.changed', '인식 모드 변경', category='사용자 인식', previous=previous, current=self.active_mode)
+        self._logged_active_mode = self.active_mode
         self.clear_air_paths()
         self.reset_motion_states()
         self.update_mode_buttons()
@@ -1128,6 +1188,7 @@ class HolisticGuiApp(SettingsBridge):
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+            log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
         self.pending_frame = None
 
     def update_frame(self):
@@ -1143,6 +1204,7 @@ class HolisticGuiApp(SettingsBridge):
             has_frame, frame_bgr = self.cap.read()
 
         if not has_frame or frame_bgr is None:
+            log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
             self.status_var.set("\ud504\ub808\uc784\uc744 \uc77d\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
             self.release_camera()
             self.root.after(30, self.update_frame)
@@ -1284,14 +1346,21 @@ class HolisticGuiApp(SettingsBridge):
         )
 
     def send_interaction_event_if_changed(self, key, event):
-        signature = json.dumps(event, ensure_ascii=False, sort_keys=True)
+        # IDs are attached after semantic deduplication, preserving its behavior.
+        semantic = {field: value for field, value in event.items() if field not in ('trace_id', 'event_id')}
+        if isinstance(semantic.get('speech'), dict):
+            semantic['speech'] = {field: value for field, value in semantic['speech'].items() if field != 'trace_id'}
+        signature = json.dumps(semantic, ensure_ascii=False, sort_keys=True)
         if self.last_sent_interaction_events.get(key) == signature:
             return
         self.last_sent_interaction_events[key] = signature
         self.send_interaction_event(key, event)
 
     def send_interaction_event(self, key, event):
-        self.event_client.send(event)
+        payload = dict(event)
+        payload.setdefault('event_id', new_trace_id('recognition'))
+        payload.setdefault('trace_id', payload['event_id'])
+        self.event_client.send(payload)
 
     def send_recognition_state(self):
         event = self.build_recognition_state_event()
@@ -1338,6 +1407,7 @@ class HolisticGuiApp(SettingsBridge):
                 "sequence": self.speech_sequence,
                 "recognized_at": getattr(self, 'speech_recognized_at', None),
                 "session": getattr(self, 'speech_session', None),
+                "trace_id": getattr(self, 'latest_speech_trace_id', None),
                 "final": True,
             },
         }
@@ -1415,9 +1485,15 @@ class HolisticGuiApp(SettingsBridge):
 
         try:
             prediction = self.emotion_recognizer.predict(face_crop)
-        except Exception:
+        except Exception as exc:
+            log_throttled('recognition.inference.failed', '감정 추론 실패', category='오류', level='ERROR', key=f'emotion-inference:{id(self)}', error=str(exc), model=getattr(self, 'loaded_emotion_model_key', None))
+            self._emotion_inference_failed = True
             self.emotion_result = None
             return
+
+        if getattr(self, '_emotion_inference_failed', False):
+            log_event('recognition.inference.recovered', '감정 추론 복구', category='사용자 인식', model=getattr(self, 'loaded_emotion_model_key', None))
+            self._emotion_inference_failed = False
 
         scores = prediction["scores"]
         label = self.get_emotion_display_label(scores)
@@ -1541,6 +1617,7 @@ class HolisticGuiApp(SettingsBridge):
             },
         }
         text = f"RPS  L:{left_state}  R:{right_state}"
+        self._log_mode_result()
 
         cv2.putText(
             frame_bgr,
@@ -1562,6 +1639,7 @@ class HolisticGuiApp(SettingsBridge):
                 "direction": direction,
             },
         }
+        self._log_mode_result()
         cv2.putText(
             frame_bgr,
             f"Cham Cham Cham: {direction}",
@@ -1586,6 +1664,23 @@ class HolisticGuiApp(SettingsBridge):
             },
         }
         self.draw_mode_text(frame_bgr, "Air Drawing Active")
+        self._log_mode_result()
+
+    def _log_mode_result(self):
+        mode = self.mode_result.get('active')
+        result = self.mode_result.get('result')
+        if mode == 'air' and isinstance(result, dict):
+            signature_data = {'active': result.get('active'),
+                              'left_drawing': bool(result.get('left_points')),
+                              'right_drawing': bool(result.get('right_points'))}
+        else:
+            signature_data = result
+        signature = json.dumps([mode, signature_data], ensure_ascii=False, sort_keys=True)
+        if getattr(self, '_last_logged_mode_result', None) == signature:
+            return
+        self._last_logged_mode_result = signature
+        log_event('recognition.mode.result', '게임/그리기 인식 상태 변경', category='사용자 인식',
+                  trace_id=getattr(self, 'rps_session', None), mode=mode, result=result)
 
     def apply_wave_overlay(self, frame_bgr, frame_record):
         cached = self.always_results.get("wave")
@@ -2074,11 +2169,13 @@ class HolisticGuiApp(SettingsBridge):
         if self.is_shutting_down:
             return
         self.is_shutting_down = True
+        log_event('recognition.shutdown.started', '사용자 인식 종료 시작', category='사용자 인식')
         self.event_client.stop()
         self.stt.stop()
         self.release_camera()
         self.holistic.close()
         self.root.destroy()
+        log_event('recognition.shutdown.completed', '사용자 인식 종료 완료', category='사용자 인식')
 
 
 def main(background_mode=False, command_stream=None):

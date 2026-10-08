@@ -2,6 +2,7 @@
 import json
 import time
 from copy import deepcopy
+from app_logging import log_event, new_trace_id, write_protocol
 
 from app.device_settings import save_device_settings
 from recognition.stt_engine import LANGUAGE_OPTIONS, PROVIDER_OPTIONS, SENSITIVITY_OPTIONS, SILENCE_OPTIONS
@@ -45,15 +46,27 @@ class SettingsBridge:
 
     @staticmethod
     def emit_settings(message):
-        print('APP_SETTINGS ' + json.dumps(message, ensure_ascii=False), flush=True)
+        log_event('settings.recognition.ack', '인식 설정 응답 전송', category='시스템',
+                  trace_id=message.get('request_id'), payload=message)
+        write_protocol('APP_SETTINGS', message)
 
     def emit_settings_state(self):
         self.emit_settings({'kind': 'state', 'state': self.settings_state()})
 
-    def settings_result(self, request_id, ok, message):
+    def settings_result(self, request_id, ok, message, *, runtime_status=None):
         self.settings_apply_pending = False
+        saved = bool(getattr(self, '_settings_saved', False)) and request_id == getattr(self, '_settings_request_id', None)
+        runtime_status = runtime_status or ('applied' if ok else 'failed')
+        runtime_applied = None if runtime_status == 'unknown' else bool(ok)
+        log_event('settings.recognition.completed', '인식 설정 적용 결과',
+                  category='시스템' if ok else '오류', level='INFO' if ok else 'ERROR',
+                  trace_id=request_id, ok=ok, saved=saved,
+                  runtime_applied=runtime_applied, runtime_status=runtime_status, result_message=message)
         self.emit_settings({'kind': 'result', 'request_id': request_id, 'ok': ok,
-                            'message': message, 'state': self.settings_state()})
+                            'message': message, 'state': self.settings_state(),
+                            'saved': saved, 'runtime_applied': runtime_applied, 'runtime_status': runtime_status})
+        if request_id == getattr(self, '_settings_request_id', None):
+            self._settings_request_id = None
 
     def handle_settings_command(self, command):
         request = {}
@@ -62,6 +75,8 @@ class SettingsBridge:
             if not isinstance(request, dict):
                 raise ValueError('잘못된 설정 요청입니다.')
             action = request.get('action')
+            log_event('settings.recognition.request', '인식 설정 요청 수신', category='시스템',
+                      trace_id=request.get('request_id'), action=action, values=request.get('values'))
             if action == 'get':
                 self.emit_settings_state()
             elif action == 'refresh':
@@ -76,9 +91,15 @@ class SettingsBridge:
                 raise ValueError('지원하지 않는 설정 요청입니다.')
         except (ValueError, OSError, RuntimeError) as exc:
             request_id = request.get('request_id') if isinstance(request, dict) else None
+            log_event('settings.recognition.failed', '인식 설정 요청 실패', category='오류', level='ERROR',
+                      trace_id=request_id, error=str(exc))
             self.settings_result(request_id, False, f'사용자 인식 설정을 모두 적용하지 못했습니다: {exc}')
 
     def apply_unified_settings(self, request_id, patch):
+        self._settings_request_id = request_id or new_trace_id('settings')
+        self._settings_saved = False
+        log_event('settings.recognition.applying', '인식 설정 적용 시작', category='시스템',
+                  trace_id=self._settings_request_id, fields=list(patch) if isinstance(patch, dict) else [], patch=patch)
         if not isinstance(patch, dict):
             raise ValueError('설정 값이 올바르지 않습니다.')
         state = self.settings_state()
@@ -113,6 +134,8 @@ class SettingsBridge:
                 if self.cap is None:
                     self.camera_var.set(old_label)
                     self.start_selected_camera()
+                    log_event('settings.recognition.camera_restored', '이전 카메라 복원 시도', category='시스템',
+                              trace_id=request_id, requested=patch['camera'], restored=old_label, running=self.cap is not None)
                     raise RuntimeError('선택한 카메라를 열지 못했습니다. 이전 카메라로 복원을 시도했습니다.')
             else:
                 candidate = next(item for item in self.camera_candidates if f"index {item['index']} / {item['backend_label']}" == patch['camera'])
@@ -139,7 +162,10 @@ class SettingsBridge:
             self.settings_collecting = False
         try:
             save_device_settings(self.device_settings)
-        except OSError:
+            self._settings_saved = True
+            log_event('settings.recognition.saved', '인식 설정 파일 저장 완료', category='시스템',
+                      trace_id=request_id, fields=list(patch), saved=True)
+        except OSError as exc:
             self.device_settings = original_settings
             if previous_model is not None:
                 self.emotion_recognizer = previous_model
@@ -156,9 +182,18 @@ class SettingsBridge:
             if not self.rps_session:
                 self.active_mode = state['values']['mode']
                 self.update_mode_status()
+            log_event('settings.recognition.rolled_back', '저장 실패 후 설정 복원', category='오류', level='ERROR',
+                      trace_id=request_id, error=str(exc), saved=False, restored_fields=list(state['values']),
+                      restored_model=previous_model_key, camera_running=self.cap is not None,
+                      camera_selection_restored='camera' not in patch)
             raise
+        log_event('settings.recognition.runtime_configured', '인식 실행 설정 반영', category='시스템',
+                  trace_id=request_id, fields=list(patch), camera_running=self.cap is not None,
+                  stt_running=self.stt.is_running, stopped_device_effect='next_start')
         if self.stt.is_running and any(key in patch for key in STT_FIELDS):
             self.settings_apply_pending = True
+            log_event('settings.recognition.stt_restarting', '변경한 설정으로 음성 인식 재시작',
+                      category='사용자 인식', trace_id=request_id)
             self.stop_stt()
             deadline = time.monotonic() + 20
             self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline))
@@ -169,7 +204,9 @@ class SettingsBridge:
         if self.is_shutting_down:
             return
         if time.monotonic() > deadline:
-            self.settings_result(request_id, False, '설정은 저장했지만 음성 인식 재시작을 확인하지 못했습니다. 인식 콘솔에서 상태를 확인하세요.')
+            log_event('settings.recognition.stt_timeout', '설정 저장 후 음성 재시작 확인 시간 초과',
+                      category='오류', level='WARNING', trace_id=request_id, saved=True, runtime_status='unknown')
+            self.settings_result(request_id, False, '설정은 저장했지만 음성 인식 재시작을 확인하지 못했습니다. 인식 콘솔에서 상태를 확인하세요.', runtime_status='unknown')
             return
         if not started:
             if self.stt.is_running:

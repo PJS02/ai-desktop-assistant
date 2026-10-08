@@ -1,5 +1,6 @@
 """Immediate character commands, independent of persisted settings."""
 import time
+from app_logging import log_event, new_trace_id
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtCore import QRect
@@ -66,6 +67,9 @@ class ManualControl(QObject):
             host.update_action(mood)
         self.display_emotion_changed.emit(emotion or '')
         label = DISPLAY_EMOTION_NAMES[emotion] if emotion else '실제 감정 따르기'
+        log_event('character.expression.changed', '표정 표시 설정을 바꿨습니다.',
+                  category='캐릭터 상태', emotion=self.display_emotion, label=label,
+                  actual_mood=mood)
         print(f'[표정 설정] {label}')
 
     def _status(self, text):
@@ -73,6 +77,9 @@ class ManualControl(QObject):
             return
         self.status = text
         self.status_changed.emit(text)
+        log_event('character.manual.status', text, category='캐릭터 상태',
+                  trace_id=getattr(self, 'log_trace_id', None), active=self.active,
+                  motion=self.motion, direction=self.direction)
         print(f'[직접 조작] {text}')
 
     def _stop_horizontal(self):
@@ -119,18 +126,34 @@ class ManualControl(QObject):
 
     def execute(self, command):
         host = self.host
+        self.log_trace_id = new_trace_id('manual')
+        log_event('character.manual.requested', '캐릭터 직접 조작을 요청했습니다.',
+                  category='캐릭터 상태', trace_id=self.log_trace_id, command=command,
+                  dragging=host.is_dragging, on_ground=host.on_ground)
         if command not in COMMAND_LABELS:
+            log_event('character.manual.rejected', '알 수 없는 직접 조작 명령입니다.',
+                      category='오류', level='ERROR', trace_id=self.log_trace_id,
+                      command=command, reason='unknown_command')
             raise ValueError(f'Unknown character command: {command}')
         if host._character_closing:
+            log_event('character.manual.rejected', '종료 중인 캐릭터 조작 요청을 보류합니다.',
+                      category='캐릭터 상태', trace_id=self.log_trace_id, command=command, reason='closing')
             return
         if host.is_dragging:
+            log_event('character.manual.rejected', '드래그 중인 캐릭터 조작 요청을 보류합니다.',
+                      category='캐릭터 상태', trace_id=self.log_trace_id, command=command, reason='dragging')
             self._status('캐릭터를 놓은 뒤 다시 눌러 주세요.')
             return
         if command.startswith('jump') and not host.on_ground:
+            log_event('character.manual.rejected', '착지 전 점프 요청을 보류합니다.',
+                      category='캐릭터 상태', trace_id=self.log_trace_id, command=command, reason='not_grounded')
             self._status('착지한 뒤 점프할 수 있습니다.')
             return
         if command in {'wave', 'thinking', 'sleep'} and host.rig_view is None:
             if not list((host.assets_path / command).glob('frame_*.png')):
+                log_event('character.manual.rejected', '요청한 동작의 PNG 프레임이 없습니다.',
+                          category='캐릭터 상태', level='WARNING', trace_id=self.log_trace_id,
+                          command=command, reason='missing_asset', assets_path=str(host.assets_path))
                 self._status('현재 PNG 캐릭터에는 이 동작 이미지가 없습니다.')
                 return
         if command == 'resume':

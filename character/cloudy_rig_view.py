@@ -9,6 +9,8 @@ from __future__ import annotations
 from array import array
 from pathlib import Path
 import time
+import traceback
+from app_logging import log_event
 from PIL import Image
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
@@ -310,6 +312,9 @@ class CloudyRigView(QOpenGLWidget):
             self._pos = self._program.attributeLocation("pos")
             self._uv = self._program.attributeLocation("uv")
             self.context().aboutToBeDestroyed.connect(self._cleanup_gl)
+            log_event('renderer.opengl.ready', 'OpenGL 렌더 준비가 끝났습니다.',
+                      trace_id=getattr(self.planner, 'log_trace_id', None), rig_root=str(self.rig_root),
+                      device_pixel_ratio=self.devicePixelRatioF(), **self._diagnostic_snapshot())
         except Exception as exc:
             self._fail(exc)
 
@@ -325,7 +330,26 @@ class CloudyRigView(QOpenGLWidget):
         if self._error is None:
             self._error = str(exc)
             self._timer.stop()
+            log_event('renderer.opengl.failed', 'OpenGL 캐릭터 렌더에 실패했습니다.',
+                      category='오류', level='ERROR',
+                      trace_id=getattr(self.planner, 'log_trace_id', None),
+                      error=self._error, traceback=traceback.format_exc(),
+                      rig_root=str(self.rig_root), **self._diagnostic_snapshot(include_state=True))
             self.failed.emit(self._error)
+
+    def _diagnostic_snapshot(self, *, include_state=False):
+        """Diagnostics must not block fallback or native resource cleanup."""
+        snapshot = {}
+        try:
+            snapshot['stats'] = self.stats()
+        except Exception as exc:
+            snapshot['stats_error'] = str(exc)
+        if include_state:
+            try:
+                snapshot['state'] = self._state()
+            except Exception as exc:
+                snapshot['state_error'] = str(exc)
+        return snapshot
 
     def _load_texture(self, identity: str):
         name, part = self._identity_metadata[identity]
@@ -452,6 +476,8 @@ class CloudyRigView(QOpenGLWidget):
 
     def release(self):
         if not self._released:
+            log_event('renderer.opengl.released', 'OpenGL 캐릭터 렌더 자원을 해제합니다.',
+                      trace_id=getattr(self.planner, 'log_trace_id', None), **self._diagnostic_snapshot())
             self._released = True
             self._debug_painter = None
             self._timer.stop()

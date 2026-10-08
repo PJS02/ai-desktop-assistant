@@ -1,6 +1,7 @@
 """develop의 감정 이름과 작업 브랜치의 에셋 이름 사이의 호환 계층."""
 
 from pathlib import Path
+from app_logging import log_throttled
 
 
 def resolve_animation_asset(assets_path: Path, action: str) -> str:
@@ -11,5 +12,9 @@ def resolve_animation_asset(assets_path: Path, action: str) -> str:
         return "fear"
     if action in {"scared", "sad"}:
         if not (assets_path / action).is_dir() and not (assets_path / f"{action}.png").is_file():
+            log_throttled('renderer.sprite.fallback', '감정 에셋이 없어 idle로 대체합니다.',
+                          key=f'{assets_path}:{action}', interval=30,
+                          category='캐릭터 상태', level='WARNING', requested_action=action,
+                          selected_asset='idle', assets_path=str(assets_path), reason='missing_asset')
             return "idle"
     return action

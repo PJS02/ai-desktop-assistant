@@ -4,6 +4,7 @@ from pathlib import Path
 import secrets
 import time
 import uuid
+from app_logging import log_event
 
 from PyQt6.QtCore import QEvent, QRect, Qt, QTimer
 from PyQt6.QtGui import QCloseEvent, QPixmap
@@ -138,8 +139,15 @@ class RpsGameOverlay(QWidget):
 
     def _command(self, command):
         try:
-            return bool(self.send_command is not None and self.send_command(command))
+            sent = bool(self.send_command is not None and self.send_command(command))
+            log_event('game.rps.command', '가위바위보 인식 명령을 전송했습니다.' if sent else
+                      '가위바위보 인식 명령을 전송하지 못했습니다.', trace_id=self.session,
+                      category='캐릭터 상태' if sent else '오류', level='INFO' if sent else 'ERROR',
+                      command=command, sent=sent)
+            return sent
         except Exception as exc:
+            log_event('game.rps.command_failed', '가위바위보 인식 명령 전송 중 오류가 발생했습니다.',
+                      trace_id=self.session, category='오류', level='ERROR', command=command, error=str(exc))
             print(f"[가위바위보 연결 오류] {exc}")
             return False
 
@@ -152,6 +160,9 @@ class RpsGameOverlay(QWidget):
         self.start_round()
 
     def start_round(self):
+        if self.session:
+            log_event('game.rps.ended', '이전 가위바위보 판을 재시작합니다.',
+                      category='캐릭터 상태', trace_id=self.session, reason='restarted', state=self.state)
         self.timer.stop()
         self._end_recognition()
         # 매 판 새 세션을 사용해 재시작 전의 프레임을 받지 않는다.
@@ -160,6 +171,9 @@ class RpsGameOverlay(QWidget):
         self.tracker = HandTracker(self.session, now)
         # 사용자의 손을 받기 전에 선택을 확정한다.
         self.opponent = secrets.choice(tuple(HANDS))
+        log_event('game.rps.started', '가위바위보 판을 시작하고 캐릭터 손을 선택했습니다.',
+                  category='캐릭터 상태', trace_id=self.session, opponent=self.opponent,
+                  countdown_seconds=self.COUNTDOWN_SECONDS, capture_seconds=self.CAPTURE_SECONDS)
         self.player = self.result = None
         self.state = "countdown"
         self.deadline = now + self.COUNTDOWN_SECONDS
@@ -182,6 +196,8 @@ class RpsGameOverlay(QWidget):
         self.deadline = capture_at + self.CAPTURE_SECONDS
         # 준비 중 보여준 손이 아니라 카운트다운 종료 후의 손으로 판정한다.
         self.tracker = HandTracker(self.session, capture_at)
+        log_event('game.rps.waiting', '사용자의 손 판정을 기다립니다.', category='캐릭터 상태',
+                  trace_id=self.session, capture_at=capture_at, deadline=self.deadline)
         self.title.setText("보!")
         self.opponent_image.clear()
         self.opponent_image.setText("?")
@@ -195,10 +211,15 @@ class RpsGameOverlay(QWidget):
         if self.state == "countdown" and now >= self.deadline:
             self._begin_capture()
         if self.state == "waiting" and now >= self.deadline:
-            self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.")
+            self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
             return
+        previous_label = self.tracker.label
         if self.tracker.feed(payload, now) and self.state == "waiting":
             label = self.tracker.label
+            if label != previous_label:
+                log_event('game.rps.hand_observed', '사용자의 손 후보가 바뀌었습니다.',
+                          category='사용자 인식', trace_id=self.session,
+                          hand=label, previous_hand=previous_label, sample=payload.get('rps_game'))
             self.hint.setText(f"{HANDS[label]} · 잠시 유지해주세요." if label else
                               "한 손으로 가위·바위·보를 보여주세요.")
 
@@ -212,7 +233,7 @@ class RpsGameOverlay(QWidget):
                 self.opponent_image.setText(str(max(1, math.ceil(remaining))))
         if self.state == "waiting":
             if now >= self.deadline:
-                self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.")
+                self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
             else:
                 hand = self.tracker.stable_hand(now)
                 if hand:
@@ -244,6 +265,9 @@ class RpsGameOverlay(QWidget):
     def finish_round(self, hand):
         self.player = hand
         self.result = judge(hand, self.opponent)
+        log_event('game.rps.result', '가위바위보 결과를 확정했습니다.', category='캐릭터 상태',
+                  trace_id=self.session, player=hand, opponent=self.opponent, result=self.result,
+                  stable_samples=self.tracker.count if self.tracker else None)
         self.state = "reveal"
         self.deadline = time.time() + self.REVEAL_SECONDS
         self.title.setText(f"캐릭터 · {HANDS[self.opponent]}")
@@ -253,7 +277,10 @@ class RpsGameOverlay(QWidget):
         self.timer.start()
         self.update_position()
 
-    def finish_without_result(self, message):
+    def finish_without_result(self, message, *, reason='connection_failed'):
+        log_event('game.rps.no_result', '가위바위보 판정을 완료하지 못했습니다.',
+                  category='캐릭터 상태', level='WARNING', trace_id=self.session,
+                  reason=reason, detail=message, last_hand=self.tracker.label if self.tracker else None)
         self.state = "error"
         self.player = self.result = None
         self.deadline = time.time() + self.ERROR_SECONDS
@@ -290,6 +317,10 @@ class RpsGameOverlay(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent):
+        if self.session:
+            log_event('game.rps.ended', '가위바위보 판을 종료합니다.', category='캐릭터 상태',
+                      trace_id=self.session, state=self.state, result=self.result,
+                      player=self.player, opponent=self.opponent)
         self.timer.stop()
         self._end_recognition()
         self.state = "idle"

@@ -6,6 +6,8 @@ import os
 import threading
 import time
 import math
+import inspect
+from app_logging import log_event, log_throttled, new_trace_id
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
 from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent, QRegion
@@ -52,6 +54,17 @@ try:
     HAS_WINDOWS_API = True
 except (ImportError, OSError):
     HAS_WINDOWS_API = False
+
+
+def _with_log_context(callback, *args, log_context=None, **kwargs):
+    """Keep existing injected providers and test doubles with older signatures."""
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+        if log_context and log_context.get('trace_id') and any(p.name == 'log_context' or p.kind == p.VAR_KEYWORD for p in parameters):
+            kwargs['log_context'] = log_context
+    except (ValueError, TypeError):
+        pass
+    return callback(*args, **kwargs)
 
 
 class Surface:
@@ -381,6 +394,8 @@ class CharacterWidget(QLabel):
             on_dialogue=self._show_perception_dialogue,
             on_greeting=self._request_user_greeting,
             on_speech=self.dialogue_system.submit_speech,
+            on_speech_with_context=self.dialogue_system.submit_speech_with_context,
+            on_dialogue_with_context=lambda text, context: self._show_perception_dialogue(text, log_context=context),
         )
         self.dialogue_system.tts.speaking_changed.connect(self.perception_controller.set_speech_suppressed)
         self.dialogue_system.user_input_received.connect(lambda text, source: self._mark_character_interaction())
@@ -418,6 +433,7 @@ class CharacterWidget(QLabel):
                 view.show()
                 return
             except Exception as exc:
+                log_event('renderer.initialization_failed', '캐릭터 렌더러 초기화 실패', category='오류', level='ERROR', error=str(exc), fallback='PNG')
                 print(f"[Cloudy renderer] PNG fallback: {exc}")
                 if view is not None:
                     view.hide()
@@ -441,6 +457,8 @@ class CharacterWidget(QLabel):
         if self.rig_view is None or self._character_closing:
             return
         print(f"[Cloudy renderer] PNG fallback: {reason}")
+        log_event('renderer.fallback', 'PNG 렌더러로 전환', category='캐릭터 상태', level='WARNING', reason=str(reason),
+                  action=getattr(self, 'current_action', None), emotion=getattr(self, 'current_emotion', None))
         old_view = self.rig_view
         self.sprite_animator.release()
         self.sprite_animator.deleteLater()
@@ -572,10 +590,14 @@ class CharacterWidget(QLabel):
     def _on_perception_error(self, message):
         print(f"[외부 인식 수신기 오류] {message}")
 
-    def _show_perception_dialogue(self, text):
+    def _show_perception_dialogue(self, text, *, log_context=None):
+        context = log_context or {'trace_id': getattr(getattr(self, 'perception_controller', None), 'current_trace_id', None), 'source': 'perception'}
         if CharacterWidget._dialogue_is_busy(self):
-            return
-        self.dialogue_system.show_dialogue(text, duration=3000, use_narration=False)
+            log_event('perception.dialogue_blocked', '인식 반응 대화 대기 중', category='사용자 인식', trace_id=context.get('trace_id'), text=text, reason='conversation_busy')
+            return False
+        _with_log_context(self.dialogue_system.show_dialogue, text, duration=3000, use_narration=False, log_context=context)
+        log_event('perception.dialogue_shown', '인식 반응 말풍선 표시', category='사용자 인식', trace_id=context.get('trace_id'), text=text)
+        return True
 
     def _dialogue_is_busy(self):
         dialogue = getattr(self, 'dialogue_system', None)
@@ -594,13 +616,18 @@ class CharacterWidget(QLabel):
     def _show_automatic_ai_response(self, text):
         if not getattr(self, '_character_closing', False) and not CharacterWidget._dialogue_is_busy(self):
             self.dialogue_system.show_automatic_response(text)
+        else:
+            log_event('dialogue.automatic_signal_discarded', '자동 대사 표시 생략', category='대화·AI', text=text,
+                      reason='closing' if getattr(self, '_character_closing', False) else 'conversation_busy')
 
     def _request_user_greeting(self):
+        self._greeting_log_context = {'trace_id': getattr(getattr(self, 'perception_controller', None), 'current_trace_id', None), 'source': 'greeting'}
         if self._character_closing or self._manual_control_active():
             return
         self._pending_user_greeting_until = time.monotonic() + 10.0
         if not self._try_user_greeting():
             print('[사용자 인사] 캐릭터 동작이 끝난 뒤 인사하도록 보류함')
+            log_event('perception.greeting_deferred', '인사 동작 보류', category='사용자 인식', trace_id=self._greeting_log_context.get('trace_id'), deadline=self._pending_user_greeting_until)
             self._greeting_retry_timer.start()
 
     def _try_user_greeting(self):
@@ -612,6 +639,7 @@ class CharacterWidget(QLabel):
             self._greeting_retry_timer.stop()
             if not self._character_closing:
                 print('[사용자 인사] 보류 시간 초과: 인사를 취소함')
+                log_event('perception.greeting_cancelled', '보류 시간 초과', category='사용자 인식', trace_id=getattr(self, '_greeting_log_context', {}).get('trace_id'))
             return False
         if (self.is_dragging or self.is_jumping or not self.on_ground
                 or getattr(self, '_ball_session_active', False)
@@ -633,12 +661,19 @@ class CharacterWidget(QLabel):
             if (self.assets_path / 'wave').is_dir():
                 self.current_action = 'wave'
                 self.sprite_animator.play('wave', fps=24, loop=False)
-        self._show_perception_dialogue('안녕! 👋')
+        _with_log_context(self._show_perception_dialogue, '안녕! 👋', log_context=getattr(self, '_greeting_log_context', None))
         print('[사용자 인사] 캐릭터 인사 재생')
         return True
 
     def _shutdown_character_renderer(self):
         """Stop host callbacks before releasing the drawing backend."""
+        if not getattr(self, '_character_closing', False):
+            log_event('character.shutdown', '캐릭터 종료 시작', category='캐릭터 상태',
+                      action=getattr(self, 'current_action', None), moving=getattr(self, 'is_moving', False))
+            CharacterWidget._finish_pet_log(self, 'shutdown')
+            for context in getattr(self, '_automatic_log_contexts', {}).values():
+                log_event('dialogue.automatic_cancelled', '앱 종료로 자동 응답 무효화', category='대화·AI', trace_id=context.get('trace_id'))
+            getattr(self, '_automatic_log_contexts', {}).clear()
         self._character_closing = True
         self._automatic_request_generation = getattr(self, '_automatic_request_generation', 0) + 1
         self._automatic_request_active = False
@@ -864,12 +899,15 @@ class CharacterWidget(QLabel):
     
     def _on_activity_monitor(self):
         """Start ambient work only when the user conversation has released the UI."""
-        if (not HAS_CONTEXT or not self.gemini_config.get('api_key')
-                or getattr(self, '_character_closing', False)
-                or CharacterWidget._dialogue_is_busy(self)
-                or getattr(self, '_automatic_request_active', False)):
+        reason = ('context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
+                  else 'closing' if getattr(self, '_character_closing', False)
+                  else 'conversation_busy' if CharacterWidget._dialogue_is_busy(self)
+                  else 'request_in_flight' if getattr(self, '_automatic_request_active', False) else None)
+        if reason:
+            log_throttled('dialogue.automatic_skipped', '자동 대화 요청 대기', category='대화·AI', key=reason, reason=reason)
             return
         if time.time() - self.last_auto_dialogue_time < self.auto_dialogue_cooldown:
+            log_throttled('dialogue.automatic_skipped', '자동 대화 재요청 대기', category='대화·AI', key='cooldown', reason='cooldown', remaining=self.auto_dialogue_cooldown - (time.time() - self.last_auto_dialogue_time))
             return
 
         # Capture character/config state on the Qt thread. A new user input epoch
@@ -880,22 +918,29 @@ class CharacterWidget(QLabel):
         emotion = self.mood_system.get_emotion_description_for_prompt()
         tone = self.mood_system.get_emotion_tone_instructions()
         self._automatic_request_active = True
+        context = {'trace_id': new_trace_id('ambient'), 'source': 'activity', 'generation': generation, 'input_epoch': epoch}
+        if not hasattr(self, '_automatic_log_contexts'):
+            self._automatic_log_contexts = {}
+        self._automatic_log_contexts[generation] = context
+        log_event('dialogue.automatic_started', '자동 대화 관측 시작', category='대화·AI', trace_id=context['trace_id'], generation=generation, input_epoch=epoch)
         thread = threading.Thread(
             target=self._check_active_window_async,
-            args=(generation, epoch, dict(self.gemini_config), emotion, tone),
+            args=(generation, epoch, dict(self.gemini_config), emotion, tone, context),
             daemon=True, name=f'character-activity-{generation}')
         thread.start()
     
     def _check_active_window_async(self, generation, input_epoch, config,
-                                   emotion_description, tone_instruction):
+                                   emotion_description, tone_instruction, log_context=None):
         """A worker collects activity; all UI/result state is handled by a Qt slot."""
         info = None
         dialogue_text = None
         request_time = None
+        context = log_context or {'trace_id': new_trace_id('ambient'), 'source': 'activity'}
         try:
             # 활성 창 정보 수집
             info = get_active_window_info()
             if not info:
+                log_event('dialogue.automatic_no_window', '활성 창 정보 없음', category='대화·AI', trace_id=context['trace_id'])
                 return
             
             # 프로세스 이름으로 활동 분류
@@ -927,18 +972,19 @@ class CharacterWidget(QLabel):
                 f"{tone_instruction}\n"
                 f"\n위의 감정 상태와 말투 지침을 고려하여 활동에 대한 자연스러운 한두 문장의 반응을 생성하세요."
             )
-            print(f"[활동 감지] {category}: {process} - {title[:50]}")
-            print(f"[API 요청] Gemini 호출 중... (자동 감지, 감정 기반)")
+            log_event('dialogue.automatic_prompt', '활동 기반 Gemini 요청', category='대화·AI', trace_id=context['trace_id'], activity=info, activity_category=category, prompt=prompt, generation=generation, input_epoch=input_epoch)
             
             request_time = time.time()
-            response = call_gemini(prompt, config)
-            print(f"[Gemini 응답] {response[:100] if response else '(없음)'}")
+            response = _with_log_context(call_gemini, prompt, config, log_context=context)
+            log_event('dialogue.automatic_response', '활동 기반 응답 수신', category='대화·AI', trace_id=context['trace_id'], response=response,
+                      outcome='failed' if not response or DialogueSystem._is_error_response(response) else 'received')
             
             if response:
                 # The same decoder handles plain, JSON and fenced JSON output.
-                dialogue_text = self.dialogue_system._process_gemini_response(response)
+                dialogue_text = _with_log_context(self.dialogue_system._process_gemini_response, response, log_context=context)
         
         except Exception as e:
+            log_event('dialogue.automatic_failed', '활동 모니터링 실패', category='오류', level='ERROR', trace_id=context['trace_id'], error=str(e))
             print(f"[오류] 활동 모니터링 실패: {e}")
             import traceback
             traceback.print_exc()
@@ -946,12 +992,16 @@ class CharacterWidget(QLabel):
             if not getattr(self, '_character_closing', False):
                 self.automatic_response_ready.emit(
                     (generation, input_epoch, dialogue_text, info, request_time))
+            else:
+                log_event('dialogue.automatic_discarded', '종료 후 자동 응답 폐기', category='대화·AI', trace_id=context['trace_id'], reason='closing')
 
     @pyqtSlot(object)
     def _finish_automatic_response(self, result):
         generation, epoch, text, info, request_time = result
+        context = getattr(self, '_automatic_log_contexts', {}).pop(generation, {'trace_id': None, 'source': 'activity'})
         if (getattr(self, '_character_closing', False)
                 or generation != self._automatic_request_generation):
+            log_event('dialogue.automatic_discarded', '이전 자동 응답 폐기', category='대화·AI', trace_id=context.get('trace_id'), generation=generation, reason='closing_or_generation_changed')
             return
         self._automatic_request_active = False
         if request_time is not None:
@@ -959,7 +1009,10 @@ class CharacterWidget(QLabel):
         if info:
             self.last_detected_activity = info
         if text:
-            self.dialogue_system.show_automatic_response(text, expected_input_epoch=epoch)
+            shown = _with_log_context(self.dialogue_system.show_automatic_response, text, expected_input_epoch=epoch, log_context=context)
+            log_event('dialogue.automatic_finished', '자동 대화 처리 완료', category='대화·AI', trace_id=context.get('trace_id'), shown=bool(shown), input_epoch=epoch, current_input_epoch=self.dialogue_system.user_input_epoch)
+        else:
+            log_event('dialogue.automatic_finished', '표시할 자동 대화 없음', category='대화·AI', trace_id=context.get('trace_id'), shown=False, reason='empty_response_or_no_window')
     
     def _convert_error_to_dialogue(self, error_response: str) -> str:
         """Gemini 에러를 캐릭터 대사로 변환"""
@@ -1147,6 +1200,8 @@ class CharacterWidget(QLabel):
             path = self.assets_path / f"{action}.png"
             if path.exists():
                 pixmap = QPixmap(str(path))
+                if pixmap.isNull():
+                    log_event('sprite.image_invalid', '캐릭터 PNG 읽기 실패', category='오류', level='ERROR', path=str(path), action=action)
                 self.current_pixmap = pixmap  # 원본 이미지 저장 (필수!)
                 self.set_pixmap_with_flip(pixmap)
             else:
@@ -1159,6 +1214,7 @@ class CharacterWidget(QLabel):
     
     def on_animation_finished(self):
         """애니메이션이 종료됨 (loop=False인 경우)"""
+        log_event('character.animation_finished', '캐릭터 동작 종료', category='캐릭터 상태', action=getattr(self.sprite_animator, 'current_action', None))
         # walk 애니메이션 끝나면 다시 idle로
         if self.rig_view is not None:
             if self.sprite_animator.current_action in {"wave", "land"}:
@@ -1369,12 +1425,16 @@ class CharacterWidget(QLabel):
 
             self.is_dragging = True
             self.drag_time = 0
+            self._drag_trace_id = new_trace_id('drag')
+            self._drag_start_position = (self.x(), self.y())
+            log_event('character.drag_started', '드래그 시작', category='캐릭터 상태', trace_id=self._drag_trace_id, position=self._drag_start_position)
             
             # 진행 중인 이동 로직 완전히 중지
             if self.is_moving:
                 print(f"[드래그 시작] 이동 중단")
                 self._move_timer.stop()
                 self.is_moving = False
+                log_event('character.movement_stopped', '드래그로 이동 중단', category='캐릭터 상태', reason='drag_started', position=(self.x(), self.y()))
                 self.sprite_animator.stop()
             
             # 드래그 시작 시 hovering 애니메이션 로드 (한 번만)
@@ -1422,6 +1482,7 @@ class CharacterWidget(QLabel):
             # 너무 빠른 이벤트는 기준점을 갱신하지 않아 이동량을 합산한다.
             return
         if elapsed > 0.5:
+            CharacterWidget._finish_pet_log(self, 'input_gap')
             # 오래 끊긴 뒤의 이동은 새로운 쓰다듬기 시작점으로 취급한다.
             self._pet_last_position = current_pos
             self._pet_last_time = current_time
@@ -1443,6 +1504,11 @@ class CharacterWidget(QLabel):
             return
 
         reward = self.mood_system.on_pet(movement_speed, elapsed)
+        if not getattr(self, '_pet_trace_id', None):
+            self._pet_trace_id = new_trace_id('pet')
+            self._pet_log_start_count = self._pet_log_count
+            self._pet_log_start_reward = self._pet_log_reward
+            log_event('character.pet_started', '쓰다듬기 시작', category='캐릭터 상태', trace_id=self._pet_trace_id, speed=movement_speed)
         self._last_pet_time = current_time
         self._mark_character_interaction()
         self._pet_log_count += 1
@@ -1464,11 +1530,32 @@ class CharacterWidget(QLabel):
             )
             self._pet_session_logged = True
 
+    def _finish_pet_log(self, reason):
+        trace_id = getattr(self, '_pet_trace_id', None)
+        if trace_id:
+            log_event('character.pet_finished', '쓰다듬기 구간 종료', category='캐릭터 상태', trace_id=trace_id,
+                      reason=reason, count=getattr(self, '_pet_log_count', 0) - getattr(self, '_pet_log_start_count', 0),
+                      reward=getattr(self, '_pet_log_reward', 0) - getattr(self, '_pet_log_start_reward', 0),
+                      total_count=getattr(self, '_pet_total_count', 0), mood=CharacterWidget._log_mood_snapshot(self))
+            self._pet_trace_id = None
+
+    def _log_mood_snapshot(self):
+        mood = getattr(self, 'mood_system', None)
+        if mood is None:
+            return None
+        try:
+            return {'state': mood.get_russell_state(), 'emotion': mood.decide_emotion(),
+                    'target': {'valence': getattr(mood, '_target_valence', None), 'arousal': getattr(mood, '_target_arousal', None)},
+                    'occ': {str(getattr(key, 'value', key)): value for key, value in getattr(mood, 'occ_intensities', {}).items()}}
+        except Exception as exc:
+            return {'unavailable': str(exc)}
+
     def enterEvent(self, event):
         self._cursor_over_character = True
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        CharacterWidget._finish_pet_log(self, 'cursor_left')
         self._cursor_over_character = False
         self._pet_last_position = None
         self._pet_session_logged = False
@@ -1476,6 +1563,8 @@ class CharacterWidget(QLabel):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        drag_duration = getattr(self, 'drag_time', 0)
+        was_dragging = getattr(self, 'is_dragging', False)
         self.is_dragging = False
         self.is_jumping = False
         self._jump_physics_y = None
@@ -1495,6 +1584,9 @@ class CharacterWidget(QLabel):
         # 저장된 드래그 속도가 있으면 그것을 사용, 없으면 0
         self.velocity_x = getattr(self, '_drag_velocity_x', 0) * 0.5  # 0.5배 감쇠
         self.velocity_y = getattr(self, '_drag_velocity_y', 0) * 0.5
+        if was_dragging:
+            log_event('character.drag_finished', '드래그 종료', category='캐릭터 상태', trace_id=getattr(self, '_drag_trace_id', None), duration=drag_duration,
+                      start_position=getattr(self, '_drag_start_position', None), release_position=(self.x(), self.y()), velocity_x=self.velocity_x, velocity_y=self.velocity_y, mood=CharacterWidget._log_mood_snapshot(self))
         
         # 드래그 속도 저장 변수 초기화
         self._drag_velocity_x = 0
@@ -1600,7 +1692,7 @@ class CharacterWidget(QLabel):
             self.rig_view.set_debug_painter(self._paint_debug if self.show_debug else None)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, *, trace_id=None):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
         same_width = self.custom_screen_width == requested_width
@@ -1640,6 +1732,9 @@ class CharacterWidget(QLabel):
             if not same_height:
                 self._screen_auto_height = requested_height >= bounds.height()
         size_changed = self._scaled_character_size() != (old_width, old_height)
+        log_event('settings.character.runtime_applied', '캐릭터 설정 실행 적용', category='시스템', trace_id=trace_id,
+                  requested_bounds=(requested_width, requested_height), effective_bounds=(width, height),
+                  personality=personality, options=options, resize_required=size_changed or bounds_changed)
         if not size_changed and not bounds_changed:
             return
         self._move_timer.stop()
@@ -1670,6 +1765,9 @@ class CharacterWidget(QLabel):
             self._grounded_surface_level = standing_surface.y_level
         self.animation_controller.update_base_pos(self.pos())
         self.dialogue_system.update_dialogue_position()
+
+        log_event('settings.character.geometry_applied', '캐릭터 크기·위치 적용', category='시스템', trace_id=trace_id,
+                  size=(self.width(), self.height()), position=(self.x(), self.y()), grounded=self.on_ground)
 
 
     def select_ball(self):
@@ -2134,6 +2232,7 @@ class CharacterWidget(QLabel):
         self.is_moving = True
         self.animation_controller.idle.stop()
         self._move_timer.start(16)
+        log_event('character.movement_started', '랜덤 이동 시작', category='캐릭터 상태', source='random', position=(self.x(), self.y()), target_x=target_x, emotion=emotion, move_range=move_range)
 
     def move_toward_ball(self, ball_x: int) -> None:
         """Scale configured pixels/second by PJS02's emotion and intensity."""
@@ -2153,9 +2252,16 @@ class CharacterWidget(QLabel):
         left, right = CharacterWidget._horizontal_limits(self)
         target_x = max(left, min(target_x, right))
         delta_x = target_x - self.x()
+        if not was_chasing:
+            log_event('character.ball_chase_started', '공 추적 이동 시작', category='캐릭터 상태', target_x=target_x, position=(self.x(), self.y()))
+            self._ball_arrival_logged = False
         if delta_x == 0:
+            if not getattr(self, '_ball_arrival_logged', False):
+                log_event('character.ball_chase_arrived', '공 이동 목표 도착', category='캐릭터 상태', target_x=target_x, position=(self.x(), self.y()))
+                self._ball_arrival_logged = True
             self._chase_last_time = None
             return
+        self._ball_arrival_logged = False
 
         emotion_info = self.mood_system.decide_emotion()
         emotion = emotion_info.get("emotion", "neutral")
@@ -2283,6 +2389,7 @@ class CharacterWidget(QLabel):
         left, right = CharacterWidget._horizontal_limits(self)
         target = max(left, min(target, right))
         if self._advance_horizontal(target, elapsed):
+            log_event('character.movement_arrived', '이동 목표 도착', category='캐릭터 상태', target_x=target, position=(self.x(), self.y()))
             self._move_timer.stop()
             self.is_moving = False
             

@@ -24,13 +24,16 @@ def test_mediapipe_manager_starts_hidden_with_current_python(tmp_path):
     assert kwargs["cwd"] == str(app_main.PROJECT_ROOT)
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["stdout"] is subprocess.PIPE
-    assert kwargs["stderr"] is subprocess.STDOUT
+    # Keep stderr separate so native/library failures retain their severity.
+    assert kwargs["stderr"] is subprocess.PIPE
     assert kwargs["text"] is True
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     assert kwargs["bufsize"] == 1
     assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
     assert kwargs["env"]["PYTHONUNBUFFERED"] == "1"
+    assert kwargs['env']['CAPSTONE_LOG_PROTOCOL'] == '1'
+    assert kwargs['env']['CAPSTONE_LOG_SESSION'] == app_main.SESSION_ID
 
 
 def test_mediapipe_manager_skips_missing_script(tmp_path):

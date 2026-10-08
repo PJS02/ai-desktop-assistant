@@ -1,6 +1,7 @@
 import math
 from copy import deepcopy
 from datetime import datetime
+from app_logging import log_event, log_throttled
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -743,8 +744,15 @@ class RussellEmotionDialog(QDialog):
             try:
                 snapshot = self._explanation_provider()
             except Exception as exc:
-                print(f"[RussellEmotionDialog] 설명 데이터 갱신 실패: {exc}")
+                self._explanation_provider_failed = True
+                log_throttled('mood.ui.explanation_failed', '감정 설명 공급자 갱신에 실패했습니다.',
+                              key=f'explanation:{id(self)}', interval=5,
+                              category='오류', level='ERROR', error=str(exc))
             else:
+                if getattr(self, '_explanation_provider_failed', False):
+                    log_event('mood.ui.explanation_recovered', '감정 설명 공급자 갱신을 복구했습니다.',
+                              category='캐릭터 상태')
+                    self._explanation_provider_failed = False
                 # The explanation already contains coordinates and intensity.
                 # Record one graph sample per refresh, preserving the 45s span.
                 self.update_explanation(snapshot)
@@ -753,8 +761,17 @@ class RussellEmotionDialog(QDialog):
             return
         try:
             valence, arousal, dominant = self._state_provider()
-        except Exception:
+        except Exception as exc:
+            self._state_provider_failed = True
+            log_throttled('mood.ui.state_fallback', '감정 좌표 공급자가 실패해 중립값을 표시합니다.',
+                          key=f'state:{id(self)}', interval=5,
+                          category='오류', level='ERROR', error=str(exc), fallback=[0.0, 0.0, 'neutral'])
             valence, arousal, dominant = 0.0, 0.0, "neutral"
+        else:
+            if getattr(self, '_state_provider_failed', False):
+                log_event('mood.ui.state_recovered', '감정 좌표 공급자 갱신을 복구했습니다.',
+                          category='캐릭터 상태')
+                self._state_provider_failed = False
         self.update_state(valence, arousal, dominant)
 
     def start_auto_refresh(self, interval_ms: int = 250) -> None:
