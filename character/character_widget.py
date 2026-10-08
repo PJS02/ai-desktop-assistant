@@ -1565,11 +1565,11 @@ class CharacterWidget(QLabel):
         settings_action.triggered.connect(self.show_settings)
         console_action = menu.addAction("사용자인식 콘솔")
         console_action.triggered.connect(self.show_perception_console)
+        show_action = menu.addAction("감정 판단 근거 보기")
+        show_action.triggered.connect(self.show_russell_dialog)
         menu.addSeparator()
         ball_action = menu.addAction("공 꺼내기")
         ball_action.triggered.connect(self.select_ball)
-        show_action = menu.addAction("감정 판단 근거 보기")
-        show_action.triggered.connect(self.show_russell_dialog)
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)

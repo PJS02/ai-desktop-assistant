@@ -20,11 +20,26 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics, QPainterPath
-from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 
 
 class RussellEmotionCanvas(QWidget):
     state_changed = pyqtSignal(float, float, str)
+    RING_LABELS = (
+        ("초조한", 112.5),
+        ("들뜬", 67.5),
+        ("의기양양한", 45),
+        ("행복한", 22.5),
+        ("고요한", -22.5),
+        ("만족한", -45),
+        ("차분한", -67.5),
+        ("힘든", -112.5),
+        ("우울한", -135),
+        ("슬픈", -157.5),
+        ("괴로운", 157.5),
+        ("속상한", 135),
+    )
+    AXIS_LABELS = (("흥분 +", 90), ("조용 -", -90), ("불쾌 -", 180), ("유쾌 +", 0))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -75,11 +90,35 @@ class RussellEmotionCanvas(QWidget):
             self.valence_current = self.valence_target
             self.arousal_current = self.arousal_target
 
+    def _label_metrics(self):
+        return QFontMetrics(QFont("Malgun Gothic", 9), self)
+
+    def _label_rect(self, text, angle_deg, radius, center, metrics):
+        angle = math.radians(angle_deg)
+        dx, dy = math.cos(angle), -math.sin(angle)
+        width, height = metrics.horizontalAdvance(text) + 2, metrics.height()
+        # Keep the whole text box beyond the circle's tangent, with an equal gap.
+        offset = 10 + abs(dx) * width / 2 + abs(dy) * height / 2
+        x = center.x() + (radius + offset) * dx
+        y = center.y() + (radius + offset) * dy
+        return QRectF(x - width / 2, y - height / 2, width, height)
+
     def _plot_geometry(self):
-        rect = self.rect().adjusted(55, 45, -55, -45)
-        radius = min(rect.width(), rect.height()) / 2
-        center = QPointF(rect.center())
-        return rect, radius, center
+        center = QPointF(self.width() / 2, self.height() / 2)
+        horizontal_space, vertical_space = center.x() - 8, center.y() - 8
+        radius = min(horizontal_space, vertical_space)
+        metrics = self._label_metrics()
+        for text, angle_deg in self.RING_LABELS + self.AXIS_LABELS:
+            angle = math.radians(angle_deg)
+            dx, dy = abs(math.cos(angle)), abs(math.sin(angle))
+            half_width, half_height = (metrics.horizontalAdvance(text) + 2) / 2, metrics.height() / 2
+            offset = 10 + dx * half_width + dy * half_height
+            if dx > 1e-6:
+                radius = min(radius, (horizontal_space - half_width) / dx - offset)
+            if dy > 1e-6:
+                radius = min(radius, (vertical_space - half_height) / dy - offset)
+        radius = max(1.0, radius)
+        return QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2), radius, center
 
     def _emotion_from_coordinates(self, valence: float, arousal: float) -> str:
         emotion_points = {
@@ -180,41 +219,15 @@ class RussellEmotionCanvas(QWidget):
         painter.setPen(QPen(QColor(0, 0, 0), 1))
         label_font = QFont("Malgun Gothic", 9)
         painter.setFont(label_font)
-        metrics = QFontMetrics(label_font)
+        metrics = self._label_metrics()
+        for text, angle_deg in self.RING_LABELS + self.AXIS_LABELS:
+            label_rect = self._label_rect(text, angle_deg, radius, center, metrics)
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, text)
 
-        def draw_label(text: str, x: float, y: float):
-            w = metrics.horizontalAdvance(text)
-            h = metrics.height()
-            painter.drawText(int(x - w / 2), int(y + h / 2), text)
-
-        draw_label("흥분 +", center.x(), center.y() - radius - 12)
-        draw_label("조용 -", center.x(), center.y() + radius + 18)
-        draw_label("불쾌 -", center.x() - radius - 22, center.y())
-        draw_label("유쾌 +", center.x() + radius + 22, center.y())
-
-        ring_labels = [
-            ("초조한", 130),
-            ("들뜬", 60),
-            ("의기양양한", 30),
-            ("행복한", 10),
-            ("만족한", -10),
-            ("고요한", -40),
-            ("만족한", -65),
-            ("힘든", -130),
-            ("우울한", -150),
-            ("슬픈", -170),
-            ("괴로운", 160),
-            ("속상한", 145),
-        ]
-
-        for text, angle_deg in ring_labels:
-            angle_rad = angle_deg * math.pi / 180.0
-            r = radius + 16
-            x = center.x() + r * math.cos(angle_rad)
-            y = center.y() - r * math.sin(angle_rad)
-            draw_label(text, x, y)
-
-        draw_label("중립", center.x(), center.y())
+        neutral_width, neutral_height = metrics.horizontalAdvance("중립") + 2, metrics.height()
+        neutral_rect = QRectF(center.x() - neutral_width / 2, center.y() + 6,
+                             neutral_width, neutral_height)
+        painter.drawText(neutral_rect, Qt.AlignmentFlag.AlignCenter, "중립")
 
         # 최근 판단 사건의 Russell 좌표 궤적. 오래된 선은 옅고 최신 선은 진하다.
         if len(self.coordinate_history) >= 2:
