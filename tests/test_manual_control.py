@@ -297,23 +297,61 @@ def test_display_controls_apply_immediately_reopen_and_reset_independent_of_moti
     controller.show()
     dialog = controller.dialog
     dialog.tabs.setCurrentIndex(4)
-    dialog.display_emotion.setCurrentIndex(dialog.display_emotion.findData('sad'))
     before = deepcopy(host.mood_system.get_emotion_explanation())
-    QTest.mouseClick(dialog.display_emotion_apply, Qt.MouseButton.LeftButton)
-    assert host.mood_system.get_emotion_explanation() == before and not host.manual_control.active
-    assert host.current_action == 'sad'
-    assert '슬픔' in dialog.display_emotion_status.text()
+    applies = []
+    dialog.apply_requested.connect(applies.append)
+    assert set(dialog.display_emotion_buttons) == {name for name, _ in DISPLAY_EMOTIONS}
+    assert dialog.display_emotion_reset.isChecked()
+    assert dialog.display_emotion_group.checkedButton() is dialog.display_emotion_reset
+    for emotion, label in DISPLAY_EMOTIONS:
+        button = dialog.display_emotion_buttons[emotion]
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        assert host.manual_control.display_emotion == emotion
+        assert dialog.display_emotion_group.checkedButton() is button
+        assert button.isChecked() and not dialog.display_emotion_reset.isChecked()
+        assert sum(item.isChecked() for item in dialog.display_emotion_buttons.values()) == 1
+        assert label in dialog.display_emotion_status.text()
+        assert host.mood_system.get_emotion_explanation() == before
+        assert not host.manual_control.active
+    assert applies == []
     assert dialog.changes() == {'local': {}, 'remote': {}}
+    assert not config_manager.CONFIG_FILE.exists()
+
+    # Changing the face during a manual walk must preserve the movement command.
+    QTest.mouseClick(dialog.command_buttons['walk_right'], Qt.MouseButton.LeftButton)
+    host.manual_control.timer.stop()  # Keep the position stable while testing face buttons.
+    motion = (host.manual_control.active, host.manual_control.motion, host.manual_control.direction,
+              host.manual_control.pending_pose, host.is_moving, host.pos(), host.velocity_y)
+    QTest.mouseClick(dialog.display_emotion_buttons['sad'], Qt.MouseButton.LeftButton)
+    assert host.manual_control.display_emotion == 'sad'
+    assert (host.manual_control.active, host.manual_control.motion, host.manual_control.direction,
+            host.manual_control.pending_pose, host.is_moving, host.pos(), host.velocity_y) == motion
+    assert host.mood_system.get_emotion_explanation() == before
+    dialog.reject()
+    controller.show()
+    dialog = controller.dialog
+    dialog.apply_requested.connect(applies.append)
+    assert dialog.display_emotion_buttons['sad'].isChecked()
+    assert dialog.display_emotion_group.checkedButton() is dialog.display_emotion_buttons['sad']
+    assert not dialog.display_emotion_reset.isChecked()
+    dialog.tabs.setCurrentIndex(4)
+    QTest.mouseClick(dialog.display_emotion_reset, Qt.MouseButton.LeftButton)
+    assert host.manual_control.display_emotion is None
+    assert dialog.display_emotion_reset.isChecked()
+    assert dialog.display_emotion_group.checkedButton() is dialog.display_emotion_reset
+    assert not any(button.isChecked() for button in dialog.display_emotion_buttons.values())
+    assert (host.manual_control.active, host.manual_control.motion, host.manual_control.direction,
+            host.manual_control.pending_pose, host.is_moving, host.pos(), host.velocity_y) == motion
+    assert host.current_action.startswith('walk')
+    assert host.mood_system.get_emotion_explanation() == before
+    assert applies == [] and dialog.changes() == {'local': {}, 'remote': {}}
     assert not config_manager.CONFIG_FILE.exists()
     dialog.reject()
     controller.show()
     dialog = controller.dialog
-    assert dialog.display_emotion.currentData() == 'sad'
-    dialog.tabs.setCurrentIndex(4)
-    QTest.mouseClick(dialog.display_emotion_reset, Qt.MouseButton.LeftButton)
-    assert host.manual_control.display_emotion is None
-    assert dialog.display_emotion.currentData() == '' and host.current_action == 'idle'
-    assert host.mood_system.get_emotion_explanation() == before
+    assert dialog.display_emotion_reset.isChecked()
+    assert dialog.display_emotion_group.checkedButton() is dialog.display_emotion_reset
+    assert not any(button.isChecked() for button in dialog.display_emotion_buttons.values())
     dialog.reject()
 
 

@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QComboBox
 
 from character import ai_settings, config_manager
 from character.settings_dialog import SettingsDialog
@@ -65,32 +65,49 @@ def test_cancel_does_not_apply_and_refresh_preserves_draft(qt_app):
     assert tuple(dialog.resolution_preset.currentData()) == (1920, 1080)
     app = recognition_app()
     dialog.set_remote(app.settings_state())
-    dialog.controls['mirror'].setChecked(True)
+    dialog.controls['language'].setCurrentIndex(dialog.controls['language'].findData('en-US'))
     dialog.width.setValue(1280)
     dialog.set_remote(app.settings_state(), preserve_draft=True)
-    assert dialog.controls['mirror'].isChecked()
+    assert dialog.controls['language'].currentData() == 'en-US'
+    assert dialog.width.value() == 1280
     emitted = []
     dialog.apply_requested.connect(emitted.append)
     dialog.reject()
     assert emitted == []
     assert dialog.local_baseline == local_settings()
+    assert app.stt_language_var.get() == 'ko-KR'
 
 
 def test_apply_emits_only_changed_fields_and_waits_for_ack(qt_app):
     dialog = SettingsDialog(local_settings())
     app = recognition_app()
-    dialog.set_remote(app.settings_state())
+    app.rps_session, app.rps_previous_mode = 'session', 'air'
+    state = app.settings_state()
+    assert state['game_active']
+    dialog.set_remote(state)  # An active game cannot access the removed mode control.
+    hidden = {'mode', 'emotion', 'always_recognition', 'tracking', 'marker_only',
+              'mirror', 'info_overlay', 'timestamps'}
+    assert hidden.isdisjoint(dialog.controls)
+    assert {key: dialog.remote_baseline[key] for key in hidden} == {
+        key: state['values'][key] for key in hidden}
+    assert isinstance(dialog.controls['provider'], QComboBox)
+    assert dialog.controls['provider'].currentData() == 'google'
     dialog.controls['language'].setCurrentIndex(dialog.controls['language'].findData('en-US'))
     emitted = []
     dialog.apply_requested.connect(emitted.append)
     dialog.submit(True)
     assert dialog.pending
     assert emitted == [{'local': {}, 'remote': {'language': 'en-US'}}]
+    assert hidden.isdisjoint(emitted[0]['remote'])
     dialog.reject()
     assert dialog.pending
     dialog.complete('failed', False, remote=app.settings_state())
     assert not dialog.pending
     assert dialog.controls['language'].currentData() == 'en-US'
+    assert 'provider' in dialog.controls and hidden.isdisjoint(dialog.controls)
+    assert {key: dialog.remote_baseline[key] for key in hidden} == {
+        key: state['values'][key] for key in hidden}
+    assert app.settings_state()['values'] == state['values']
     dialog.close()
 
 

@@ -3,7 +3,7 @@ from copy import deepcopy
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -71,6 +71,8 @@ class SettingsDialog(QDialog):
             QScrollArea > QWidget > QWidget { background: white; }
             QLineEdit, QComboBox, QSpinBox { min-height: 28px; padding: 3px; border: 1px solid #dce2ea; border-radius: 5px; background: white; }
             QPushButton { padding: 8px 15px; }
+            QPushButton#emotionButton { background: white; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
+            QPushButton#emotionButton:checked { background: #e8f1fd; color: #2463b6; border: 2px solid #2463b6; font-weight: 600; }
             QLabel { color: #202936; }
             QScrollBar:vertical { width: 8px; background: #f6f8fb; }
             QScrollBar::handle:vertical { background: #cbd5e1; min-height: 40px; border-radius: 4px; }
@@ -232,20 +234,33 @@ class SettingsDialog(QDialog):
         heading = QLabel('보이는 감정 설정')
         heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
         form.addRow(heading)
-        self.display_emotion = self._combo(
-            [('실제 감정 따르기', '')] + [(label, name) for name, label in DISPLAY_EMOTIONS], '')
-        self.display_emotion_apply = QPushButton('표정 적용')
-        self.display_emotion_apply.setAutoDefault(False)
-        self.display_emotion_apply.clicked.connect(
-            lambda: self.display_emotion_requested.emit(self.display_emotion.currentData()))
-        row = QWidget()
-        line = QHBoxLayout(row)
-        line.setContentsMargins(0, 0, 0, 0)
-        line.addWidget(self.display_emotion, 1)
-        line.addWidget(self.display_emotion_apply)
-        form.addRow(row)
-        self.display_emotion_reset = QPushButton('실제 감정 표정으로 돌아가기')
+        self.display_emotion_buttons = {}
+        self.display_emotion_group = QButtonGroup(self)
+        self.display_emotion_group.setExclusive(True)
+        buttons = QWidget()
+        grid = QGridLayout(buttons)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
+        for index, (emotion, label) in enumerate(DISPLAY_EMOTIONS):
+            button = QPushButton(label)
+            button.setObjectName('emotionButton')
+            button.setAutoDefault(False)
+            button.setCheckable(True)
+            button.setMinimumHeight(34)
+            button.clicked.connect(
+                lambda _checked=False, value=emotion: self.display_emotion_requested.emit(value))
+            self.display_emotion_group.addButton(button)
+            self.display_emotion_buttons[emotion] = button
+            grid.addWidget(button, index // 3, index % 3)
+        form.addRow(buttons)
+        self.display_emotion_reset = QPushButton('실제 감정 따르기')
+        self.display_emotion_reset.setObjectName('emotionButton')
         self.display_emotion_reset.setAutoDefault(False)
+        self.display_emotion_reset.setCheckable(True)
+        self.display_emotion_group.addButton(self.display_emotion_reset)
         self.display_emotion_reset.clicked.connect(lambda: self.display_emotion_requested.emit(''))
         form.addRow(self.display_emotion_reset)
         self.display_emotion_status = QLabel()
@@ -262,7 +277,8 @@ class SettingsDialog(QDialog):
         self.manual_status.setText(message)
 
     def set_display_emotion_state(self, emotion):
-        self.display_emotion.setCurrentIndex(max(0, self.display_emotion.findData(emotion)))
+        selected = self.display_emotion_buttons.get(emotion, self.display_emotion_reset)
+        selected.setChecked(True)
         self.display_emotion_status.setText(
             f'표정 고정 중 · {DISPLAY_EMOTION_NAMES[emotion]}' if emotion else '현재 표정: 실제 감정 따르기')
 
@@ -330,7 +346,7 @@ class SettingsDialog(QDialog):
             self.fields_form.removeRow(0)
         self.controls = {}
         choices = state['choices']
-        labels = {'camera': '카메라', 'microphone': '마이크', 'mode': '인식 모드',
+        labels = {'camera': '카메라', 'microphone': '마이크',
                   'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
                   'language': '인식 언어', 'silence': '발화 종료 대기', 'sensitivity': '마이크 민감도'}
         for key, label in labels.items():
@@ -340,16 +356,6 @@ class SettingsDialog(QDialog):
                 combo.setEnabled(False)
             self.controls[key] = combo
             self.fields_form.addRow(label, combo)
-        toggles = {'emotion': '감정 인식', 'always_recognition': '상시 동작 인식',
-                   'tracking': '트래킹 표시', 'marker_only': '검은 화면에 마커만 표시',
-                   'mirror': '좌우 반전', 'info_overlay': '화면 정보 표시', 'timestamps': 'STT 시간 표시'}
-        for key, label in toggles.items():
-            checkbox = QCheckBox(label)
-            checkbox.setChecked(state['values'][key])
-            self.controls[key] = checkbox
-            self.fields_form.addRow(checkbox)
-        if state.get('game_active'):
-            self.controls['mode'].setEnabled(False)
         for key, value in draft.items():
             control = self.controls[key]
             if isinstance(control, QCheckBox):

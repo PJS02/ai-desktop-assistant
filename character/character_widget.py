@@ -8,7 +8,7 @@ import time
 import math
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
-from PyQt6.QtGui import QActionGroup, QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent, QRegion
+from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent, QRegion
 from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
@@ -1559,8 +1559,12 @@ class CharacterWidget(QLabel):
     def _show_context_menu(self, global_pos, include_dialogue: bool = False):
         print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
         menu = QMenu(self)
+        log_action = menu.addAction("로그창 보기")
+        log_action.triggered.connect(self.show_log_window)
         settings_action = menu.addAction("설정")
         settings_action.triggered.connect(self.show_settings)
+        console_action = menu.addAction("사용자인식 콘솔")
+        console_action.triggered.connect(self.show_perception_console)
         menu.addSeparator()
         ball_action = menu.addAction("공 꺼내기")
         ball_action.triggered.connect(self.select_ball)
@@ -1572,10 +1576,6 @@ class CharacterWidget(QLabel):
         if getattr(self.dialogue_system, '_last_failed_input', None) is not None:
             retry_action = menu.addAction("실패한 대화 다시 보내기")
             retry_action.triggered.connect(self.dialogue_system.retry_last_input)
-        console_action = menu.addAction("사용자인식 콘솔")
-        console_action.triggered.connect(self.show_perception_console)
-        log_action = menu.addAction("로그창 보기")
-        log_action.triggered.connect(self.show_log_window)
         rps_action = menu.addAction("가위바위보 하기")
         rps_action.triggered.connect(self.show_rps_game)
         if self.rps_game is not None and self.rps_game.isVisible():
@@ -1583,23 +1583,6 @@ class CharacterWidget(QLabel):
             restart_action.triggered.connect(self.show_rps_game)
             end_action = menu.addAction("가위바위보 종료")
             end_action.triggered.connect(self.end_rps_game)
-        if self.rig_view is not None:
-            rig_menu = menu.addMenu("캐릭터 동작")
-            for label, action in (("인사", "wave"), ("생각", "thinking"),
-                                  ("수면", "sleep"), ("대기", "idle")):
-                pose_action = rig_menu.addAction(label)
-                pose_action.setEnabled(self.on_ground and not self.is_dragging)
-                pose_action.triggered.connect(
-                    lambda checked=False, name=action: self._play_rig_action(name))
-            direction_menu = rig_menu.addMenu("바라보는 방향")
-            direction_group = QActionGroup(direction_menu)
-            direction_group.setExclusive(True)
-            for label, yaw in (("왼쪽", -65), ("정면", 0), ("오른쪽", 65)):
-                item = direction_menu.addAction(label)
-                item.setCheckable(True)
-                item.setChecked(yaw == self._rig_preferred_yaw)
-                item.triggered.connect(lambda checked=False, value=yaw: self._set_rig_direction(value))
-                direction_group.addAction(item)
         self._context_menu = menu
         menu.popup(global_pos)
 
