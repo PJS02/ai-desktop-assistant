@@ -172,6 +172,35 @@
     Object.keys(renderer.parts).forEach(function (name) { renderer.textures[name] = textureToken(name); });
   }
 
+  var hostJumpArmChannels = ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar',
+    'idleGesture', 'airArms', 'thinkGesture', 'waveGesture', 'waveSideGesture',
+    'waveArmOffset', 'waveElbowOffset', 'waveWristOffset', 'waveForearmShorten'];
+  function applyHostJumpArmMotion(pose, time, options, flight, yaw) {
+    var restOptions = Object.assign({}, options), channels = {};
+    delete restOptions.walkAmount;
+    var rest = root.CloudyMotion.pose('idle', time, restOptions);
+    hostJumpArmChannels.forEach(function (key) { channels[key] = rest[key]; });
+    flight = Math.max(0, Math.min(1, finite(flight, 0)));
+    if (flight > 1e-8) {
+      // Retain the original rise/apex/descent rhythm, ending at the normal
+      // outward rest shape rather than the source clip's vertical arm endpoints.
+      var raised = root.CloudyMotion.pose('jump', .425 * 2.4, restOptions);
+      ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar'].forEach(function (key) {
+        channels[key] = rest[key] + (raised[key] - rest[key]) * flight;
+      });
+      channels.idleGesture = rest.idleGesture * (1 - flight);
+      channels.airArms = 1;
+      if (Math.abs(finite(yaw, 0)) <= 21) {
+        // The renderer mirrors the frontal far shoulder only when airArms=0.
+        // Encode its normal outward angle in the air convention during motion;
+        // fading that convention itself would pass through an inward/vertical arm.
+        channels.armFar = (-rest.armFar + 66 * rest.idleGesture) * (1 - flight) + raised.armFar * flight;
+      }
+    }
+    hostJumpArmChannels.forEach(function (key) { pose[key] = channels[key]; });
+    return channels;
+  }
+
   function sample(state) {
     state = state || {};
     var action = typeof state.action === 'string' ? state.action : 'idle';
@@ -183,7 +212,7 @@
     var sampleAction = authoredFlight ? 'jump' : action;
     var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
     var pose = root.CloudyMotion.pose(sampleAction, sampleTime, options);
-    var originalPose = copy(pose), adjustment = 0;
+    var originalPose = copy(pose), adjustment = 0, hostJumpArms = null;
     if (state.externalPhysics === true) {
       if (Number.isFinite(state.externalRootHeight)) adjustment = -state.externalRootHeight;
       else if (action === 'jump' || authoredFlight) adjustment = 62 * pose.airborne;
@@ -192,9 +221,13 @@
       pose.bodyY += adjustment;
       if (authoredFlight) {
         // The source moves body and feet independently by the same flight height.
-        // Remove both root translations; keep the authored tuck, arms and lean.
+        // Remove both root translations; keep the authored tuck and lean.
         pose.footNearY += adjustment;
         pose.footFarY += adjustment;
+      }
+      if (authoredFlight || (action === 'land' && state.authoredJump === true)) {
+        hostJumpArms = applyHostJumpArmMotion(pose, time, options,
+          authoredFlight ? originalPose.airborne : 0, state.yaw);
       }
       var controlledJump = state.jumpActive === true && (action === 'jump' || action === 'fall');
       if ((controlledJump || action === 'land') && state.authoredJump !== true && !authoredFlight) {
@@ -221,6 +254,15 @@
       if (signature !== transitionSignature) transition.retarget(pose);
       transitionSignature = signature;
       pose = transition.step(pose, Math.max(0.001, Math.min(0.1, finite(state.dt, 1 / 30))));
+      if (hostJumpArms) {
+        // The authored flight bell already eases the arm path. Do not interpolate
+        // incompatible frontal angle conventions or inherit an older hand gesture.
+        // Sync the arm state so landing and the next idle frame have no rebound.
+        hostJumpArmChannels.forEach(function (key) {
+          pose[key] = transition.values[key] = transition.previousTarget[key] = transition.target[key] = hostJumpArms[key];
+          transition.velocity[key] = 0;
+        });
+      }
     }
     return {action: action, time: time, pose: pose, originalPose: originalPose,
       externalRootHeightAdjustment: adjustment};

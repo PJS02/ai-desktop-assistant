@@ -26,6 +26,7 @@ from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
+from .taskbar_visibility import TaskbarVisibilityGuard
 
 
 # Context 모듈 import
@@ -412,6 +413,36 @@ class CharacterWidget(QLabel):
                 "[외부 인식 수신기 비활성화] "
                 f"{self.perception_receiver.startup_error or '알 수 없는 오류'}"
             )
+
+        self._taskbar_visibility_guard = TaskbarVisibilityGuard()
+        self._taskbar_visibility_timer = QTimer(self)
+        self._taskbar_visibility_timer.setInterval(300)
+        self._taskbar_visibility_timer.timeout.connect(self._ensure_taskbar_visibility)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        timer = getattr(self, '_taskbar_visibility_timer', None)
+        if timer is not None and not self._character_closing:
+            timer.start()
+            self._ensure_taskbar_visibility()
+
+    def hideEvent(self, event):
+        timer = getattr(self, '_taskbar_visibility_timer', None)
+        if timer is not None:
+            timer.stop()
+        super().hideEvent(event)
+
+    def _ensure_taskbar_visibility(self):
+        """Recover only taskbar occlusion, without taking input focus."""
+        if (self._character_closing or not self.isVisible() or not self.isWindow()
+                or QApplication.activePopupWidget() is not None
+                or QApplication.activeModalWidget() is not None):
+            return False
+        body = self._physics_body_rect()
+        return self._taskbar_visibility_guard.ensure_visible(
+            int(self.winId()),
+            body_offset=(body.x(), body.y(), body.width(), body.height()),
+            widget_size=(self.width(), self.height()))
     
     def _initialize_character_renderer(self):
         """Keep the host window and its events; replace only character drawing."""
@@ -684,7 +715,7 @@ class CharacterWidget(QLabel):
         self._pending_user_greeting_until = None
         for name in ("timer", "emotion_timer", "move_timer", "drag_timer", "_move_timer",
                      "_gravity_timer", "_window_scan_timer", "_activity_monitor_timer",
-                     "_release_timer", "_greeting_retry_timer"):
+                     "_release_timer", "_greeting_retry_timer", "_taskbar_visibility_timer"):
             timer = getattr(self, name, None)
             if timer is not None:
                 timer.stop()

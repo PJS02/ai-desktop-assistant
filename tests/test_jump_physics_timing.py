@@ -259,10 +259,21 @@ def test_authored_jump_is_sampled_by_physics_and_removes_both_root_translations(
             assert sample['pose']['bodyY'] == pytest.approx(raw['bodyY'] + flight_height)
             for foot in ['footNearY', 'footFarY']:
                 assert sample['pose'][foot] == pytest.approx(raw[foot] + flight_height)
-            for channel in ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'lean', 'headAngle']:
+            for channel in ['bodyX', 'lean', 'headAngle', 'airborne', 'footNearX', 'footFarX',
+                            'footNearAngle', 'footFarAngle']:
                 assert sample['pose'][channel] == raw[channel]
+            if phase in [.15, .70]:
+                rest = planner.sample({'action': 'idle', 'time': state['time'], 'emotion': 'sad'})['pose']
+                for channel in ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar',
+                                'idleGesture', 'airArms']:
+                    assert sample['pose'][channel] == rest[channel]
+            elif phase == .425:
+                for channel in ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar']:
+                    assert sample['pose'][channel] == raw[channel]
             assert sample['pose']['framingZoom'] == 1
             samples.append(sample['pose'])
         assert abs(samples[2]['armNear'] - samples[0]['armNear']) > 100
+        for channel in ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar']:
+            assert samples[-1][channel] == samples[0][channel]
     finally:
         planner.engine.collectGarbage()
