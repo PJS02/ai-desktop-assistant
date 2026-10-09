@@ -14,6 +14,7 @@ from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options
 from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
 from .dialogue_widget import DialogueBubble
+from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
 
 
 class SettingsDialog(QDialog):
@@ -46,7 +47,7 @@ class SettingsDialog(QDialog):
         root.addWidget(self.tabs, 1)
         self._character_page(local)
         self._voice_page(local)
-        self._recognition_page()
+        self._recognition_page(local)
         self._ai_page(local)
         self._manual_page()
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
@@ -326,7 +327,7 @@ class SettingsDialog(QDialog):
         form.addRow(self.tts_enabled)
         form.addRow('목소리', self.voice)
 
-    def _recognition_page(self):
+    def _recognition_page(self, local):
         _, layout, self.remote_form = self._page('사용자 인식', '카메라·감정 인식은 실행 중에 적용됩니다. 마이크·STT 옵션을 바꾸면 실행 중인 음성 인식을 자동으로 다시 시작합니다.')
         self.remote_status = QLabel('인식 기능에 연결하는 중…')
         self.remote_status.setWordWrap(True)
@@ -334,6 +335,10 @@ class SettingsDialog(QDialog):
         self.refresh_button = QPushButton('장치 새로고침')
         self.refresh_button.clicked.connect(lambda: self.refresh_requested.emit(True))
         layout.insertWidget(2, self.refresh_button)
+        self._hand_overlay_fields(local)
+        heading = QLabel('카메라·음성 인식')
+        heading.setStyleSheet('font-weight: 600; padding-top: 12px;')
+        self.remote_form.addRow(heading)
         self.remote_fields = QWidget()
         self.fields_form = QFormLayout(self.remote_fields)
         self.fields_form.setContentsMargins(0, 0, 0, 0)
@@ -341,6 +346,56 @@ class SettingsDialog(QDialog):
         self.fields_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.remote_form.addRow(self.remote_fields)
         self.remote_fields.setEnabled(False)
+
+    def _hand_overlay_fields(self, local):
+        options = normalize_hand_overlay_options(local.get('hand_overlay'))
+        heading = QLabel('바탕화면 손 표시')
+        heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
+        self.remote_form.addRow(heading)
+        self.hand_display = QCheckBox('바탕화면에 손 랜드마크 표시')
+        self.hand_display.setChecked(options['enabled'])
+        self.remote_form.addRow(self.hand_display)
+        self.hand_inputs = {}
+        self.hand_sliders = {}
+        for key, label in (('size_percent', '손 표시 크기'), ('range_percent', '카메라 이동 범위')):
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            spin = QSpinBox()
+            low, high = HAND_OVERLAY_OPTION_RANGES[key]
+            slider.setRange(low, high)
+            spin.setRange(low, high)
+            spin.setSuffix(' %')
+            spin.setMinimumWidth(100)
+            slider.setValue(options[key])
+            spin.setValue(options[key])
+            slider.valueChanged.connect(spin.setValue)
+            spin.valueChanged.connect(slider.setValue)
+            self.hand_sliders[key] = slider
+            self.hand_inputs[key] = spin
+            line.addWidget(slider, 1)
+            line.addWidget(spin)
+            self.remote_form.addRow(label, row)
+        self.hand_range_preview = QLabel()
+        self.hand_range_preview.setWordWrap(True)
+        self.remote_form.addRow('', self.hand_range_preview)
+        self.hand_inputs['range_percent'].valueChanged.connect(self._describe_hand_range)
+        self._describe_hand_range()
+        self.hand_count = self._combo([('한 손', 1), ('두 손', 2)], options['max_hands'])
+        self.remote_form.addRow('표시할 손 수', self.hand_count)
+        self.hand_smooth = QCheckBox('손 움직임 보정')
+        self.hand_smooth.setChecked(options['smooth'])
+        self.remote_form.addRow(self.hand_smooth)
+        hint = QLabel('기존 카메라의 손 좌표를 사용합니다. 카메라가 꺼져 있거나 손을 인식하지 못하면 표시하지 않습니다.')
+        hint.setWordWrap(True)
+        self.remote_form.addRow('', hint)
+
+    def _describe_hand_range(self):
+        percent = self.hand_inputs['range_percent'].value()
+        self.hand_range_preview.setText(
+            f'카메라 중앙의 가로·세로 {percent}% 영역을 화면 전체에 대응합니다.\n'
+            '영역 밖에서는 화면 가장자리 위치를 유지합니다. 비율을 줄이면 더 작은 손 이동으로 화면 끝까지 도달합니다.')
 
     def set_remote(self, state, preserve_draft=False):
         draft = self.changes()['remote'] if preserve_draft else {}
@@ -400,6 +455,11 @@ class SettingsDialog(QDialog):
         baseline = {'style': normalize_dialogue_style(self.local_baseline.get('dialogue', {}).get('style'))}
         if dialogue != baseline:
             changed['dialogue'] = dialogue
+        hand_overlay = {'enabled': self.hand_display.isChecked(),
+                        **{key: control.value() for key, control in self.hand_inputs.items()},
+                        'max_hands': self.hand_count.currentData(), 'smooth': self.hand_smooth.isChecked()}
+        if hand_overlay != normalize_hand_overlay_options(self.local_baseline.get('hand_overlay')):
+            changed['hand_overlay'] = hand_overlay
         remote = {}
         if self.remote_baseline is not None:
             for key, control in self.controls.items():

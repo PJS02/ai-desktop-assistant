@@ -4,6 +4,7 @@ from pathlib import Path
 from app_logging import log_event
 from .motion_options import normalize_character_options
 from .dialogue_styles import normalize_dialogue_style
+from .hand_overlay_options import normalize_hand_overlay_options
 
 
 CONFIG_FILE = Path.home() / ".ai_desktop_assistant" / "config.json"
@@ -58,6 +59,35 @@ def load_dialogue_style():
         log_event('settings.dialogue.fallback', '말풍선 설정을 기본값으로 복구했습니다.',
                   level='WARNING', path=str(CONFIG_FILE), error=str(exc))
         return normalize_dialogue_style(None)
+
+
+def load_hand_overlay_options():
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+        return normalize_hand_overlay_options(data.get('hand_overlay', {}))
+    except (OSError, ValueError, AttributeError) as exc:
+        log_event('settings.hand_overlay.fallback', '손 표시 설정을 기본값으로 복구했습니다.',
+                  level='WARNING', path=str(CONFIG_FILE), error=str(exc))
+        return normalize_hand_overlay_options()
+
+
+def save_hand_overlay_options(options, *, trace_id=None):
+    """Save hand settings atomically while preserving the other config sections."""
+    values = normalize_hand_overlay_options(options, strict=True)
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+    if not isinstance(config, dict):
+        raise ValueError('설정 파일 형식이 올바르지 않습니다.')
+    saved = config.get('hand_overlay', {})
+    saved = saved.copy() if isinstance(saved, dict) else {}
+    saved.update(values)
+    config['hand_overlay'] = saved
+    temporary = CONFIG_FILE.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
+    temporary.replace(CONFIG_FILE)
+    log_event('settings.hand_overlay.saved', '손 표시 설정을 저장했습니다.', trace_id=trace_id,
+              path=str(CONFIG_FILE), values=values)
+    return values
 
 
 def save_config(width, height, personality='Russell (기본)', character_options=None,

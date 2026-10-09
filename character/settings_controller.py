@@ -4,16 +4,18 @@ from inspect import signature
 from PyQt6.QtCore import QObject, QTimer
 
 from .ai_settings import load_ai_settings, save_ai_settings
-from .config_manager import load_config, load_character_options, load_dialogue_style, save_config
+from .config_manager import (load_config, load_character_options, load_dialogue_style, save_config,
+                            load_hand_overlay_options, save_hand_overlay_options)
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
 
 
 class SettingsController(QObject):
-    def __init__(self, character, manager):
+    def __init__(self, character, manager, hand_overlay=None):
         super().__init__(character)
         self.character = character
         self.manager = manager
+        self.hand_overlay = hand_overlay
         self.dialog = None
         self.request_id = None
         self.applied_local = {}
@@ -47,6 +49,8 @@ class SettingsController(QObject):
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style()}
+        local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
+                                 else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character)
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.apply_timeout.connect(self._apply_timed_out)
@@ -124,6 +128,10 @@ class SettingsController(QObject):
                     save_ai_settings(value['api_key'], value['model'], trace_id=self.operation_id)
                     self.character._load_gemini_config()
                     self.character.dialogue_system._load_gemini_config()
+                elif section == 'hand_overlay':
+                    value = save_hand_overlay_options(value, trace_id=self.operation_id)
+                    if self.hand_overlay is not None:
+                        self.hand_overlay.apply_options(value)
                 self.applied_local[section] = value
                 log_event('settings.local.applied', '로컬 설정을 저장하고 실행 중인 기능에 적용했습니다.',
                           trace_id=self.operation_id, section=section, values=value)

@@ -113,6 +113,11 @@ class HolisticGuiApp(SettingsBridge):
         self.cap = None
         self.capture_fps = 30.0
         self.pending_frame = None
+        self.pending_frame_captured_at = None
+        self.hand_overlay_enabled = False
+        self.hand_overlay_session = uuid.uuid4().hex
+        self.hand_overlay_sequence = 0
+        self.hand_overlay_image_size = (1280, 720)
         self.current_photo = None
         self.frame_index = 0
         self.camera_candidates = []
@@ -316,6 +321,8 @@ class HolisticGuiApp(SettingsBridge):
                 self.handle_settings_command(command[len('settings '):])
             elif command in ('tts_speaking 1', 'tts_speaking 0'):
                 self.stt.set_character_speaking(command.endswith('1'))
+            elif command in ('hand_overlay 1', 'hand_overlay 0'):
+                self.set_hand_overlay_enabled(command.endswith('1'))
             elif command == "shutdown":
                 self.on_close()
                 return
@@ -1061,6 +1068,10 @@ class HolisticGuiApp(SettingsBridge):
         self.cap = result["cap"]
         self.active_camera_candidate = dict(selected_candidate)
         self.pending_frame = result["frame"]
+        self.pending_frame_captured_at = time.time()
+        self.hand_overlay_session = uuid.uuid4().hex
+        self.hand_overlay_sequence = 0
+        self.hand_overlay_image_size = (self.pending_frame.shape[1], self.pending_frame.shape[0])
         self.capture_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         if self.capture_fps <= 0:
             self.capture_fps = 30.0
@@ -1190,6 +1201,54 @@ class HolisticGuiApp(SettingsBridge):
             self.cap = None
             log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
         self.pending_frame = None
+        self.pending_frame_captured_at = None
+        if getattr(self, 'hand_overlay_enabled', False):
+            self.send_hand_overlay_clear()
+
+    def set_hand_overlay_enabled(self, enabled):
+        if enabled == getattr(self, 'hand_overlay_enabled', False):
+            return
+        if enabled:
+            # A new subscription cannot inherit pending poses from an older one.
+            self.hand_overlay_session = uuid.uuid4().hex
+            self.hand_overlay_sequence = 0
+            self.hand_overlay_enabled = True
+            if self.cap is None:
+                self.send_hand_overlay_clear()
+        else:
+            self.send_hand_overlay_clear()
+            self.hand_overlay_enabled = False
+
+    def _publish_hand_overlay(self, hands, captured_at, width, height, clear=False):
+        self.hand_overlay_sequence += 1
+        packet = {
+            'type': 'hand_landmarks', 'version': 1,
+            'session_id': self.hand_overlay_session,
+            'sequence': self.hand_overlay_sequence,
+            'captured_at': captured_at,
+            'image_size': {'width': width, 'height': height},
+            'mirror': bool(self.mirror_var.get()),
+            'hands': hands,
+        }
+        if clear:
+            packet['clear'] = True
+        self.event_client.send_hand_frame(packet)
+
+    def send_hand_overlay_clear(self):
+        width, height = self.hand_overlay_image_size
+        self._publish_hand_overlay([], time.time(), width, height, clear=True)
+
+    def send_hand_landmarks(self, results, width, height, captured_at):
+        if not getattr(self, 'hand_overlay_enabled', False):
+            return
+        self.hand_overlay_image_size = (width, height)
+        hands = []
+        for label, landmarks in (('Left', results.left_hand_landmarks),
+                                 ('Right', results.right_hand_landmarks)):
+            if landmarks is not None:
+                hands.append({'label': label,
+                              'points': [[p.x, p.y, p.z] for p in landmarks.landmark]})
+        self._publish_hand_overlay(hands, captured_at, width, height)
 
     def update_frame(self):
         if self.cap is None:
@@ -1200,8 +1259,11 @@ class HolisticGuiApp(SettingsBridge):
             has_frame = True
             frame_bgr = self.pending_frame
             self.pending_frame = None
+            captured_at = self.pending_frame_captured_at or time.time()
+            self.pending_frame_captured_at = None
         else:
             has_frame, frame_bgr = self.cap.read()
+            captured_at = time.time()
 
         if not has_frame or frame_bgr is None:
             log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
@@ -1219,6 +1281,7 @@ class HolisticGuiApp(SettingsBridge):
         frame_rgb.flags.writeable = True
 
         height, width = frame_bgr.shape[:2]
+        self.send_hand_landmarks(results, width, height, captured_at)
         timestamp_ms = int((self.frame_index / self.capture_fps) * 1000)
         tracking_enabled = self.tracking_var.get()
         rps_enabled = self.active_mode == "rps"

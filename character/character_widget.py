@@ -695,6 +695,9 @@ class CharacterWidget(QLabel):
             self.sprite_animator.stop()
 
     def closeEvent(self, event):
+        hand_overlay = getattr(self, 'hand_overlay', None)
+        if hand_overlay is not None:
+            hand_overlay.stop()
         self._shutdown_character_renderer()
         self.dialogue_system.tts.close()
         if self.rps_game is not None:
@@ -2575,6 +2578,8 @@ class CharacterWidget(QLabel):
             from PyQt6.QtCore import QRect
             screen_geometry = CharacterWidget._get_screen_geometry(self)
             self_hwnd = self._get_self_window_handle()
+            hand_overlay = getattr(self, 'hand_overlay', None)
+            hand_handles = hand_overlay.window_handles if hand_overlay is not None else set()
 
             # 첫 스캔 여부 확인
             first_scan = not hasattr(self, '_first_scan_done')
@@ -2597,6 +2602,8 @@ class CharacterWidget(QLabel):
 
                 # 자기 창은 제외
                 if self_hwnd is not None and window_handle == self_hwnd:
+                    continue
+                if window_handle in hand_handles:
                     continue
 
                 # 화면에 실제로 보이는 창만 사용 (첫 스캔에만 debug 로그 출력)

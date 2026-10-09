@@ -29,6 +29,8 @@ from dotenv import load_dotenv
 from character.character_widget import CharacterWidget
 from character.config_manager import load_config, load_character_options
 from character.settings_controller import SettingsController
+from character.config_manager import load_hand_overlay_options
+from hand_overlay.controller import HandOverlayController
 from character.log_console import AppLogManager, LogWindow
 
 
@@ -43,6 +45,7 @@ class MediaPipeProcessManager(QObject):
     """숨겨진 MediaPipe GUI 프로세스의 실행, 표시, 종료를 관리한다."""
 
     settings_message = pyqtSignal(dict)
+    process_started = pyqtSignal()
 
     def __init__(self, script_path: Path = MEDIAPIPE_MAIN) -> None:
         super().__init__()
@@ -92,6 +95,7 @@ class MediaPipeProcessManager(QObject):
         print(f"[MediaPipe 백그라운드 실행] PID={self.process.pid}")
         log_event('recognition.process_started', '인식 프로세스 실행', category='사용자 인식', pid=self.process.pid, script=str(self.script_path))
         self._start_output_reader()
+        self.process_started.emit()
         return True
 
     def _start_output_reader(self) -> None:
@@ -200,6 +204,9 @@ class MediaPipeProcessManager(QObject):
         """Gate recognizer capture only while character audio actually plays."""
         return self._send_command('tts_speaking ' + ('1' if speaking else '0'))
 
+    def set_hand_overlay_enabled(self, enabled: bool) -> bool:
+        return self._send_command('hand_overlay ' + ('1' if enabled else '0'))
+
     def request_settings(self, refresh_devices=False):
         if not self.is_running and not self.start():
             return False
@@ -265,13 +272,17 @@ def main():
         on_rps_command=mediapipe_manager.send_game_command,
         character_options=load_character_options(),
     )
-    settings_controller = SettingsController(character, mediapipe_manager)
+    hand_overlay = HandOverlayController(character.perception_receiver, mediapipe_manager,
+                                         character, load_hand_overlay_options())
+    character.hand_overlay = hand_overlay
+    settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
     character.show()
 
     # 캐릭터의 인식 수신기가 준비된 다음 MediaPipe GUI를 실행한다.
     mediapipe_manager.start()
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
+    app.aboutToQuit.connect(hand_overlay.stop)
     app.aboutToQuit.connect(mediapipe_manager.stop)
 
     exit_code = None
@@ -280,6 +291,7 @@ def main():
         return exit_code
     finally:
         # 예외나 외부 종료로 aboutToQuit 신호가 누락되어도 자식 프로세스를 정리한다.
+        hand_overlay.stop()
         mediapipe_manager.stop()
         log_window.shutdown()
         log_manager.restore_capture()
