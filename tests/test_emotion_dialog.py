@@ -67,7 +67,7 @@ def table_rows(dialog):
 
 def test_retained_events_scroll_and_recovery_uses_readable_text(dialog, app):
     mood = MoodSystem()
-    for _ in range(35):
+    for _ in range(305):
         mood.on_click()
     snapshot = mood.get_emotion_explanation()
     recovery_mood = MoodSystem()
@@ -80,14 +80,140 @@ def test_retained_events_scroll_and_recovery_uses_readable_text(dialog, app):
     dialog.resize(1040, 700)
     dialog.show()
     app.processEvents()
-    assert dialog.influence_table.rowCount() == len(snapshot['recent_events']) == 30
+    assert dialog.influence_table.rowCount() == len(snapshot['recent_events']) == 300
     assert dialog.influence_table.item(0, 2).text().startswith('회복 ')
     assert '↺' not in dialog.change_label.text()
     scroll = dialog.influence_table.verticalScrollBar()
     assert scroll.maximum() > 0
     scroll.setValue(scroll.maximum())
     assert scroll.value() > 0
-    assert dialog.influence_table.item(29, 1).text() == snapshot['recent_events'][-1]['source']
+    assert dialog.influence_table.item(299, 1).text() == snapshot['recent_events'][-1]['source']
+
+
+def test_all_occ_components_have_fixed_positions_and_full_values(dialog):
+    mood = MoodSystem()
+    for index, emotion in enumerate(mood.occ_intensities):
+        mood.occ_intensities[emotion] = index / 10
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert len(dialog.occ_rows) == 10
+    order = [label.text() for label, _ in dialog.occ_rows]
+    for (label, bar), (emotion, value) in zip(dialog.occ_rows, mood.occ_intensities.items()):
+        assert label.text() == dialog.OCC_NAMES[emotion.value]
+        assert bar.value() == round(value * 100)
+    mood.on_external_emotion('happy', 1)
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert [label.text() for label, _ in dialog.occ_rows] == order
+
+
+def test_selected_event_stays_selected_as_new_events_arrive(dialog):
+    mood = MoodSystem()
+    mood.on_self_rest()
+    mood.on_click()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    dialog.influence_table.selectRow(1)
+    identity = dialog._selected_event_id
+    text = dialog.detail_view.toPlainText()
+    assert '스스로 쉬기' in text
+    mood.on_ball_play()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert dialog._selected_event_id == identity
+    assert dialog.detail_view.toPlainText() == text
+    assert dialog.influence_table.selectedItems()[0].row() == 2
+    assert '공놀이' in dialog.change_label.text()
+    QTest.mouseClick(dialog.follow_latest_button, Qt.MouseButton.LeftButton)
+    assert '공놀이' in dialog.detail_view.toPlainText()
+    assert dialog._selected_event_id is None
+
+
+def test_selected_detail_survives_history_eviction(dialog):
+    mood = MoodSystem()
+    mood.on_self_rest()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    dialog.influence_table.selectRow(0)
+    text = dialog.detail_view.toPlainText()
+    for _ in range(300):
+        mood.on_click()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert dialog.detail_view.toPlainText() == text
+    assert '제외된 기록' in dialog.detail_status_label.text()
+    assert '이전 1건 제외' in dialog.history_status_label.text()
+
+
+def test_paused_selection_uses_frozen_row_data_while_latest_state_updates(dialog):
+    mood = MoodSystem()
+    mood.on_self_rest()
+    mood.on_click()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    dialog.set_influence_paused(True)
+    mood.on_ball_play()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    dialog.influence_table.selectRow(1)
+    assert '스스로 쉬기' in dialog.detail_view.toPlainText()
+    assert '공놀이' in dialog.change_label.text()
+    old_id = dialog._selected_event_id
+    dialog.set_influence_paused(False)
+    assert dialog._selected_event_id == old_id
+    assert dialog.influence_table.selectedItems()[0].row() == 2
+
+
+def test_pet_detail_explains_target_effect_even_when_coordinate_score_is_zero(dialog):
+    mood = MoodSystem()
+    mood.on_pet(140, .5)
+    dialog.update_explanation(mood.get_emotion_explanation())
+    text = dialog.detail_view.toPlainText()
+    assert '쓰다듬기' in text and '목표 좌표' in text
+    assert '기쁨' in text and '+45.00%p' in text
+    assert '성격 가중치 보정 적용 없음' in text
+
+
+def test_selected_pet_burst_updates_same_event_detail_when_samples_merge(dialog):
+    mood = MoodSystem()
+    mood.on_pet(140, .1)
+    dialog.update_explanation(mood.get_emotion_explanation())
+    dialog.influence_table.selectRow(0)
+    identity = dialog._selected_event_id
+    mood.advance_emotion(.1)
+    mood.on_pet(140, .1)
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert dialog._selected_event_id == identity
+    assert dialog.influence_table.rowCount() == 1
+    assert '반영 2회' in dialog.detail_view.toPlainText()
+    assert '+18.00%p' in dialog.detail_view.toPlainText()
+
+
+def test_failed_providers_preserve_last_good_reason_and_do_not_add_fake_chart_samples(dialog):
+    mood = MoodSystem()
+    mood.on_click()
+    dialog.set_explanation_provider(mood.get_emotion_explanation)
+    dialog._refresh_from_provider()
+    text = dialog.detail_view.toPlainText()
+    state = dialog.value_label.text()
+    count = len(dialog.history_canvas.samples)
+    def fail():
+        raise RuntimeError('temporary failure')
+    dialog.set_explanation_provider(fail)
+    dialog.set_state_provider(fail)
+    dialog._refresh_from_provider()
+    assert dialog.detail_view.toPlainText() == text
+    assert dialog.value_label.text() == state
+    assert len(dialog.history_canvas.samples) == count
+    assert '근거 갱신 실패' in dialog.refresh_status_label.text()
+    mood.on_ball_play()
+    dialog.set_explanation_provider(mood.get_emotion_explanation)
+    dialog._refresh_from_provider()
+    assert '갱신 실패' not in dialog.refresh_status_label.text()
+    assert '공놀이' in dialog.detail_view.toPlainText()
+
+
+def test_live_recovery_label_reports_hold_and_manual_status(dialog):
+    mood = MoodSystem()
+    mood.on_click()
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert '여운' in dialog.recovery_label.text()
+    assert dialog.recovery_bar.value() == mood.get_emotion_explanation()['peak_occ_percent']
+    mood.set_russell_state(.2, .3)
+    dialog.update_explanation(mood.get_emotion_explanation())
+    assert '수동' in dialog.recovery_label.text()
 
 
 def test_pause_freezes_only_table_while_other_views_and_recording_continue(dialog, app):

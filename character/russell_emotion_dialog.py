@@ -1,4 +1,5 @@
 import math
+import json
 from copy import deepcopy
 from datetime import datetime
 from app_logging import log_event, log_throttled
@@ -8,6 +9,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
     QGroupBox,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -16,6 +18,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -424,6 +427,11 @@ class RussellEmotionDialog(QDialog):
         self._explanation_provider = None
         self._influence_paused = False
         self._latest_events = []
+        self._displayed_events = []
+        self._selected_event = None
+        self._selected_event_id = None
+        self._last_explanation_at = None
+        self._last_state_at = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_from_provider)
 
@@ -436,9 +444,13 @@ class RussellEmotionDialog(QDialog):
         self.subtitle_label = QLabel("OCC 사건 평가 → 성격 가중치 → Russell Valence/Arousal")
         self.subtitle_label.setObjectName("subtitle")
 
-        self.value_label = QLabel("현재 감정: 중립 0%  ·  V +0.00  A +0.00")
+        self.value_label = QLabel("현재 감정 정보를 기다리는 중입니다.")
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.value_label.setObjectName("summary")
+        self.target_label = QLabel("목표 좌표를 기다리는 중입니다.")
+        self.target_label.setWordWrap(True)
+        self.refresh_status_label = QLabel("근거 갱신 대기 중")
+        self.refresh_status_label.setWordWrap(True)
 
         # 설명 라벨 추가
         description_font = QFont("Malgun Gothic", 9)
@@ -460,6 +472,7 @@ class RussellEmotionDialog(QDialog):
 
         left_layout = QVBoxLayout()
         left_layout.addWidget(self.value_label)
+        left_layout.addWidget(self.target_label)
         left_layout.addWidget(self.canvas, 1)
         left_layout.addWidget(self.description_label)
 
@@ -484,10 +497,12 @@ class RussellEmotionDialog(QDialog):
 
         self.influence_table = QTableWidget(0, 5)
         self.influence_table.setHorizontalHeaderLabels(
-            ["시각", "영향 요인", "영향", "Valence", "Arousal"]
+            ["시각", "영향 요인", "좌표 변화 크기", "ΔV", "ΔA"]
         )
         self.influence_table.verticalHeader().setVisible(False)
-        self.influence_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.influence_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.influence_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.influence_table.itemSelectionChanged.connect(self._on_influence_selected)
         self.influence_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.influence_table.setAlternatingRowColors(True)
         self.influence_table.setWordWrap(False)
@@ -516,8 +531,29 @@ class RussellEmotionDialog(QDialog):
         influence_header.addWidget(self.pause_label)
         influence_header.addStretch()
         influence_layout.addLayout(influence_header)
+        self.history_status_label = QLabel("실행 중 기록을 기다리는 중입니다.")
+        self.history_status_label.setWordWrap(True)
+        influence_layout.addWidget(self.history_status_label)
         influence_layout.addWidget(self.influence_table)
         influence_group.setLayout(influence_layout)
+
+        detail_group = QGroupBox("선택한 기록의 상세 근거")
+        detail_layout = QVBoxLayout()
+        detail_header = QHBoxLayout()
+        self.detail_status_label = QLabel("최신 기록 따라가는 중")
+        self.detail_status_label.setWordWrap(True)
+        self.follow_latest_button = QPushButton("최신 따라가기")
+        self.follow_latest_button.clicked.connect(self._follow_latest)
+        detail_header.addWidget(self.detail_status_label, 1)
+        detail_header.addWidget(self.follow_latest_button)
+        detail_layout.addLayout(detail_header)
+        self.detail_view = QTextBrowser()
+        self.detail_view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.detail_view.setMinimumHeight(240)
+        self.detail_view.setOpenExternalLinks(False)
+        self.detail_view.setPlainText("기록을 기다리는 중입니다.")
+        detail_layout.addWidget(self.detail_view)
+        detail_group.setLayout(detail_layout)
 
         self.personality_label = QLabel("성격 보정 기록을 기다리는 중입니다.")
         self.personality_label.setWordWrap(True)
@@ -529,10 +565,10 @@ class RussellEmotionDialog(QDialog):
         self.recovery_bar = QProgressBar()
         self.recovery_bar.setRange(0, 100)
         self.recovery_bar.setValue(100)
-        self.recovery_bar.setFormat("중립 안정화 %p%")
+        self.recovery_bar.setFormat("최대 감정 성분 강도 %p%")
         self.recovery_label = QLabel("활성 감정이 없어 안정된 상태입니다.")
         self.recovery_label.setWordWrap(True)
-        recovery_group = QGroupBox("감정 회복 과정")
+        recovery_group = QGroupBox("감정 강도와 자연 감쇠 상태")
         recovery_layout = QVBoxLayout()
         recovery_layout.addWidget(self.recovery_bar)
         recovery_layout.addWidget(self.recovery_label)
@@ -540,10 +576,11 @@ class RussellEmotionDialog(QDialog):
 
         self.occ_rows = []
         occ_group = QGroupBox("현재 활성 OCC 성분")
-        occ_layout = QVBoxLayout()
-        for _ in range(4):
+        occ_layout = QGridLayout()
+        self.occ_row_names = list(self.OCC_NAMES)
+        for index, name in enumerate(self.occ_row_names):
             row = QHBoxLayout()
-            label = QLabel("-")
+            label = QLabel(self.OCC_NAMES[name])
             label.setFixedWidth(60)
             bar = QProgressBar()
             bar.setRange(0, 100)
@@ -551,7 +588,7 @@ class RussellEmotionDialog(QDialog):
             bar.setTextVisible(True)
             row.addWidget(label)
             row.addWidget(bar)
-            occ_layout.addLayout(row)
+            occ_layout.addLayout(row, index // 2, index % 2)
             self.occ_rows.append((label, bar))
         occ_group.setLayout(occ_layout)
 
@@ -559,6 +596,7 @@ class RussellEmotionDialog(QDialog):
         right_layout.addWidget(self.change_label)
         right_layout.addWidget(influence_group, 1)
         right_layout.addWidget(personality_group)
+        right_layout.addWidget(detail_group)
         right_layout.addWidget(recovery_group)
         right_layout.addWidget(occ_group)
 
@@ -580,6 +618,7 @@ class RussellEmotionDialog(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self.title_label)
         layout.addWidget(self.subtitle_label)
+        layout.addWidget(self.refresh_status_label)
         layout.addWidget(self.content_scroll, 1)
         self.setLayout(layout)
         self.setMinimumSize(980, 700)
@@ -595,7 +634,9 @@ class RussellEmotionDialog(QDialog):
             QGroupBox { font-weight: 700; border: 1px solid #d9dfe9; border-radius: 8px;
                         margin-top: 10px; padding-top: 10px; background: white; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QTableWidget { border: none; gridline-color: #e7eaf0; alternate-background-color: #f7f9fc; }
+            QTableWidget { border: none; gridline-color: #e7eaf0; alternate-background-color: #f7f9fc;
+                           selection-background-color: #ddeaff; selection-color: #263b69; }
+            QTextBrowser { border: 1px solid #e7eaf0; background: #fcfdff; padding: 6px; }
             QHeaderView::section { background: #eef2f8; color: #4b5568; border: none;
                                    border-bottom: 1px solid #d9dfe9; padding: 6px; font-weight: 700; }
             QProgressBar { border: 1px solid #d6dce7; border-radius: 5px; text-align: center;
@@ -620,12 +661,13 @@ class RussellEmotionDialog(QDialog):
     def set_explanation_provider(self, provider):
         self._explanation_provider = provider
 
-    def update_state(self, valence: float, arousal: float, dominant: str, intensity: float = 0.0) -> None:
+    def update_state(self, valence: float, arousal: float, dominant: str, intensity: float | None = None) -> None:
         self.canvas.set_state(valence, arousal, dominant)
         self.history_canvas.add_sample(valence, arousal)
         emotion_name = self.EMOTION_NAMES.get(dominant, dominant)
+        strength = f"{intensity * 100:.0f}%" if intensity is not None else "강도 정보 없음"
         self.value_label.setText(
-            f"현재 감정: {emotion_name} {intensity * 100:.0f}%  ·  "
+            f"현재 감정: {emotion_name} {strength}  ·  "
             f"Valence {valence:+.2f}  ·  Arousal {arousal:+.2f}"
         )
 
@@ -644,6 +686,12 @@ class RussellEmotionDialog(QDialog):
             snapshot.get("intensity", 0.0),
         )
         self.canvas.set_history(snapshot.get("coordinate_history", []))
+        target = snapshot.get("target")
+        if target:
+            self.target_label.setText(
+                f"목표 좌표: V {target['valence']:+.3f} · A {target['arousal']:+.3f}\n"
+                "현재 좌표는 목표를 향해 점진적으로 이동합니다."
+            )
 
         latest = snapshot.get("latest_change")
         if latest:
@@ -651,7 +699,7 @@ class RussellEmotionDialog(QDialog):
             marker = {"positive": "+", "negative": "-", "recovery": "회복"}.get(category, "변화")
             score = abs(int(latest.get("impact_score", 0)))
             self.change_label.setText(
-                f"{marker}  {latest.get('source', '감정 사건')}  ·  영향도 {score}\n"
+                f"가장 최근 변화: {marker}  {latest.get('source', '감정 사건')}  ·  좌표 변화 크기 {score}\n"
                 f"Valence {latest.get('before_valence', 0):+.2f} → {latest.get('after_valence', 0):+.2f}   "
                 f"Arousal {latest.get('before_arousal', 0):+.2f} → {latest.get('after_arousal', 0):+.2f}\n"
                 f"{latest.get('details', '')}"
@@ -664,44 +712,63 @@ class RussellEmotionDialog(QDialog):
 
         personality = snapshot.get("personality", {})
         preset = personality.get("preset", "미설정")
-        if latest:
+        event_preset = latest.get("personality", {}).get("preset", preset) if latest else preset
+        if latest and latest.get("weight_applied", True):
             factors = latest.get("personality_factors") or ["추가 성격 보정 없음"]
             multiplier = latest.get("personality_multiplier", 1.0)
             self.personality_label.setText(
-                f"프리셋: {preset}\n"
+                f"최근 사건 당시 프리셋: {event_preset}\n"
                 f"{' · '.join(factors)}\n"
                 f"기본 {latest.get('base_weight', 0):.2f} × 성격 {multiplier:.2f} "
                 f"= 최종 {latest.get('adjusted_weight', 0):.2f}"
             )
+        elif latest:
+            self.personality_label.setText(f"최근 사건 당시 프리셋: {event_preset}\n이 경로에는 성격 가중치 보정을 적용하지 않습니다.")
         else:
             self.personality_label.setText(f"프리셋: {preset}\n감정 사건을 기다리는 중입니다.")
 
-        recovery = int(snapshot.get("recovery_percent", 100))
-        self.recovery_bar.setValue(recovery)
-        self.recovery_label.setText(
-            "OCC 감정 강도가 매초 감쇠하며 중립 좌표로 회복 중입니다."
-            if recovery < 98 else "활성 감정이 낮아 안정된 상태입니다."
-        )
+        self.recovery_bar.setValue(int(snapshot.get("peak_occ_percent", 100 - snapshot.get("recovery_percent", 100))))
+        status = snapshot.get("decay_status", {})
+        reason = status.get("reason", "active")
+        status_text = {"active": "자연 감쇠 가능 상태 · 주기적으로 반영",
+                       "manual_override": "수동 좌표 조정으로 자연 감쇠 보류",
+                       "emotion_hold": f"강한 사건의 여운으로 자연 감쇠 보류 · 남은 {status.get('remaining_seconds', 0):.1f}초"}
+        self.recovery_label.setText(status_text.get(reason, reason))
 
-        components = snapshot.get("occ_components", [])
+        components = {item["name"]: item for item in snapshot.get("occ_components", [])}
         for index, (label, bar) in enumerate(self.occ_rows):
-            component = components[index] if index < len(components) else {"name": "", "value": 0.0}
+            component = components.get(self.occ_row_names[index], {"name": self.occ_row_names[index], "value": 0.0})
             name = component.get("name", "")
             value = float(component.get("value", 0.0))
             label.setText(self.OCC_NAMES.get(name, name or "-"))
             bar.setValue(int(round(value * 100)))
             bar.setFormat(f"{value * 100:.0f}%")
+            bar.setToolTip(f"실제 성분 강도 {value:.6f} ({value * 100:.4f}%)")
+        history = snapshot.get("history", {})
+        self.history_status_label.setText(
+            f"목록 {len(self._displayed_events)}건 표시 · 현재 {history.get('retained', len(self._latest_events))}건 보관 · "
+            f"최대 {history.get('capacity', 300)}건 보관 · 이전 {history.get('excluded', 0)}건 제외"
+        )
+        self._update_selected_detail()
+        self._last_explanation_at = datetime.now()
+        self._last_state_at = self._last_explanation_at
+        self._update_refresh_status()
 
     def _render_influence_events(self, events):
         scroll_position = self.influence_table.verticalScrollBar().value()
+        self._displayed_events = deepcopy(events)
+        self.influence_table.blockSignals(True)
+        self.influence_table.clearSelection()
         self.influence_table.setRowCount(len(events))
-        for row, item in enumerate(events):
+        for row, item in enumerate(self._displayed_events):
+            if not item.get("event_id"):
+                item["event_id"] = f"{item.get('timestamp', 0)}:{item.get('source', '')}:{row}"
             category = item.get("category", "")
             marker = {"positive": "+", "negative": "-", "recovery": "회복 "}.get(category, "변화 ")
             score = abs(int(item.get("impact_score", 0)))
             values = [
                 datetime.fromtimestamp(item.get("timestamp", 0)).strftime("%H:%M:%S"),
-                item.get("source", ""),
+                item.get("source", "") + (f" · {item['sample_count']}회" if item.get("sample_count", 1) > 1 else ""),
                 f"{marker}{score}",
                 f"{item.get('delta_valence', 0):+.3f}",
                 f"{item.get('delta_arousal', 0):+.3f}",
@@ -713,7 +780,10 @@ class RussellEmotionDialog(QDialog):
             }.get(category, QColor("#4b5563"))
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(value)
+                cell.setData(Qt.ItemDataRole.UserRole, item.get("event_id"))
                 cell.setToolTip(value)
+                if column == 2:
+                    cell.setToolTip("사건 반영 시 현재 좌표가 이동한 크기(0~99). 목표 좌표·감정 성분 변화는 상세에서 확인하세요.")
                 if column >= 2:
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if column == 2:
@@ -722,7 +792,130 @@ class RussellEmotionDialog(QDialog):
                     font.setBold(True)
                     cell.setFont(font)
                 self.influence_table.setItem(row, column, cell)
+            if self._selected_event_id is not None and item.get("event_id") == self._selected_event_id:
+                self.influence_table.selectRow(row)
+        self.influence_table.blockSignals(False)
         self.influence_table.verticalScrollBar().setValue(scroll_position)
+
+    def _on_influence_selected(self):
+        selected = self.influence_table.selectedItems()
+        if not selected:
+            return
+        self._selected_event = deepcopy(self._displayed_events[selected[0].row()])
+        self._selected_event_id = self._selected_event.get("event_id")
+        self._update_selected_detail()
+
+    def _follow_latest(self):
+        self._selected_event_id = None
+        self._selected_event = None
+        self.influence_table.blockSignals(True)
+        self.influence_table.clearSelection()
+        self.influence_table.blockSignals(False)
+        self._update_selected_detail()
+
+    def _update_selected_detail(self):
+        if self._selected_event is None:
+            item = self._latest_events[0] if self._latest_events else None
+            self.detail_status_label.setText("최신 기록 따라가는 중")
+        else:
+            matching = next((event for event in self._displayed_events
+                             if event.get("event_id") == self._selected_event_id), None)
+            if matching is not None:
+                self._selected_event = deepcopy(matching)
+            item = self._selected_event
+            suffix = "목록 고정 중" if self._influence_paused else "선택 유지 중"
+            if matching is None:
+                suffix = "최근 목록에서 제외된 기록 · 상세 보존"
+            self.detail_status_label.setText(suffix)
+        self._render_event_detail(item)
+
+    def _render_event_detail(self, item):
+        if not item:
+            self.detail_view.setPlainText("기록을 기다리는 중입니다.")
+            return
+        start = datetime.fromtimestamp(item.get("started_at") or item.get("timestamp", 0))
+        end = datetime.fromtimestamp(item.get("timestamp", 0))
+        lines = [f"{item.get('source', '감정 사건')} · {start:%H:%M:%S} ~ {end:%H:%M:%S}",
+                 f"반영 {item.get('sample_count', 1)}회 · {item.get('details') or '추가 설명 없음'}", "",
+                 "현재 좌표 · 구간 시작 → 마지막 반영 직후",
+                 f"V {item.get('before_valence', 0):+.3f} → {item.get('after_valence', 0):+.3f} · "
+                 f"A {item.get('before_arousal', 0):+.3f} → {item.get('after_arousal', 0):+.3f}",
+                 f"이 사건의 직접 좌표 변화 합계: ΔV {item.get('delta_valence', 0):+.3f}, ΔA {item.get('delta_arousal', 0):+.3f}"]
+        if item.get("target_before") and item.get("target_after"):
+            before, after = item["target_before"], item["target_after"]
+            change = item.get("target_changes", {})
+            lines.extend(["목표 좌표 · 구간 시작 → 마지막 반영 직후",
+                          f"V {before['valence']:+.3f} → {after['valence']:+.3f} · A {before['arousal']:+.3f} → {after['arousal']:+.3f}",
+                          f"목표 변화 합계: ΔV {change.get('valence', 0):+.3f}, ΔA {change.get('arousal', 0):+.3f}"])
+        final = item.get("final_emotion", {})
+        if final:
+            lines.append(f"마지막 반영 직후 감정: {self.EMOTION_NAMES.get(final['emotion'], final['emotion'])} · 강도 {final['intensity']:.1%}")
+        lines.extend(["", "감정 성분 변화 · %는 성분 강도, %p는 증감량"])
+        changes = item.get("occ_changes", {})
+        if not changes:
+            lines.append("감정 성분의 직접 증감 없음")
+        for name, delta in changes.items():
+            before = item.get("occ_before", {}).get(name)
+            after = item.get("occ_after", {}).get(name)
+            values = f"{before:.1%} → {after:.1%} · " if before is not None and after is not None else ""
+            lines.append(f"{self.OCC_NAMES.get(name, name)}: {values}{delta * 100:+.2f}%p")
+        personality = item.get("personality", {})
+        lines.extend(["", f"당시 성격 프리셋: {personality.get('preset', '기록 없음')}"])
+        if item.get("weight_applied", True):
+            lines.append(f"기본 가중치 {item.get('base_weight', 0):.3f} × 보정 {item.get('personality_multiplier', 1):.3f} = 최종 {item.get('adjusted_weight', 0):.3f}")
+        else:
+            lines.append("성격 가중치 보정 적용 없음")
+        lines.extend(item.get("personality_factors", []))
+        trait_names = {"extraversion": "외향성", "agreeableness": "친화성", "conscientiousness": "성실성",
+                       "neuroticism": "신경증", "openness": "개방성"}
+        traits = personality.get("traits", {})
+        if traits:
+            lines.append(" · ".join(f"{trait_names.get(key, key)} {value:.2f}" for key, value in traits.items()))
+        inputs = item.get("event_input", {})
+        lines.extend(["", "입력값 · 마지막 반영 기준" if item.get("sample_count", 1) > 1 else "입력값"])
+        names = {"movement_speed": "쓰다듬기 속도(px/초)", "elapsed_seconds": "지속 시간(초)",
+                 "comfort": "부드러움 계수", "amount": "이번 보상량", "idle_seconds": "방치 시간(초)",
+                 "pressure_before": "방치 압력 전", "pressure_after": "방치 압력 후",
+                 "idle_valence_before": "방치의 V 기여 전", "idle_valence_after": "방치의 V 기여 후",
+                 "idle_arousal_before": "방치의 A 기여 전", "idle_arousal_after": "방치의 A 기여 후",
+                 "goal_relevance": "목표 관련성", "expectedness": "예상도", "controllability": "통제 가능성(참고 입력)",
+                 "self_attribution": "자기 귀속", "agent_benevolence": "타인 의도", "confidence": "인식 신뢰도",
+                 "label": "인식 표정", "normalized_label": "해석한 표정", "occ_weights": "감정 성분 반영 비율",
+                 "influence": "인식 반영 계수", "valence_bias": "사건의 V 추가 보정", "arousal_bias": "사건의 A 추가 보정",
+                 "negative_retention": "부정 성분 유지율", "positive_retention": "긍정 성분 유지율",
+                 "bias_retention": "사건 좌표 보정 유지율",
+                 "progress": "드래그 진행 비율", "step": "이번 누적량", "valence": "입력 V", "arousal": "입력 A"}
+        if not inputs:
+            lines.append("별도 입력값 없음")
+        for key, value in inputs.items():
+            text = f"{value:.4f}" if isinstance(value, (int, float)) else json.dumps(value, ensure_ascii=False)
+            limits = item.get("input_ranges", {}).get(key, {})
+            if limits and limits["min"] != limits["max"]:
+                text += f" (구간 범위 {limits['min']:.4f}~{limits['max']:.4f})"
+            lines.append(f"{names.get(key, key)}: {text}")
+        if item.get("source") == "쓰다듬기" and item.get("sample_count", 1) > 1:
+            lines.append(f"구간 누적 보상량: {item.get('adjusted_weight', 0):.4f} · 실제 성분 변화는 위 증감량 참조")
+        position = self.detail_view.verticalScrollBar().value()
+        text = "\n".join(lines)
+        if self.detail_view.toPlainText() != text:
+            self.detail_view.setPlainText(text)
+            self.detail_view.verticalScrollBar().setValue(position)
+
+    def _update_refresh_status(self):
+        failed = getattr(self, "_explanation_provider_failed", False)
+        state_failed = getattr(self, "_state_provider_failed", False)
+        last = self._last_explanation_at.strftime("%H:%M:%S") if self._last_explanation_at else "없음"
+        if failed:
+            state = "좌표도 갱신 실패 · 마지막 좌표 보존" if state_failed else (
+                "좌표 별도 갱신 중" if self._state_provider is not None else "마지막 좌표 보존")
+            self.refresh_status_label.setText(f"근거 갱신 실패 · 마지막 정상 갱신 {last} · {state}")
+            self.refresh_status_label.setStyleSheet("color: #a53c22;")
+        elif state_failed:
+            self.refresh_status_label.setText("좌표 갱신 실패 · 마지막 정상 좌표 보존")
+            self.refresh_status_label.setStyleSheet("color: #a53c22;")
+        elif self._last_explanation_at:
+            self.refresh_status_label.setText(f"근거 실시간 · 마지막 정상 갱신 {last}")
+            self.refresh_status_label.setStyleSheet("color: #4667a8;")
 
     def _toggle_influence_pause(self):
         self.set_influence_paused(not self._influence_paused)
@@ -738,11 +931,13 @@ class RussellEmotionDialog(QDialog):
         if not paused:
             self._refresh_from_provider()
             self._render_influence_events(self._latest_events)
+            self._update_selected_detail()
 
     def _refresh_from_provider(self):
         if self._explanation_provider is not None:
             try:
                 snapshot = self._explanation_provider()
+                self.update_explanation(snapshot)
             except Exception as exc:
                 self._explanation_provider_failed = True
                 log_throttled('mood.ui.explanation_failed', '감정 설명 공급자 갱신에 실패했습니다.',
@@ -755,24 +950,29 @@ class RussellEmotionDialog(QDialog):
                     self._explanation_provider_failed = False
                 # The explanation already contains coordinates and intensity.
                 # Record one graph sample per refresh, preserving the 45s span.
-                self.update_explanation(snapshot)
+                self._state_provider_failed = False
+                self._update_refresh_status()
                 return
         if self._state_provider is None:
+            self._update_refresh_status()
             return
         try:
             valence, arousal, dominant = self._state_provider()
         except Exception as exc:
             self._state_provider_failed = True
-            log_throttled('mood.ui.state_fallback', '감정 좌표 공급자가 실패해 중립값을 표시합니다.',
+            log_throttled('mood.ui.state_fallback', '감정 좌표 갱신이 실패해 마지막 정상값을 보존합니다.',
                           key=f'state:{id(self)}', interval=5,
-                          category='오류', level='ERROR', error=str(exc), fallback=[0.0, 0.0, 'neutral'])
-            valence, arousal, dominant = 0.0, 0.0, "neutral"
+                          category='오류', level='ERROR', error=str(exc))
+            self._update_refresh_status()
+            return
         else:
             if getattr(self, '_state_provider_failed', False):
                 log_event('mood.ui.state_recovered', '감정 좌표 공급자 갱신을 복구했습니다.',
                           category='캐릭터 상태')
                 self._state_provider_failed = False
+        self._last_state_at = datetime.now()
         self.update_state(valence, arousal, dominant)
+        self._update_refresh_status()
 
     def start_auto_refresh(self, interval_ms: int = 250) -> None:
         if not self._refresh_timer.isActive():
@@ -795,3 +995,7 @@ class RussellEmotionDialog(QDialog):
             self.canvas.animation_timer.start(16)
         self._refresh_from_provider()
         super().showEvent(event)
+        if not getattr(self, "_has_been_shown", False):
+            self._has_been_shown = True
+            self.pause_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            QTimer.singleShot(0, lambda: self.content_scroll.verticalScrollBar().setValue(0))

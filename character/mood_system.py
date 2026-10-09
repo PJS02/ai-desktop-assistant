@@ -2,6 +2,7 @@
 # Russell 2D 감정 모델(Valence × Arousal) 기반
 import math
 import time
+from copy import deepcopy
 from app_logging import log_event, log_throttled, new_trace_id
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -77,14 +78,29 @@ class EmotionInfluence:
     after_arousal: float = 0.0
     occ_changes: dict[str, float] = field(default_factory=dict)
     details: str = ""
+    event_id: str = ""
+    started_at: float = 0.0
+    sample_count: int = 1
+    event_input: dict = field(default_factory=dict)
+    first_input: dict = field(default_factory=dict)
+    input_ranges: dict = field(default_factory=dict)
+    personality: dict = field(default_factory=dict)
+    occ_before: dict[str, float] = field(default_factory=dict)
+    occ_after: dict[str, float] = field(default_factory=dict)
+    target_before: dict[str, float] = field(default_factory=dict)
+    target_after: dict[str, float] = field(default_factory=dict)
+    coordinate_changes: dict[str, float] = field(default_factory=dict)
+    target_changes: dict[str, float] = field(default_factory=dict)
+    final_emotion: dict = field(default_factory=dict)
+    weight_applied: bool = True
 
     @property
     def delta_valence(self) -> float:
-        return self.after_valence - self.before_valence
+        return self.coordinate_changes.get("valence", self.after_valence - self.before_valence)
 
     @property
     def delta_arousal(self) -> float:
-        return self.after_arousal - self.before_arousal
+        return self.coordinate_changes.get("arousal", self.after_arousal - self.before_arousal)
 
     @property
     def impact_score(self) -> int:
@@ -169,11 +185,30 @@ class MoodSystem:
         self._hysteresis_bonus = 0.15  # 현재 감정 유지 시 거리 추가 보너스
 
         # 설명 가능한 감정 AI(XAI)용 최근 판단 근거. 메모리 안에서만 유지하며
-        # 캐릭터 실행 중 일어난 사건을 최신 30건까지 보여준다.
-        self._emotion_influences: deque[EmotionInfluence] = deque(maxlen=30)
+        # 캐릭터 실행 중 일어난 사건을 최신 300건까지 보여준다.
+        self._emotion_influences: deque[EmotionInfluence] = deque(maxlen=300)
+        self._excluded_influence_count = 0
         self._last_recovery_trace_at = 0.0
         self._last_influence_trace_id = None
         self._decay_block_reason = None
+
+    def _personality_snapshot(self) -> dict:
+        result = {"preset": "미설정", "traits": {}}
+        if self.personality_system is not None:
+            result["preset"] = getattr(self.personality_system, "preset_name", "사용자 설정")
+            model = getattr(self.personality_system, "personality", None)
+            if model is not None and hasattr(model, "to_dict"):
+                result["traits"] = deepcopy(model.to_dict())
+        return result
+
+    def _capture_emotion_state(self) -> dict:
+        """계산을 실행하지 않고 사건 시작 시점의 값을 보존한다."""
+        return {
+            "coordinates": self.get_russell_state(),
+            "target": {"valence": self._target_valence, "arousal": self._target_arousal},
+            "occ": dict(self.occ_intensities),
+            "personality": self._personality_snapshot(),
+        }
 
     def _clamp_russell_to_circle(self) -> None:
         """Russell 좌표를 단위원 내부로 정규화한다."""
@@ -249,6 +284,7 @@ class MoodSystem:
         """커서로 부드럽게 쓰다듬을 때 작은 기쁨과 친밀감을 누적한다."""
         if self.should_refuse_pet():
             return 0.0
+        state_before = self._capture_emotion_state()
         before = self.get_russell_state()
         before_occ = dict(self.occ_intensities)
 
@@ -288,6 +324,17 @@ class MoodSystem:
             self._event_arousal_bias + 0.03 * amount,
         )
         self._update_russell_from_occ()
+        if amount > 0.0:
+            self._record_influence(
+                source="쓰다듬기", category="positive", base_weight=amount,
+                adjusted_weight=amount, personality_multiplier=1.0,
+                personality_factors=[], before=(before["valence"], before["arousal"]),
+                before_occ=before_occ, state_before=state_before,
+                weight_applied=False, merge_window=0.5,
+                details="부드러운 쓰다듬기로 기쁨·감사·만족을 누적하고 부정 감정을 완화",
+                event_input={"movement_speed": movement_speed, "elapsed_seconds": elapsed_seconds,
+                             "comfort": comfort, "amount": amount},
+            )
         log_throttled('mood.pet', '쓰다듬기 보상을 감정 상태에 반영했습니다.',
                       key=f'pet:{id(self)}', interval=1.5, category='캐릭터 상태',
                       movement_speed=movement_speed, elapsed_seconds=elapsed_seconds,
@@ -386,10 +433,12 @@ class MoodSystem:
             self_attribution=0.2,
             agent_benevolence=0.2,
         )
-        self.appraise_event(event, weight=0.5, valence_bias=0.04, arousal_bias=0.08)
+        self.appraise_event(event, weight=0.5, valence_bias=0.04, arousal_bias=0.08,
+                            source="혼자 놀기", details="스스로 놀며 즐거움과 활력을 얻음")
 
     def on_self_rest(self):
         """스스로 쉬며 부정 감정을 조금 회복한다."""
+        state_before = self._capture_emotion_state()
         for emotion, factor in {
             OccEmotionToMood.DISTRESS: 0.9,
             OccEmotionToMood.ANGER: 0.88,
@@ -401,7 +450,9 @@ class MoodSystem:
             expectedness=0.8,
             controllability=0.7,
         )
-        self.appraise_event(event, weight=0.4, valence_bias=0.05, arousal_bias=-0.1)
+        self.appraise_event(event, weight=0.4, valence_bias=0.05, arousal_bias=-0.1,
+                            source="스스로 쉬기", details="휴식으로 고통·분노·두려움을 완화",
+                            state_before=state_before)
 
     def on_self_curiosity(self):
         """혼자 주변을 살피며 관심과 적당한 각성도를 얻는다."""
@@ -411,7 +462,8 @@ class MoodSystem:
             controllability=0.5,
             self_attribution=0.1,
         )
-        self.appraise_event(event, weight=0.4, valence_bias=0.03, arousal_bias=0.12)
+        self.appraise_event(event, weight=0.4, valence_bias=0.03, arousal_bias=0.12,
+                            source="주변 살피기", details="주변을 살피며 관심과 각성도를 얻음")
 
     def on_task_complex(self):
         """복잡한 작업 감지 - 생각함"""
@@ -457,6 +509,7 @@ class MoodSystem:
 
     def on_ball_play(self):
         """공을 찼을 때 - 작은 즐거움과 각성도 상승"""
+        state_before = self._capture_emotion_state()
         recovery = {
             OccEmotionToMood.DISTRESS: 0.85,
             OccEmotionToMood.FEAR: 0.88,
@@ -480,7 +533,8 @@ class MoodSystem:
             arousal_bias=0.04,
             source="공놀이",
             category="positive",
-            details="캐릭터가 공을 차며 즐거움과 각성도가 상승",
+            details="공을 차며 즐거움과 각성도가 상승하고 부정 감정이 완화",
+            state_before=state_before,
         )
         self._emotion_hold_until = max(
             self._emotion_hold_until,
@@ -537,6 +591,7 @@ class MoodSystem:
         if weights is None:
             return False
 
+        state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
 
@@ -566,14 +621,17 @@ class MoodSystem:
             before=before,
             before_occ=before_occ,
             details=f"인식 신뢰도 {confidence * 100:.0f}%",
+            state_before=state_before, weight_applied=False,
             merge_window=1.5,
             event_input={'label': label, 'normalized_label': emotion, 'confidence': confidence,
+                         'influence': influence,
                          'occ_weights': {key.value: value for key, value in weights.items()}},
         )
         return True
 
     def apply_drag_displeasure(self, elapsed_seconds: float) -> None:
         """드래그 지속 시간에 비례해 불쾌감(ANGER/DISTRESS) 누적"""
+        state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
         progress = max(0.0, min(1.0, elapsed_seconds / 20.0))
@@ -598,6 +656,7 @@ class MoodSystem:
             before=before,
             before_occ=before_occ,
             details=f"드래그 지속 {elapsed_seconds:.1f}초",
+            state_before=state_before, weight_applied=False,
             merge_window=1.5,
             event_input={'elapsed_seconds': elapsed_seconds, 'progress': progress, 'step': step},
         )
@@ -614,10 +673,12 @@ class MoodSystem:
         source: str = "감정 사건",
         category: str | None = None,
         details: str = "",
+        state_before: dict | None = None,
     ) -> None:
         """EmotionEvent 평가: OCC 기반 감정 업데이트 (성격 가중치 적용)"""
-        before = (self.russell.valence, self.russell.arousal)
-        before_occ = dict(self.occ_intensities)
+        state_before = state_before or self._capture_emotion_state()
+        before = (state_before["coordinates"]["valence"], state_before["coordinates"]["arousal"])
+        before_occ = state_before["occ"]
         base_weight = weight
         personality_factors = []
 
@@ -686,7 +747,8 @@ class MoodSystem:
             before=before,
             before_occ=before_occ,
             details=details,
-            event_input=asdict(event),
+            event_input={**asdict(event), "valence_bias": valence_bias, "arousal_bias": arousal_bias},
+            state_before=state_before,
         )
 
         # 사건 직후에는 감정이 바로 사라지지 않도록 잠시 유지한다.
@@ -714,13 +776,25 @@ class MoodSystem:
         details: str = "",
         merge_window: float = 0.0,
         event_input: dict | None = None,
+        state_before: dict | None = None,
+        weight_applied: bool = True,
     ) -> None:
         """좌표와 OCC의 전후 차이를 계산해 설명 기록을 추가한다."""
         now = time.time()
+        state_before = state_before or {
+            "coordinates": {"valence": before[0], "arousal": before[1]},
+            "occ": before_occ,
+            "target": {"valence": self._target_valence, "arousal": self._target_arousal},
+            "personality": self._personality_snapshot(),
+        }
+        target_after = {"valence": self._target_valence, "arousal": self._target_arousal}
+        coordinate_changes = {"valence": self.russell.valence - before[0],
+                              "arousal": self.russell.arousal - before[1]}
+        inputs = deepcopy(event_input or {})
         occ_changes = {
             emotion.value: self.occ_intensities[emotion] - before_occ.get(emotion, 0.0)
             for emotion in self.occ_intensities
-            if abs(self.occ_intensities[emotion] - before_occ.get(emotion, 0.0)) >= 0.0005
+            if abs(self.occ_intensities[emotion] - before_occ.get(emotion, 0.0)) > 1e-12
         }
         item = EmotionInfluence(
             timestamp=now,
@@ -736,13 +810,27 @@ class MoodSystem:
             after_arousal=self.russell.arousal,
             occ_changes=occ_changes,
             details=details,
+            started_at=now, event_input=inputs, first_input=deepcopy(inputs),
+            input_ranges={key: {"min": value, "max": value} for key, value in inputs.items()
+                          if isinstance(value, (int, float)) and not isinstance(value, bool)},
+            personality=deepcopy(state_before["personality"]),
+            occ_before={emotion.value: value for emotion, value in before_occ.items()},
+            occ_after={emotion.value: value for emotion, value in self.occ_intensities.items()},
+            target_before=dict(state_before["target"]), target_after=target_after,
+            target_changes={key: target_after[key] - state_before["target"][key]
+                            for key in target_after},
+            coordinate_changes=coordinate_changes, final_emotion=self.decide_emotion(),
+            weight_applied=weight_applied,
         )
 
         merged = bool(
             merge_window > 0
             and self._emotion_influences
             and self._emotion_influences[-1].source == source
-            and now - self._emotion_influences[-1].timestamp <= merge_window
+            and self._emotion_influences[-1].category == category
+            and self._emotion_influences[-1].personality == item.personality
+            and self._emotion_influences[-1].personality_factors == personality_factors
+            and 0 <= now - self._emotion_influences[-1].timestamp <= merge_window
         )
         if merged:
             previous = self._emotion_influences[-1]
@@ -754,10 +842,31 @@ class MoodSystem:
             item.base_weight += previous.base_weight
             item.adjusted_weight += previous.adjusted_weight
             item.occ_changes = merged_occ
+            item.event_id = previous.event_id
+            item.started_at = previous.started_at
+            item.sample_count += previous.sample_count
+            item.first_input = deepcopy(previous.first_input)
+            item.occ_before = dict(previous.occ_before)
+            item.target_before = dict(previous.target_before)
+            # Sum only this cause's steps; interpolation between samples is not an input effect.
+            for key in coordinate_changes:
+                item.coordinate_changes[key] += previous.coordinate_changes[key]
+                item.target_changes[key] += previous.target_changes[key]
+            for key, limits in previous.input_ranges.items():
+                if key in item.input_ranges:
+                    item.input_ranges[key]["min"] = min(limits["min"], item.input_ranges[key]["min"])
+                    item.input_ranges[key]["max"] = max(limits["max"], item.input_ranges[key]["max"])
+                else:
+                    item.input_ranges[key] = dict(limits)
+            if item.base_weight:
+                item.personality_multiplier = item.adjusted_weight / item.base_weight
             self._emotion_influences[-1] = item
         else:
-            self._emotion_influences.append(item)
             self._last_influence_trace_id = new_trace_id('mood')
+            item.event_id = self._last_influence_trace_id
+            if len(self._emotion_influences) == self._emotion_influences.maxlen:
+                self._excluded_influence_count += 1
+            self._emotion_influences.append(item)
         data = dict(influence=item.to_dict(), merged=merged, event_input=event_input,
                     occ_after={emotion.value: intensity for emotion, intensity in self.occ_intensities.items()},
                     target={'valence': self._target_valence, 'arousal': self._target_arousal},
@@ -794,9 +903,27 @@ class MoodSystem:
 
     def update_idle_pressure(self, idle_seconds: float) -> None:
         """방치 시간을 연속적인 감정 압력으로 변환한다."""
+        state_before = self._capture_emotion_state()
+        previous_pressure = self._idle_pressure
         idle_seconds = max(0.0, float(idle_seconds))
         self._idle_pressure = max(0.0, min(1.0, (idle_seconds - 10.0) / 90.0))
         self._update_russell_from_occ()
+        if abs(self._idle_pressure - previous_pressure) > 1e-12:
+            self._record_influence(
+                source="상호작용 없는 시간의 영향",
+                category="negative" if self._idle_pressure > previous_pressure else "recovery",
+                base_weight=0.0, adjusted_weight=0.0, personality_multiplier=1.0,
+                personality_factors=[], weight_applied=False,
+                before=(state_before["coordinates"]["valence"], state_before["coordinates"]["arousal"]),
+                before_occ=state_before["occ"], state_before=state_before, merge_window=1.5,
+                details="방치 압력이 증가" if self._idle_pressure > previous_pressure else "상호작용으로 방치 압력이 감소",
+                event_input={"idle_seconds": idle_seconds, "pressure_before": previous_pressure,
+                             "pressure_after": self._idle_pressure,
+                             "idle_valence_before": -0.18 * previous_pressure,
+                             "idle_valence_after": -0.18 * self._idle_pressure,
+                             "idle_arousal_before": -0.08 * previous_pressure,
+                             "idle_arousal_after": -0.08 * self._idle_pressure},
+            )
     
     def _update_russell_from_occ(self) -> None:
         """OCC 강도를 Russell 좌표로 직접 변환
@@ -873,6 +1000,7 @@ class MoodSystem:
         if time.monotonic() < self._emotion_hold_until:
             return
 
+        state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
         # OCC 강도 감소 (부정 감정을 더 천천히 감소)
@@ -907,8 +1035,9 @@ class MoodSystem:
         coordinate_change = math.hypot(
             self.russell.valence - before[0], self.russell.arousal - before[1]
         )
-        emotional_load = max(before_occ.values(), default=0.0)
-        if emotional_load > 0.01 and coordinate_change >= 0.002 and now - self._last_recovery_trace_at >= 5.0:
+        occ_changed = any(abs(self.occ_intensities[e] - before_occ[e]) > 1e-12
+                          for e in self.occ_intensities)
+        if occ_changed or coordinate_change > 1e-12:
             self._record_influence(
                 source="시간 경과에 따른 자연 회복",
                 category="recovery",
@@ -921,7 +1050,11 @@ class MoodSystem:
                 ],
                 before=before,
                 before_occ=before_occ,
-                details="감정 강도를 중립 상태로 지수 감쇠",
+                details="감정 성분을 감쇠하고 현재 좌표를 목표 좌표로 점진적으로 이동",
+                state_before=state_before, weight_applied=False, merge_window=5.0,
+                event_input={"negative_retention": self._NEGATIVE_EMOTION_RETENTION,
+                             "positive_retention": self._POSITIVE_EMOTION_RETENTION,
+                             "bias_retention": 0.92},
             )
             self._last_recovery_trace_at = now
 
@@ -1013,6 +1146,7 @@ class MoodSystem:
 
         디버그 UI에서 감정을 직접 드래그해 조정할 때 사용한다.
         """
+        state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
         self.russell.valence = float(valence)
@@ -1032,6 +1166,8 @@ class MoodSystem:
             before_occ=before_occ,
             details=f"Valence {self.russell.valence:+.2f}, Arousal {self.russell.arousal:+.2f}",
             merge_window=1.5,
+            state_before=state_before, weight_applied=False,
+            event_input={"valence": float(valence), "arousal": float(arousal)},
         )
 
     def clear_manual_russell_state(self) -> None:
@@ -1061,12 +1197,7 @@ class MoodSystem:
             reverse=True,
         )
 
-        personality = {"preset": "미설정", "traits": {}}
-        if self.personality_system is not None:
-            personality["preset"] = getattr(self.personality_system, "preset_name", "사용자 설정")
-            model = getattr(self.personality_system, "personality", None)
-            if model is not None and hasattr(model, "to_dict"):
-                personality["traits"] = model.to_dict()
+        personality = self._personality_snapshot()
 
         # OCC 최고 강도가 낮을수록 자연 감쇠가 많이 진행된 것으로 표현한다.
         peak_occ = max(self.occ_intensities.values(), default=0.0)
@@ -1094,6 +1225,17 @@ class MoodSystem:
             "occ_components": occ_components,
             "recovery_percent": max(0, min(100, recovery_percent)),
             "coordinate_history": coordinate_history,
+            "target": {"valence": self._target_valence, "arousal": self._target_arousal},
+            "idle_pressure": self._idle_pressure,
+            "peak_occ_percent": int(round(peak_occ * 100.0)),
+            "decay_status": {
+                "reason": "manual_override" if self._manual_russell_override else
+                          ("emotion_hold" if time.monotonic() < self._emotion_hold_until else "active"),
+                "remaining_seconds": max(0.0, self._emotion_hold_until - time.monotonic()),
+            },
+            "history": {"capacity": self._emotion_influences.maxlen,
+                        "retained": len(self._emotion_influences), "shown": len(recent_events),
+                        "excluded": self._excluded_influence_count},
         }
 
     def has_emotion_changed(self) -> Tuple[bool, str, str]:
