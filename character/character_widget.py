@@ -1073,7 +1073,10 @@ class CharacterWidget(QLabel):
         has_changed, old_emotion, new_emotion = self.mood_system.has_emotion_changed()
         if has_changed:
             print(f"\n✨ [감정 변화] {old_emotion} → {new_emotion}")
-            print(self.mood_system.get_formatted_mood_log())
+            log_event('mood.snapshot', '감정 변화 후 상태', category='캐릭터 상태',
+                      reason='emotion_changed', old_emotion=old_emotion, new_emotion=new_emotion,
+                      state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
+                      formatted_state=self.mood_system.get_formatted_mood_log())
             print()
         
         self.update_action(mood)
@@ -1420,7 +1423,9 @@ class CharacterWidget(QLabel):
             self._mark_character_interaction()
             self.drag_pos = event.globalPosition().toPoint()
             print(f"[클릭 이벤트 발생]")
-            print(self.mood_system.get_formatted_mood_log())
+            log_event('mood.snapshot', '클릭 후 감정 상태', category='캐릭터 상태', reason='click',
+                      state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
+                      formatted_state=self.mood_system.get_formatted_mood_log())
             
 
             self.is_dragging = True
@@ -1914,7 +1919,10 @@ class CharacterWidget(QLabel):
             
             # 마지막 아이템이면 감정 로그 출력
             if len(self.held_items) >= 1:
-                print(self.mood_system.get_formatted_mood_log())
+                log_event('mood.snapshot', '아이템 획득 후 감정 상태', category='캐릭터 상태', reason='item_acquired',
+                          item=item_name, held_item_count=len(self.held_items),
+                          state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
+                          formatted_state=self.mood_system.get_formatted_mood_log())
                 print()
             
             # 현재 감정 애니메이션 갱신 + 아이콘 표시
@@ -1958,7 +1966,10 @@ class CharacterWidget(QLabel):
                 self.mood_system.on_item_dropped()
             
             print(f"\n[모든 아이템 반환 완료]")
-            print(self.mood_system.get_formatted_mood_log())
+            log_event('mood.snapshot', '아이템 반환 후 감정 상태', category='캐릭터 상태', reason='items_released',
+                      held_item_count=len(self.held_items),
+                      state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
+                      formatted_state=self.mood_system.get_formatted_mood_log())
             print()
             
             mood = self.mood_system.decide_emotion()

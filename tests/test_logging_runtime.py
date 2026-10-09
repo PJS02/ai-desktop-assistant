@@ -10,7 +10,6 @@ import queue
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QApplication
 
 import app_logging as logs
@@ -248,14 +247,14 @@ def test_log_stream_flushes_current_and_remaining_worker_buffers(qt_app):
         manager._unsubscribe()
 
 
-def test_ui_summary_is_one_line_details_preserve_full_payload_and_search(qt_app):
+def test_ui_row_details_preserve_full_payload_and_search(qt_app):
     manager = AppLogManager()
     window = LogWindow(manager)
     try:
         logs.log_event('runtime.prompt', 'summary\nsecond summary', category='대화·AI',
                        trace_id='trace-visible', prompt='first\nlast searchable unique body')
         qt_app.processEvents()
-        assert window.output.document().blockCount() == 1
+        assert window.output.topLevelItemCount() == 1
         window.show_entry_details()
         assert json.loads(window.details.toPlainText())['data']['prompt'] == 'first\nlast searchable unique body'
         window.search_input.setText('searchable unique body')
@@ -276,10 +275,8 @@ def test_visible_retention_tracks_manager_and_details_rows(qt_app):
         qt_app.processEvents()
         assert manager.evicted_count == 2
         assert len(window._visible_entries) == 2, 'live display must evict the same entries as the manager'
-        assert window.output.document().blockCount() == 2
-        cursor = window.output.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.Start)
-        window.output.setTextCursor(cursor)
+        assert window.output.topLevelItemCount() == 2
+        window.output.setCurrentItem(window.output.topLevelItem(0))
         assert json.loads(window.details.toPlainText())['data']['index'] == 2
         assert '제외 2개' in window.status_label.text()
     finally:
@@ -344,7 +341,7 @@ def test_child_app_log_and_settings_forward_once_keep_correlation_and_pid(record
     assert find(records, 'recognition.process_output_closed').data['exit_code'] == 7
 
 
-def test_malformed_protocol_does_not_stop_later_output_and_stderr_is_error(records):
+def test_malformed_protocol_does_not_stop_later_output_and_unknown_stderr_is_warning(records):
     manager = app_main.MediaPipeProcessManager()
     process = SimpleNamespace(stdout=io.StringIO('APP_LOG broken\nAPP_SETTINGS broken\nlater line\n'),
                               stderr=io.StringIO('native diagnostic\n'), pid=271, poll=lambda: 1)
@@ -354,7 +351,8 @@ def test_malformed_protocol_does_not_stop_later_output_and_stderr_is_error(recor
     assert find(records, 'settings.invalid_response').category == '오류'
     assert find(records, 'recognition.process_stdout').message == 'later line'
     stderr = find(records, 'recognition.process_stderr')
-    assert stderr.category == '오류' and stderr.data['stream'] == 'stderr'
+    assert stderr.category == '사용자 인식' and stderr.level == 'WARNING'
+    assert stderr.message == 'native diagnostic' and stderr.data['stream'] == 'stderr'
 
 
 def test_child_that_closes_stdout_before_exit_still_logs_actual_exit_code(tmp_path, records):

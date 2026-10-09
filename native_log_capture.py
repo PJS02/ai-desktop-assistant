@@ -6,6 +6,7 @@ import sys
 import threading
 import traceback
 from app_logging import log_event
+from log_classification import classify_output
 
 
 class _EarlyStream:
@@ -30,8 +31,10 @@ class _EarlyStream:
             self.buffers[thread] = lines.pop()
         for line in lines:
             if line.strip():
+                category, level = classify_output(line, is_error=self.is_error)
                 log_event('bootstrap.stderr' if self.is_error else 'bootstrap.stdout', line.rstrip('\r'),
-                          category='오류' if self.is_error else '시스템', level='ERROR' if self.is_error else 'INFO')
+                          category=category, level=level,
+                          stream='stderr' if self.is_error else 'stdout')
         return result
     def flush_pending(self, all_threads=False):
         with self.lock:
@@ -39,8 +42,9 @@ class _EarlyStream:
             values = [self.buffers.pop(key, '') for key in keys]
         for value in values:
             if value.strip():
-                log_event('bootstrap.partial', value, category='오류' if self.is_error else '시스템',
-                          level='ERROR' if self.is_error else 'INFO', stream='stderr' if self.is_error else 'stdout')
+                category, level = classify_output(value, is_error=self.is_error)
+                log_event('bootstrap.partial', value, category=category,
+                          level=level, stream='stderr' if self.is_error else 'stdout')
     def flush(self):
         self.flush_pending()
         self.original.flush()
@@ -134,8 +138,9 @@ class StartupCapture:
     @staticmethod
     def _line(fd, line):
         if line.strip():
+            category, level = classify_output(line, is_error=fd == 2)
             log_event('native.stderr' if fd == 2 else 'native.stdout', line.rstrip('\r'),
-                      category='오류' if fd == 2 else '시스템', level='WARNING' if fd == 2 else 'INFO', fd=fd)
+                      category=category, level=level, fd=fd)
 
     def _exception(self, kind, value, tb):
         log_event('application.uncaught_exception', str(value), category='오류', level='ERROR',

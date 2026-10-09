@@ -8,6 +8,7 @@ import atexit
 
 from app_logging import (SESSION_ID, configure_logging, ingest_event, log_event,
                          new_trace_id, register_environment_secrets, shutdown_logging)
+from log_classification import classify_output
 
 _startup_capture = None
 if __name__ == '__main__':
@@ -128,7 +129,14 @@ class MediaPipeProcessManager(QObject):
     def _forward_stderr(self, process):
         for line in process.stderr:
             if line.strip():
-                log_event('recognition.process_stderr', line.rstrip('\r\n'), category='오류', level='ERROR', pid=process.pid, stream='stderr')
+                message = line.rstrip('\r\n')
+                category, level = classify_output(message, is_error=True)
+                # The stream belongs to recognition even when an unlabelled
+                # native diagnostic contains no domain-specific keyword.
+                if category == '시스템':
+                    category = '사용자 인식'
+                log_event('recognition.process_stderr', message, category=category,
+                          level=level, pid=getattr(process, 'pid', None), stream='stderr')
 
     def _forward_output(self, process) -> None:
         """자식 프로세스 출력을 메인 로그 수집기가 읽을 수 있도록 전달한다."""
