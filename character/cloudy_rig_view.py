@@ -47,7 +47,7 @@ _GL_BLEND, _GL_DEPTH_TEST, _GL_CULL_FACE = 0x0BE2, 0x0B71, 0x0B44
 _GL_ONE, _GL_ONE_MINUS_SRC_ALPHA = 1, 0x0303
 _GL_FLOAT, _GL_TRIANGLES = 0x1406, 0x0004
 _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
-_ACTIONS = {"idle", "walk", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land"}
+_ACTIONS = {"idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land"}
 
 
 def _texture_storage_bytes(part):

@@ -17,7 +17,7 @@ HOST_EMOTIONS = {
     "pride": "proud", "relief": "relieved", "pain": "hurt", "fatigue": "tired",
 }
 RIG_ACTIONS = frozenset({
-    "idle", "walk", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land",
+    "idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land",
 })
 
 
@@ -85,9 +85,9 @@ class RigAnimator(QObject):
         if self._released:
             return False
         name = str(animation_name or "idle")
-        if name.startswith("walk_"):
-            action = "walk"
-            self.set_emotion(name[5:])
+        if name.startswith(("walk_", "run_")):
+            action, _, emotion = name.partition("_")
+            self.set_emotion(emotion)
         elif name in RIG_ACTIONS:
             action = name
         else:

@@ -9,6 +9,7 @@ from PyQt6.QtCore import QRect
 COMMAND_ROWS = (
     (('look_left', '왼쪽 보기'), ('look_front', '정면 보기'), ('look_right', '오른쪽 보기')),
     (('walk_left', '왼쪽 이동'), ('stop', '가만히 있기'), ('walk_right', '오른쪽 이동')),
+    (('run_left', '왼쪽으로 달리기'), ('run_right', '오른쪽으로 달리기')),
     (('jump_left', '왼쪽 점프'), ('jump', '점프'), ('jump_right', '오른쪽 점프')),
     (('wave', '인사하기'), ('thinking', '생각하기'), ('sleep', '잠자기')),
     (('home', '기본 위치로 돌아가기'), ('resume', '자동 행동 재개')),
@@ -149,6 +150,12 @@ class ManualControl(QObject):
                       category='캐릭터 상태', trace_id=self.log_trace_id, command=command, reason='not_grounded')
             self._status('착지한 뒤 점프할 수 있습니다.')
             return
+        if command.startswith('run_') and host.rig_view is None:
+            log_event('character.manual.rejected', '달리기는 Cloudy 리깅 캐릭터에서만 사용할 수 있습니다.',
+                      category='캐릭터 상태', level='WARNING', trace_id=self.log_trace_id,
+                      command=command, reason='unsupported_renderer')
+            self._status('달리기는 Cloudy 리깅 캐릭터에서 사용할 수 있습니다.')
+            return
         if command in {'wave', 'thinking', 'sleep'} and host.rig_view is None:
             if not list((host.assets_path / command).glob('frame_*.png')):
                 log_event('character.manual.rejected', '요청한 동작의 PNG 프레임이 없습니다.',
@@ -173,7 +180,7 @@ class ManualControl(QObject):
         host._pending_user_greeting_until = None
         host._greeting_retry_timer.stop()
         if command.startswith('look_'):
-            if not was_active and host.is_moving:
+            if (not was_active and host.is_moving) or (self.motion == 'run' and command == 'look_front'):
                 self._stop_horizontal()
                 self._idle()
             self._look({'look_left': -65, 'look_front': 0, 'look_right': 65}[command])
@@ -221,7 +228,7 @@ class ManualControl(QObject):
                 self.timer.start()
         else:
             self.direction = -1 if command.endswith('left') else 1
-            self.motion = 'walk'
+            self.motion = 'run' if command.startswith('run_') else 'walk'
             self._look(self.direction * 65)
             host.is_moving = True
             host._movement_x = float(host.x())
@@ -239,6 +246,11 @@ class ManualControl(QObject):
         if host.is_dragging:
             self._stop_horizontal()
             self._status('직접 조작 중 · 캐릭터 잡기로 동작 중단')
+            return
+        if self.motion == 'run' and host.rig_view is None:
+            self._stop_horizontal()
+            self._idle()
+            self._status('달리기는 Cloudy 리깅 캐릭터에서 사용할 수 있습니다.')
             return
         now = time.monotonic()
         elapsed = min(.1, max(0, now - self.last_tick)) if self.last_tick is not None else .016
@@ -263,12 +275,17 @@ class ManualControl(QObject):
             self._idle()
             self._status('직접 조작 중 · 점프 완료, 제자리 대기')
             return
-        if self.motion == 'walk':
+        if self.motion in {'walk', 'run'}:
             if not self._ground_ready():
                 return
             host.is_moving = True
-            if not host.current_action.startswith('walk'):
-                host.current_action = host._get_walk_animation(host.mood_system.decide_emotion()['emotion'])
+            if not host.current_action.startswith(self.motion):
+                emotion = host.mood_system.decide_emotion()['emotion']
+                if self.motion == 'run':
+                    host.sprite_animator.set_emotion(emotion)
+                    host.current_action = 'run'
+                else:
+                    host.current_action = host._get_walk_animation(emotion)
                 host.update_render(host.current_action)
         if not self.direction:
             return

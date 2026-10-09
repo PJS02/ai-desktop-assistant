@@ -884,6 +884,10 @@ class CharacterWidget(QLabel):
                 or getattr(self, 'is_jumping', False) or getattr(self, '_character_closing', False)
                 or getattr(self, 'velocity_y', 0) != 0):
             return
+        if (self.rig_view is not None and self.sprite_animator.current_action == 'run'):
+            # Running lifts both feet within the authored pose; pin its support
+            # anchor instead of moving the host to cancel that airborne phase.
+            return
         standing = getattr(self, 'current_surface', None)
         if standing is None or standing not in getattr(self, 'surfaces', ()):
             return
@@ -1220,7 +1224,7 @@ class CharacterWidget(QLabel):
             self.rig_view.set_jump_active(bool(getattr(self, 'is_jumping', False)))
             if action in {"hovering", "fall", "jump"}:
                 self._rig_manual_action = None
-            if action.startswith("walk"):
+            if action.startswith(("walk", "run")):
                 self._rig_manual_action = None
                 self.sprite_animator.set_direction(self.is_flipped)
             self.sprite_animator.play(action, fps=24, loop=action not in {"wave", "land"})
@@ -1258,7 +1262,12 @@ class CharacterWidget(QLabel):
                 self._rig_manual_action = None
                 mood = self.mood_system.decide_emotion()
                 if self.on_ground and (self.is_moving or getattr(self, "_ball_chasing", False)):
-                    self.current_action = self._get_walk_animation(mood["emotion"])
+                    if (self._manual_control_active()
+                            and getattr(self.manual_control, 'motion', None) == 'run'):
+                        self.sprite_animator.set_emotion(mood["emotion"])
+                        self.current_action = 'run'
+                    else:
+                        self.current_action = self._get_walk_animation(mood["emotion"])
                     self.update_render(self.current_action)
                 else:
                     self.update_action(mood)
@@ -1278,7 +1287,7 @@ class CharacterWidget(QLabel):
     def set_pixmap_with_flip(self, pixmap):
         """좌우반전 상태에 따라 이미지 설정"""
         if self.rig_view is not None:
-            if self.sprite_animator.current_action == "walk":
+            if self.sprite_animator.current_action in {"walk", "run"}:
                 self.sprite_animator.set_direction(self.is_flipped)
             self._refresh_rig_overlay()
             return
@@ -2525,10 +2534,12 @@ class CharacterWidget(QLabel):
                 and current_x + body.x() < standing.x_max):
             self.velocity_y = 0
             self.velocity_x *= 0.95 ** frames
-            self._grounded_body_bottom = body_bottom
+            support_bottom = (previous_bottom if self.rig_view is not None
+                              and self.sprite_animator.current_action == 'run' else body_bottom)
+            self._grounded_body_bottom = support_bottom
             self._grounded_surface_level = standing.y_level
             self._physics_position_x = current_x
-            self._physics_position_y = standing.y_level - body_bottom
+            self._physics_position_y = standing.y_level - support_bottom
             self.move(round(current_x), round(self._physics_position_y))
             return
 
