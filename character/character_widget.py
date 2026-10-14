@@ -439,6 +439,10 @@ class CharacterWidget(QLabel):
                 or QApplication.activeModalWidget() is not None):
             return False
         body = self._physics_body_rect()
+        if getattr(self, 'show_debug', False):
+            # Diagnostics also paint in transparent host padding. Keep that
+            # display in front of the taskbar without enlarging collision bounds.
+            body = QRect(0, 0, self.width(), self.height())
         return self._taskbar_visibility_guard.ensure_visible(
             int(self.winId()),
             body_offset=(body.x(), body.y(), body.width(), body.height()),
@@ -2145,15 +2149,39 @@ class CharacterWidget(QLabel):
         self._paint_debug(painter)
         painter.end()
 
+    def _overlapping_window_surfaces(self):
+        """Use the physics hitbox for window contact, excluding host padding.
+
+        Keep distant windows as future landing candidates; only local overlap
+        and the current window directly under the feet count as contact.
+        """
+        origin = self.mapToGlobal(QPoint(0, 0))
+        body = self._physics_body_rect().translated(origin)
+        overlapping = []
+        for surface in self.surfaces:
+            if not surface.name.startswith('window_') or surface.height is None:
+                continue
+            window_rect = QRect(int(surface.x_min), int(surface.y_level),
+                                int(surface.x_max - surface.x_min), int(surface.height))
+            feet_touch = (self.on_ground and self.current_surface is surface
+                          and body.y() + body.height() == surface.y_level
+                          and body.x() + body.width() > surface.x_min
+                          and body.x() < surface.x_max)
+            if body.intersects(window_rect) or feet_touch:
+                overlapping.append(surface)
+        return overlapping
+
     def _paint_debug(self, painter):
         """Use host screen coordinates, including on the native GL child."""
         if not self.show_debug:
             return
         painter.save()
         origin = self.mapToGlobal(QPoint(0, 0))
-        host_rect = QRect(origin, self.size())
-        windows = [s for s in self.surfaces if s.name.startswith('window_')]
+        body = self._physics_body_rect()
+        windows = self._overlapping_window_surfaces()
         overlapping = []
+        painter.save()
+        painter.setClipRect(body, Qt.ClipOperation.IntersectClip)
         painter.setPen(QPen(QColor(255, 220, 0), 2))
         painter.setBrush(QBrush(QColor(255, 230, 0, 35)))
         for surface in windows:
@@ -2161,12 +2189,12 @@ class CharacterWidget(QLabel):
                 continue
             window_rect = QRect(int(surface.x_min), int(surface.y_level),
                                 int(surface.x_max - surface.x_min), int(surface.height))
-            if window_rect.intersects(host_rect):
-                overlapping.append(surface.window_title or surface.name.removeprefix('window_'))
-                painter.drawRect(window_rect.translated(-origin))
+            overlapping.append(surface.window_title or surface.name.removeprefix('window_'))
+            painter.drawRect(window_rect.translated(-origin))
+        painter.restore()
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(255, 90, 90), 2))
-        painter.drawRect(self._character_visual_rect().adjusted(0, 0, -1, -1))
+        painter.drawRect(body.adjusted(0, 0, -1, -1))
         painter.setPen(QPen(QColor(255, 165, 0), 3))
         for surface in self.surfaces:
             if surface.name == 'ground':
