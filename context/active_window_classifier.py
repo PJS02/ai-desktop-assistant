@@ -1,5 +1,3 @@
-import base64
-import io
 import json
 import re
 import threading
@@ -8,10 +6,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from rules_config import get_rules
+from ai.gemini_client import load_gemini_config, request_gemini
+from .rules_config import get_rules
 
 
 def get_active_window_info():
@@ -216,71 +214,15 @@ def build_response_schema():
     }
 
 
-def encode_image_base64(image):
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
 def call_gemini(prompt, config, image=None):
-    # Gemini API 호출 후 응답 텍스트를 반환합니다.
-    api_key = config.get("api_key", "")
-    if not api_key:
-        return ""
-
-    model = config.get("model", "gemma-3-4b-it")
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    parts = [{"text": prompt}]
-    if image is not None:
-        parts.append(
-            {
-                "inlineData": {
-                    "mimeType": "image/png",
-                    "data": encode_image_base64(image),
-                }
-            }
-        )
-
-    # responseJsonSchema로 JSON만 출력되도록 강제합니다.
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseJsonSchema": build_response_schema(),
-        },
-        "system_instruction": {
-            "parts": [{"text": build_system_instruction()}]
-        },
-    }
-    req = Request(
-        endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        method="POST",
+    """Legacy activity wrapper. New callers use request_gemini directly."""
+    return request_gemini(
+        prompt,
+        config,
+        image=image,
+        response_schema=build_response_schema(),
+        system_instruction=build_system_instruction(),
     )
-    req.add_header("Content-Type", "application/json")
-
-    for attempt in range(3):
-        try:
-            with urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            break
-        except HTTPError as exc:
-            if exc.code == 500 and attempt < 2:
-                time.sleep(1 + attempt)
-                continue
-            return f"[gemini error] {exc}"
-        except URLError as exc:
-            return f"[gemini error] {exc}"
-        except Exception as exc:
-            return f"[gemini error] {exc}"
-
-    candidates = data.get("candidates", [])
-    if not candidates:
-        return "[gemini error] no candidates"
-    parts = candidates[0].get("content", {}).get("parts", [])
-    if not parts:
-        return "[gemini error] empty content"
-    return parts[0].get("text", "").strip()
 
 
 def generate_dialogue_json(start_server=False):
@@ -297,8 +239,7 @@ def generate_dialogue_json(start_server=False):
         except OSError:
             pass
 
-    gemini_config_path = config_dir / "gemini_config.json"
-    gemini_config = load_json_file(gemini_config_path, {})
+    gemini_config = load_gemini_config()
     igdb_config_path = config_dir / "igdb_config.json"
     igdb_config = load_json_file(igdb_config_path, {})
     if not igdb_config.get("client_id") or not igdb_config.get("client_secret"):
@@ -322,7 +263,13 @@ def generate_dialogue_json(start_server=False):
 
     image = capture_active_window_image()
     prompt = build_gemini_prompt(info, category, url)
-    response = call_gemini(prompt, gemini_config, image=image)
+    response = request_gemini(
+        prompt,
+        gemini_config,
+        image=image,
+        response_schema=build_response_schema(),
+        system_instruction=build_system_instruction(),
+    )
     dialogue = extract_dialogue(response) if response else ""
 
     return {
@@ -476,8 +423,7 @@ def main():
     cache_dir.mkdir(exist_ok=True)
     url_cache_path = cache_dir / "url_cache.json"
     start_url_server(8765, url_cache_path)
-    gemini_config_path = config_dir / "gemini_config.json"
-    gemini_config = load_json_file(gemini_config_path, {})
+    gemini_config = load_gemini_config()
     igdb_config_path = config_dir / "igdb_config.json"
     igdb_config = load_json_file(igdb_config_path, {})
     if not igdb_config.get("client_id") or not igdb_config.get("client_secret"):
@@ -513,7 +459,13 @@ def main():
         if gemini_config.get("api_key"):
             image = capture_active_window_image()
             prompt = build_gemini_prompt(info, category, url)
-            response = call_gemini(prompt, gemini_config, image=image)
+            response = request_gemini(
+                prompt,
+                gemini_config,
+                image=image,
+                response_schema=build_response_schema(),
+                system_instruction=build_system_instruction(),
+            )
             if response:
                 dialogue = extract_dialogue(response)
                 print(f"[{timestamp}] gemini_full | {response}")

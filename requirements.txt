@@ -5,3 +5,4 @@ pygetwindow
 pywin32
 psutil
 pillow
+sentence-transformers

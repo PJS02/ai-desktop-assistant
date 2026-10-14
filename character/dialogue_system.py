@@ -4,6 +4,22 @@ from .dialogue_widget import DialogueBubble, DialogueNarrationBox, DialogueInput
 from typing import Optional, List
 import threading
 import json
+from memory.short_term_memory import ConversationMemory
+from memory.long_term_memory import LongTermMemory, get_importance_score
+from ai.gemini_client import load_gemini_config, request_gemini
+
+
+DIALOGUE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "importance": {"type": "integer", "minimum": 0, "maximum": 10},
+        "emotional_intensity": {"type": "integer", "minimum": 0, "maximum": 10},
+    },
+    "required": ["text", "importance", "emotional_intensity"],
+    "additionalProperties": False,
+}
+DIALOGUE_SYSTEM_INSTRUCTION = "JSON 객체만 출력하세요. text에는 사용자 답변, importance에는 저장 중요도 0~10 정수, emotional_intensity에는 캐릭터의 감정 강도 0~10 정수를 넣으세요."
 
 
 class DialogueSystem(QObject):
@@ -40,15 +56,15 @@ class DialogueSystem(QObject):
         self.last_request_time = 0  # 마지막 수동 요청 시간
         self.request_cooldown = 10  # 수동 요청 사이 최소 10초 (자동 감지와 분리)
         self.is_ai_responding = False  # AI 응답 중인지
+        # 앱 실행 중에만 유지되는 최근 대화 문맥(앱 종료 시 자동 삭제)
+        self.conversation_memory = ConversationMemory(max_messages=12, max_context_chars=4000)
+        self.long_term_memory = LongTermMemory()
     
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
-        from pathlib import Path
         try:
-            config_path = Path(__file__).resolve().parent.parent / "context" / "gemini_config.json"
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self.gemini_config = json.load(f)
+            self.gemini_config = load_gemini_config()
+            if self.gemini_config:
                 print("[대화 시스템] Gemini 설정 로드 완료")
         except Exception as e:
             print(f"[경고] Gemini 설정 로드 실패: {e}")
@@ -240,6 +256,8 @@ class DialogueSystem(QObject):
         
         # 사용자 대화를 먼저 표시
         self.show_dialogue(f"[사용자]: {user_input}", duration=3000)
+        # 다음 AI 답변이 이 질문을 문맥으로 볼 수 있도록 먼저 기록한다.
+        self.conversation_memory.add("user", user_input)
         
         # AI 응답을 별도 스레드에서 받기
         self.is_ai_responding = True
@@ -247,8 +265,6 @@ class DialogueSystem(QObject):
         
         def get_ai_response():
             try:
-                from context.active_window_classifier import call_gemini
-                
                 if not self.gemini_config:
                     self._load_gemini_config()
                 
@@ -261,6 +277,17 @@ class DialogueSystem(QObject):
                 personality_system = self.character_widget.personality_system
                 personality_description = personality_system.get_personality_for_prompt()
                 personality_tone = personality_system.get_dialogue_tone_hints()
+                # 저장된 대화를 프롬프트용 텍스트로 변환한다.
+                recent_context = self.conversation_memory.build_context()
+                # 현재 질문과 최근 대화를 바탕으로 회상 점수가 높은 기억을 가져온다.
+                long_term_context = ""
+                if self.long_term_memory.count():
+                    # 대명사·후속 질문을 이해할 수 있도록 최근 문맥도 검색에 포함한다.
+                    recall_query = f"{user_input}\n최근 대화 문맥:\n{recent_context[-1000:]}"
+                    long_term_context = "\n".join(
+                        f"- [발화자={result.speaker}, 중요도={result.importance}, 회상점수={result.recall_score:.3f}] {result.text}"
+                        for result in self.long_term_memory.search(recall_query)
+                    )
                 
                 # 감정 + 성격 기반 프롬프트 구성
                 prompt = f"""당신은 사용자의 데스크톱 어시스턴트 AI 캐릭터입니다.
@@ -280,19 +307,68 @@ class DialogueSystem(QObject):
 【 사용자 입력 】
 {user_input}
 
+【 최근 대화 문맥 】
+아래 기록을 참고해 자연스럽게 대화를 이어가되, 그대로 반복하지 마세요.
+{recent_context or "(최근 대화 기록이 없습니다)"}
+
+【 장기 기억 】
+아래 내용은 과거에 저장된 관련 기억입니다. 사실처럼 단정하지 말고 대화에 도움이 될 때만 참고하세요.
+user는 사용자 발화, assistant는 AI 답변, conversation은 과거의 혼합 기록입니다.
+AI 답변의 내용을 사용자가 직접 말한 사실로 해석하지 마세요.
+{long_term_context or "(관련 장기 기억이 없습니다)"}
+
 지침을 따르면서 사용자에게 자연스럽고 일관된 대답을 해주세요.
-응답은 한두 문장으로 간단하게 유지해주세요."""
+응답은 반드시 아래 JSON 형식만 사용하세요.
+{{"text": "사용자에게 보여줄 한두 문장 답변", "importance": 0~10 정수, "emotional_intensity": 0~10 정수}}
+
+emotional_intensity는 이 대화가 캐릭터에게 얼마나 감정적인 기억인지 별도로 평가하세요.
+캐릭터의 성격과 현재 감정 상태를 고려해 기쁨, 슬픔, 두려움, 애착 등 감정 반응의 강도를 0~10 정수로 표현하세요.
+감정이 긍정적인지 부정적인지와 관계없이 강도가 높으면 높은 점수, 평범하고 담담한 정보면 낮은 점수를 부여하세요.
+emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
+
+【 장기기억 중요도 판단 기준 】
+사용자 입력을 최근 대화와 검색된 장기기억 문맥에 비추어 아래 기준으로 평가하세요.
+1. 미래에 다시 언급될 가능성이 있는가?
+2. 사용자의 취향/관계/성향에 관한 정보인가?
+3. 중요한 사건인가?
+4. 약속이나 계획인가?
+5. 새롭게 알게 된 사실인가?
+6. 사용자가 명시적으로 기억해달라고 했는가?
+
+기준의 충족 정도와 향후 대화에서의 ㅁ 종합해 importance를 0~10 정수로 평가하세요.
+7점 이상은 장기기억에 저장할 가치가 있는 정보에 부여하세요.
+명시적인 기억 요청은 높은 중요도로 평가하세요.
+가벼운 인사, 일시적 잡담, 새로운 정보가 없는 반복은 낮게 평가하세요."""
                 
                 print(f"[API 요청] Gemini 호출 중... (수동 대화)")
                 print(f"[감정 상태] {emotion_description.replace(chr(10), ' | ')}")
-                response = call_gemini(prompt, self.gemini_config)
+                response = request_gemini(
+                    prompt,
+                    self.gemini_config,
+                    response_schema=DIALOGUE_RESPONSE_SCHEMA,
+                    system_instruction=DIALOGUE_SYSTEM_INSTRUCTION,
+                )
                 print(f"[응답] {response[:100] if response else '(없음)'}")
                 
                 # 에러 처리 및 응답 변환
                 response_text = self._process_gemini_response(response)
-                
+                # 정제된 AI 답변만 저장한다. 실패 원문은 다음 대화에 섞이지 않는다.
+                self.conversation_memory.add("assistant", response_text)
                 # 응답 표시 (메인 스레드에서 실행되도록 신호 사용)
                 self.character_widget.show_ai_response.emit(response_text)
+
+                # LLM이 7점 이상으로 평가한 대화의 두 발화를 분리해 저장한다.
+                # 저장 오류가 나도 이미 생성한 답변은 사용자에게 전달한다.
+                importance = get_importance_score(response)
+                if importance >= 7:
+                    try:
+                        metadata = json.loads(response)
+                        self.long_term_memory.remember_dialogue(
+                            user_input, response_text, importance=importance,
+                            emotional_intensity=metadata.get("emotional_intensity"),
+                        )
+                    except Exception as e:
+                        print(f"[장기기억 저장 오류] {e}")
                 
             except Exception as e:
                 error_msg = f"AI 응답 오류: {str(e)}"
@@ -361,6 +437,7 @@ class DialogueSystem(QObject):
             except (json.JSONDecodeError, ValueError):
                 # JSON이 아니면 그대로 사용
                 return response
+
     
 
 class QuickDialoguePresets:

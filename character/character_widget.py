@@ -14,14 +14,16 @@ from .sprite_animator import SpriteAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
+from ai.gemini_client import load_gemini_config, request_gemini
 
 # Context 모듈 import
 try:
     from context.active_window_classifier import (
         get_active_window_info,
-        call_gemini,
         extract_dialogue,
-        build_gemini_prompt
+        build_gemini_prompt,
+        build_response_schema,
+        build_system_instruction,
     )
     HAS_CONTEXT = True
 except ImportError:
@@ -60,7 +62,8 @@ class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     
-    def __init__(self, screen_width=None, screen_height=None, personality_preset=None):
+    def __init__(self, screen_width=None, screen_height=None, personality_preset=None,
+                 auto_program_detection=True):
         super().__init__()
 
         # 배경창 투명화
@@ -222,7 +225,7 @@ class CharacterWidget(QLabel):
         self.last_auto_dialogue_time = 0  # 마지막 자동 대사 시간
         self.auto_dialogue_cooldown = 20  # 자동 감지 쿨다운: 20초 (API 제한 방지)
         
-        if HAS_CONTEXT:
+        if HAS_CONTEXT and auto_program_detection:
             # Gemini 설정 파일 로드
             self._load_gemini_config()
             
@@ -426,11 +429,9 @@ class CharacterWidget(QLabel):
     # ====== 자동 대사 생성 시스템 ======
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
-        config_path = Path(__file__).resolve().parent.parent / "context" / "gemini_config.json"
         try:
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    self.gemini_config = json.load(f)
+            self.gemini_config = load_gemini_config()
+            if self.gemini_config:
                 print(f"[Gemini 설정 로드] API 키: {'설정됨' if self.gemini_config.get('api_key') else '미설정'}")
             else:
                 print(f"[경고] Gemini 설정 파일 없음: {config_path}")
@@ -500,7 +501,12 @@ class CharacterWidget(QLabel):
             print(f"[활동 감지] {category}: {process} - {title[:50]}")
             print(f"[API 요청] Gemini 호출 중... (자동 감지, 감정 기반)")
             
-            response = call_gemini(prompt, self.gemini_config)
+            response = request_gemini(
+                prompt,
+                self.gemini_config,
+                response_schema=build_response_schema(),
+                system_instruction=build_system_instruction(),
+            )
             print(f"[Gemini 응답] {response[:100] if response else '(없음)'}")
             
             # 쿨다운 업데이트

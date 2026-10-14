@@ -5,6 +5,10 @@ from character.character_widget import CharacterWidget
 from character.resolution_settings import ResolutionSettingsDialog
 from character.config_manager import load_config, save_config
 
+# True: 활성 창·프로그램을 주기적으로 감지하고 자동 대화를 생성합니다.
+# False: 자동 감지를 끄고 사용자가 입력한 대화만 처리합니다.
+AUTO_PROGRAM_DETECTION = False
+
 
 load_dotenv()
 
@@ -32,7 +36,12 @@ def main():
         print(f"[설정] 저장된 성격 사용: {personality}")
     
     # 캐릭터 위젯에 해상도 전달
-    character = CharacterWidget(screen_width=width, screen_height=height, personality_preset=personality)
+    character = CharacterWidget(
+        screen_width=width,
+        screen_height=height,
+        personality_preset=personality,
+        auto_program_detection=AUTO_PROGRAM_DETECTION,
+    )
     character.show()
     sys.exit(app.exec())
 
