@@ -214,7 +214,7 @@ def build_response_schema():
     }
 
 
-def call_gemini(prompt, config, image=None):
+def call_gemini(prompt, config, image=None, *, log_context=None):
     """Legacy activity wrapper. New callers use request_gemini directly."""
     return request_gemini(
         prompt,
@@ -222,6 +222,7 @@ def call_gemini(prompt, config, image=None):
         image=image,
         response_schema=build_response_schema(),
         system_instruction=build_system_instruction(),
+        log_context=log_context,
     )
 
 

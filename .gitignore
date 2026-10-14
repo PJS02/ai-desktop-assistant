@@ -41,6 +41,7 @@ MANIFEST
 *.spec
 
 # Installer logs
+/logs/
 pip-log.txt
 pip-delete-this-directory.txt
 
@@ -263,5 +264,7 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+# Local tests
+/tests/
 
 # End of https://www.toptal.com/developers/gitignore/api/python,windows,visualstudiocode

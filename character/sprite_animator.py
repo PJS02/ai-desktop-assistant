@@ -4,6 +4,7 @@ idle/, angry/, walk/ 폴더의 프레임 이미지들을 순서대로 재생
 """
 import glob
 from pathlib import Path
+from app_logging import log_event, log_throttled
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QPixmap
 
@@ -33,6 +34,9 @@ class SpriteAnimator(QObject):
         animation_dir = self.assets_path / animation_name
         
         if not animation_dir.exists():
+            log_throttled('renderer.sprite.missing', 'PNG 애니메이션 폴더가 없습니다.',
+                          key=str(animation_dir), interval=30, category='오류', level='WARNING',
+                          path=str(animation_dir), reason='missing_directory', animation=animation_name)
             print(f"[경고] 애니메이션 폴더 없음: {animation_dir}")
             return False
         
@@ -40,10 +44,23 @@ class SpriteAnimator(QObject):
         frame_files = sorted(animation_dir.glob("frame_*.png"))
         
         if not frame_files:
+            log_throttled('renderer.sprite.missing', 'PNG 애니메이션 프레임이 없습니다.',
+                          key=str(animation_dir), interval=30, category='오류', level='WARNING',
+                          path=str(animation_dir), reason='no_frames', animation=animation_name)
             print(f"[경고] 프레임 파일 없음: {animation_dir}")
             return False
         
         self.current_frames = [QPixmap(str(f)) for f in frame_files]
+        invalid = [str(path) for path, frame in zip(frame_files, self.current_frames) if frame.isNull()]
+        if invalid:
+            log_throttled('renderer.sprite.decode_failed', 'PNG 프레임을 읽지 못했습니다.',
+                          key=str(animation_dir), interval=30, category='오류', level='ERROR',
+                          animation=animation_name, invalid_paths=invalid,
+                          frame_count=len(frame_files), valid_frame_count=len(frame_files) - len(invalid))
+        else:
+            log_event('renderer.sprite.loaded', 'PNG 애니메이션 프레임을 읽었습니다.',
+                      category='캐릭터 상태', animation=animation_name, path=str(animation_dir),
+                      frame_count=len(frame_files))
         self.current_frame = 0
         
         # print(f"[로드됨] {animation_name}: {len(self.current_frames)}개 프레임")

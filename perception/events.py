@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
+import math
 from typing import Any, Mapping
 
 
@@ -62,7 +63,21 @@ class PerceptionEvent:
     attention: str | None = None
     speech: str | None = None
     speech_id: Any = None
+    speech_final: bool = True
+    speech_session: str | None = None
+    speech_recognized_at: float | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def trace_id(self) -> str | None:
+        value = self.raw.get('trace_id') or self.raw.get('event_id')
+        return str(value) if value is not None else None
+
+    @property
+    def speech_trace_id(self) -> str | None:
+        speech = self.raw.get('speech')
+        value = speech.get('trace_id') if isinstance(speech, Mapping) else None
+        return str(value) if value is not None else self.trace_id
 
 
 def _canonical_label(value: Any) -> str | None:
@@ -158,6 +173,7 @@ def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
         attention=_canonical_label(payload.get("attention")),
         speech=speech,
         speech_id=speech_id,
+        **_speech_metadata(payload.get("speech")),
         raw=dict(payload),
     )
 
@@ -201,6 +217,7 @@ def _parse_legacy_recognition_state(payload: Mapping[str, Any]) -> PerceptionEve
         attention=attention,
         speech=speech,
         speech_id=speech_id,
+        **_speech_metadata(speech_group),
         raw=dict(payload),
     )
 
@@ -226,6 +243,22 @@ def _parse_speech_payload(value: Any) -> tuple[str | None, Any]:
         speech_id = value.get("id", value.get("sequence"))
         return text, speech_id
     return _parse_speech(value), None
+
+
+def _speech_metadata(value: Any) -> dict:
+    if not isinstance(value, Mapping):
+        return {}
+    final = value.get('final', value.get('is_final', True)) is True
+    session = value.get('session')
+    try:
+        stamp = float(value.get('recognized_at'))
+        if not math.isfinite(stamp):
+            stamp = None
+    except (TypeError, ValueError):
+        stamp = None
+    return {'speech_final': final,
+            'speech_session': str(session) if session is not None else None,
+            'speech_recognized_at': stamp}
 
 
 def parse_perception_event(payload: Mapping[str, Any]) -> PerceptionEvent:
