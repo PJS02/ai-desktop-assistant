@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import random
 import time
+from app_logging import log_event, new_trace_id
 
 from PyQt6.QtCore import QPoint, QRect, QTimer, Qt
 from PyQt6.QtGui import QColor, QPainter, QRadialGradient
@@ -23,6 +24,7 @@ class BallWidget(QWidget):
     def __init__(self, manager):
         super().__init__(None)
         self.manager = manager
+        self.log_trace_id = getattr(manager, 'log_trace_id', None)
         self.setFixedSize(self.SIZE, self.SIZE)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -54,6 +56,9 @@ class BallWidget(QWidget):
         self.move(spawn_x, spawn_y)
         self.show()
         self.raise_()
+        log_event('sandbox.ball.spawned', '공을 생성했습니다.', category='캐릭터 상태',
+                  trace_id=self.log_trace_id, position=[self.x(), self.y()],
+                  velocity=[self.x_velocity, self.y_velocity])
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -78,6 +83,8 @@ class BallWidget(QWidget):
             self._last_drag_pos = event.globalPosition().toPoint()
             self.x_velocity = 0
             self.y_velocity = 0
+            log_event('sandbox.ball.drag_started', '공을 잡았습니다.', category='캐릭터 상태',
+                      trace_id=self.log_trace_id, position=[self.x(), self.y()])
             event.accept()
 
     def mouseMoveEvent(self, event):
@@ -93,7 +100,11 @@ class BallWidget(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.is_dragging = False
-            if self.manager.can_interact_with_ball(self):
+            accepted = self.manager.can_interact_with_ball(self)
+            log_event('sandbox.ball.drag_released', '공을 놓았습니다.', category='캐릭터 상태',
+                      trace_id=self.log_trace_id, position=[self.x(), self.y()],
+                      velocity=[self.x_velocity, self.y_velocity], mood_applied=accepted)
+            if accepted:
                 self.manager.character_widget.mood_system.on_ball_play()
             event.accept()
 
@@ -144,11 +155,17 @@ class BallWidget(QWidget):
         kick_direction = 1 if ball_center_x >= character_center_x else -1
         self.x_velocity = 14.0 * kick_direction
         self.y_velocity = -9.0
+        log_event('sandbox.ball.kicked', '캐릭터와 공의 충돌을 판정해 공을 찼습니다.',
+                  category='캐릭터 상태', trace_id=self.log_trace_id,
+                  position=[self.x(), self.y()], kick_direction=kick_direction,
+                  velocity=[self.x_velocity, self.y_velocity])
         character.mood_system.on_ball_play()
         character.update_action(character.mood_system.decide_emotion())
         self.manager.start_interaction_cooldown(self)
 
     def closeEvent(self, event):
+        log_event('sandbox.ball.ended', '공 놀이를 종료합니다.', category='캐릭터 상태',
+                  trace_id=self.log_trace_id, position=[self.x(), self.y()])
         self.physics_timer.stop()
         self.manager.character_widget._ball_session_active = False
         self.manager.character_widget._ball_chasing = False
@@ -175,6 +192,7 @@ class SandboxManager:
         }
         self._cooldown_until = 0.0
         self._warmup_timer = None
+        self.log_trace_id = None
 
         self._refresh_screen_bounds()
 
@@ -200,6 +218,7 @@ class SandboxManager:
         self._refresh_screen_bounds()
         if self.ball is not None:
             self.ball.close()
+        self.log_trace_id = new_trace_id('ball')
         self.character_widget._ball_session_active = True
         self.character_widget._ball_chasing = False
         if self.character_widget.is_moving:
@@ -213,6 +232,8 @@ class SandboxManager:
         self._warmup_timer.setSingleShot(True)
         self._warmup_timer.timeout.connect(self._enable_ball_interaction)
         self._warmup_timer.start(3000)
+        log_event('sandbox.ball.warmup', '공 놀이를 준비합니다.', category='캐릭터 상태',
+                  trace_id=self.log_trace_id, warmup_seconds=3)
         self.clear_selection()
         return None
 
@@ -234,12 +255,17 @@ class SandboxManager:
     def _enable_ball_interaction(self) -> None:
         if self.ball is not None:
             self.ball.interaction_enabled = True
+            log_event('sandbox.ball.ready', '공 놀이 준비가 끝났습니다.', category='캐릭터 상태',
+                      trace_id=self.ball.log_trace_id)
 
     def start_interaction_cooldown(self, ball: BallWidget) -> None:
         cooldown_seconds = random.uniform(3.0, 10.0)
         self._cooldown_until = time.monotonic() + cooldown_seconds
         ball.interaction_enabled = False
         self.character_widget._ball_chasing = False
+        log_event('sandbox.ball.cooldown', '공 상호작용을 잠시 쉽니다.', category='캐릭터 상태',
+                  trace_id=ball.log_trace_id, cooldown_seconds=cooldown_seconds,
+                  cooldown_until=self._cooldown_until)
         print(f"[공 상호작용 쿨타임] {cooldown_seconds:.2f}초")
 
         QTimer.singleShot(
@@ -250,6 +276,8 @@ class SandboxManager:
     def _resume_ball_interaction(self, ball: BallWidget) -> None:
         if self.ball is ball and self.character_widget._ball_session_active:
             ball.interaction_enabled = True
+            log_event('sandbox.ball.resumed', '공 상호작용을 재개합니다.', category='캐릭터 상태',
+                      trace_id=ball.log_trace_id)
 
     def use_selected_item(self) -> str | None:
         item = self.selected_item

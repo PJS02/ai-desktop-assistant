@@ -172,6 +172,35 @@
     Object.keys(renderer.parts).forEach(function (name) { renderer.textures[name] = textureToken(name); });
   }
 
+  var hostJumpArmChannels = ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar',
+    'idleGesture', 'airArms', 'thinkGesture', 'waveGesture', 'waveSideGesture',
+    'waveArmOffset', 'waveElbowOffset', 'waveWristOffset', 'waveForearmShorten'];
+  function applyHostJumpArmMotion(pose, time, options, flight, yaw) {
+    var restOptions = Object.assign({}, options), channels = {};
+    delete restOptions.walkAmount;
+    var rest = root.CloudyMotion.pose('idle', time, restOptions);
+    hostJumpArmChannels.forEach(function (key) { channels[key] = rest[key]; });
+    flight = Math.max(0, Math.min(1, finite(flight, 0)));
+    if (flight > 1e-8) {
+      // Retain the original rise/apex/descent rhythm, ending at the normal
+      // outward rest shape rather than the source clip's vertical arm endpoints.
+      var raised = root.CloudyMotion.pose('jump', .425 * 2.4, restOptions);
+      ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar'].forEach(function (key) {
+        channels[key] = rest[key] + (raised[key] - rest[key]) * flight;
+      });
+      channels.idleGesture = rest.idleGesture * (1 - flight);
+      channels.airArms = 1;
+      if (Math.abs(finite(yaw, 0)) <= 21) {
+        // The renderer mirrors the frontal far shoulder only when airArms=0.
+        // Encode its normal outward angle in the air convention during motion;
+        // fading that convention itself would pass through an inward/vertical arm.
+        channels.armFar = (-rest.armFar + 66 * rest.idleGesture) * (1 - flight) + raised.armFar * flight;
+      }
+    }
+    hostJumpArmChannels.forEach(function (key) { pose[key] = channels[key]; });
+    return channels;
+  }
+
   function sample(state) {
     state = state || {};
     var action = typeof state.action === 'string' ? state.action : 'idle';
@@ -179,14 +208,44 @@
     ['emotion', 'speaking', 'speechTime', 'walkAmount'].forEach(function (key) {
       if (state[key] !== undefined) options[key] = state[key];
     });
-    var pose = root.CloudyMotion.pose(action, time, options);
-    var originalPose = copy(pose), adjustment = 0;
+    var authoredFlight = state.jumpActive === true && Number.isFinite(state.jumpPhase);
+    var sampleAction = authoredFlight ? 'jump' : action;
+    var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
+    var pose = root.CloudyMotion.pose(sampleAction, sampleTime, options);
+    var originalPose = copy(pose), adjustment = 0, hostJumpArms = null;
     if (state.externalPhysics === true) {
       if (Number.isFinite(state.externalRootHeight)) adjustment = -state.externalRootHeight;
-      else if (action === 'jump') adjustment = 62 * pose.airborne;
+      else if (action === 'jump' || authoredFlight) adjustment = 62 * pose.airborne;
       else if (action === 'fall') adjustment = 29;
       else if (action === 'hovering') adjustment = 24;
       pose.bodyY += adjustment;
+      if (authoredFlight) {
+        // The source moves body and feet independently by the same flight height.
+        // Remove both root translations; keep the authored tuck and lean.
+        pose.footNearY += adjustment;
+        pose.footFarY += adjustment;
+      }
+      if (authoredFlight || (action === 'land' && state.authoredJump === true)) {
+        hostJumpArms = applyHostJumpArmMotion(pose, time, options,
+          authoredFlight ? originalPose.airborne : 0, state.yaw);
+      }
+      var controlledJump = state.jumpActive === true && (action === 'jump' || action === 'fall');
+      if ((controlledJump || action === 'land') && state.authoredJump !== true && !authoredFlight) {
+        // Host physics moves the whole character. Keep the relaxed arm pose
+        // through takeoff, descent and landing instead of the panic fall cycle.
+        var rest = root.CloudyMotion.pose('idle', time, options);
+        ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar',
+          'idleGesture', 'airArms', 'framingZoom'].forEach(function (key) { pose[key] = rest[key]; });
+        if (controlledJump) {
+          ['bodyX', 'bodyY', 'lean', 'headAngle', 'airborne',
+            'footNearX', 'footNearY', 'footNearAngle',
+            'footFarX', 'footFarY', 'footFarAngle'].forEach(function (key) { pose[key] = rest[key]; });
+          adjustment = pose.bodyY - originalPose.bodyY;
+        }
+      }
+      // Air poses already fit the authored stage. Host interactions must keep
+      // the same display scale as walking/idle rather than zooming out by 14%.
+      pose.framingZoom = 1;
     }
     if (Number.isFinite(state.blink) && state.blink >= 0) pose.blink = Math.max(0, Math.min(1, state.blink));
     if (state.smooth === true) {
@@ -195,6 +254,15 @@
       if (signature !== transitionSignature) transition.retarget(pose);
       transitionSignature = signature;
       pose = transition.step(pose, Math.max(0.001, Math.min(0.1, finite(state.dt, 1 / 30))));
+      if (hostJumpArms) {
+        // The authored flight bell already eases the arm path. Do not interpolate
+        // incompatible frontal angle conventions or inherit an older hand gesture.
+        // Sync the arm state so landing and the next idle frame have no rebound.
+        hostJumpArmChannels.forEach(function (key) {
+          pose[key] = transition.values[key] = transition.previousTarget[key] = transition.target[key] = hostJumpArms[key];
+          transition.velocity[key] = 0;
+        });
+      }
     }
     return {action: action, time: time, pose: pose, originalPose: originalPose,
       externalRootHeightAdjustment: adjustment};
@@ -208,14 +276,25 @@
       companion: state.companion
     });
     var commands = gl.result(), required = Object.create(null);
+    var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     commands.forEach(function (command) {
       [command.base, command.replacement, command.bodyNegativeLower, command.bodyNegativeUpper]
         .forEach(function (name) { if (name) required[name] = true; });
+      // Character parts only: floating companions and emotion effects do not
+      // enlarge the body box. Use the very meshes submitted for this frame.
+      command.characterPart = command.opacity > 0 && /^(front|left|right)_(0\d|1[0-3])(?:_|$)/.test(command.base || '');
+      if (command.characterPart) {
+        for (var i = 0; i < command.vertices.length; i += 4) {
+          left = Math.min(left, command.vertices[i]); top = Math.min(top, command.vertices[i + 1]);
+          right = Math.max(right, command.vertices[i]); bottom = Math.max(bottom, command.vertices[i + 1]);
+        }
+      }
     });
     return {pose: frame.pose, originalPose: frame.originalPose,
       externalRootHeightAdjustment: frame.externalRootHeightAdjustment,
       action: frame.action, time: frame.time, yaw: yaw,
       logicalSize: [360, 540], groundY: root.CloudyRig.groundY,
+      characterBounds: Number.isFinite(left) ? [left, top, right, bottom] : null,
       commands: commands, requiredTextures: Object.keys(required)};
   }
 

@@ -9,12 +9,15 @@ from __future__ import annotations
 from array import array
 from pathlib import Path
 import time
+import traceback
+from app_logging import log_event
+from PIL import Image
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPixmap, QSurfaceFormat, QVector2D, QVector3D
 from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
                            QOpenGLTexture, QOpenGLVersionFunctionsFactory,
-                           QOpenGLVersionProfile)
+                           QOpenGLVersionProfile, QOpenGLFramebufferObject)
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 from .rig_v8 import NodeRigPlanner
@@ -44,7 +47,7 @@ _GL_BLEND, _GL_DEPTH_TEST, _GL_CULL_FACE = 0x0BE2, 0x0B71, 0x0B44
 _GL_ONE, _GL_ONE_MINUS_SRC_ALPHA = 1, 0x0303
 _GL_FLOAT, _GL_TRIANGLES = 0x1406, 0x0004
 _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
-_ACTIONS = {"idle", "walk", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land"}
+_ACTIONS = {"idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land"}
 
 
 def _texture_storage_bytes(part):
@@ -59,6 +62,7 @@ def _texture_storage_bytes(part):
 
 class CloudyRigView(QOpenGLWidget):
     animation_finished = pyqtSignal()
+    pose_bounds_changed = pyqtSignal()
     failed = pyqtSignal(str)
 
     def __init__(self, parent=None, *, rig_root: str | Path | None = None,
@@ -97,6 +101,9 @@ class CloudyRigView(QOpenGLWidget):
         self._action, self._emotion, self._yaw = "idle", "neutral", 0
         self._loop = True
         self._external_physics = False
+        self._jump_active = False
+        self._jump_phase = None
+        self._authored_jump = False
         self._speaking = False
         self._speech_start = time.perf_counter()
         self._started = time.perf_counter()
@@ -107,6 +114,9 @@ class CloudyRigView(QOpenGLWidget):
         self._last_plan = None
         self._last_paint_time = time.perf_counter()
         self._overlay = QPixmap()
+        self._debug_painter = None
+        self._diagnostic_fbo = None
+        self._character_pixel_rect = None
         self._frames = 0
         self._plan_ms = self._draw_ms = self._max_plan_ms = 0.0
         self._peak_decode_bytes = 0
@@ -117,6 +127,9 @@ class CloudyRigView(QOpenGLWidget):
 
     def set_action(self, action: str, loop: bool = True):
         action = action if action in _ACTIONS else "idle"
+        if action not in {"jump", "fall", "land"}:
+            self._jump_phase = None
+            self._authored_jump = False
         if action == self._action and bool(loop) == self._loop and not self._finished:
             return
         self._action, self._loop = action, bool(loop)
@@ -144,9 +157,82 @@ class CloudyRigView(QOpenGLWidget):
     def set_external_physics(self, enabled: bool):
         self._external_physics = bool(enabled)
 
+    def set_jump_active(self, active: bool):
+        """Distinguish a controlled jump from being dropped after dragging."""
+        self._jump_active = bool(active)
+
+    def set_physics_jump_phase(self, phase, *, landing=False):
+        """Sample the authored jump from host flight progress instead of a loop."""
+        self._jump_phase = None if phase is None else max(.15, min(.70, float(phase)))
+        self._authored_jump = self._jump_phase is not None or bool(landing)
+        self.update()
+
     def set_overlay_pixmap(self, pixmap: QPixmap):
         self._overlay = pixmap
         self.update()
+
+    def set_debug_painter(self, callback):
+        self._debug_painter = callback
+        self._character_pixel_rect = None
+        self.update()
+
+    def character_rect(self):
+        """Map current character meshes to the same viewport used by OpenGL."""
+        if self._character_pixel_rect is not None:
+            return QRectF(self._character_pixel_rect)
+        if self._last_plan is None or self._last_plan.get('characterBounds') is None:
+            return QRectF(self.rect())
+        dpr = self.devicePixelRatioF()
+        width, height = round(self.width() * dpr), round(self.height() * dpr)
+        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
+        sx, sy = vw / dpr / 360, vh / dpr / 540
+        ox, oy = (width - vw) // 2 / dpr, (height - vh) // 2 / dpr
+        left, top, right, bottom = self._last_plan['characterBounds']
+        return QRectF(ox + left * sx, oy + top * sy,
+                      (right - left) * sx, (bottom - top) * sy).intersected(QRectF(self.rect()))
+
+    def _draw_commands(self, commands):
+        gl, program = self._gl, self._program
+        for command in commands:
+            for unit, name in enumerate(('base', 'replacement', 'bodyNegativeLower', 'bodyNegativeUpper')):
+                self._cache.get(self._identities[command[name]]).bind(unit)
+            for name in ('replacementAmount', 'bodyBlendEnabled', 'bodyPositiveWeight', 'opacity', 'sourceClipEnabled'):
+                program.setUniformValue(self._locations[name], float(command[name]))
+            program.setUniformValue(self._locations['sourceClipAxis'], QVector3D(*command['sourceClipAxis']))
+            program.setUniformValue(self._locations['sourceClipBounds'], QVector2D(*command['sourceClipBounds']))
+            data = command.get('vertexBytes')
+            if data is None:
+                data = array('f', command['vertices']).tobytes()
+            if len(data) > self._buffer_capacity:
+                self._buffer_capacity = max(16384, len(data))
+                self._buffer.allocate(self._buffer_capacity)
+            self._buffer.write(0, data, len(data))
+            program.setAttributeBuffer(self._pos, _GL_FLOAT, 0, 2, 16)
+            program.setAttributeBuffer(self._uv, _GL_FLOAT, 8, 2, 16)
+            gl.glDrawArrays(_GL_TRIANGLES, 0, command['vertexCount'])
+
+    def _measure_character_pixels(self, plan, width, height, dpr):
+        """A body-only pass keeps symbols, debug text and held items out of bounds.
+
+        Only enabled diagnostics need this pass. Its single framebuffer is reused
+        until resize, and shares the resident textures and current pose meshes.
+        """
+        if (self._diagnostic_fbo is None
+                or self._diagnostic_fbo.width() != width or self._diagnostic_fbo.height() != height):
+            self._diagnostic_fbo = QOpenGLFramebufferObject(width, height)
+        if not self._diagnostic_fbo.bind():
+            raise RuntimeError('Could not create the character diagnostic framebuffer')
+        self._gl.glClear(_GL_COLOR_BUFFER_BIT)
+        self._draw_commands(c for c in plan['commands'] if c['characterPart'])
+        image = self._diagnostic_fbo.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        pixels = image.constBits().asstring(image.sizeInBytes())
+        alpha = Image.frombytes('RGBA', (width, height), pixels).getchannel('A')
+        bounds = alpha.getbbox()
+        if bounds is not None:
+            left, top, right, bottom = bounds
+            self._character_pixel_rect = QRectF(left / dpr, top / dpr,
+                                                (right - left) / dpr, (bottom - top) / dpr)
+        QOpenGLFramebufferObject.bindDefault()
 
     def _time(self) -> float:
         return self._offset if self._paused else self._offset + time.perf_counter() - self._started
@@ -195,6 +281,8 @@ class CloudyRigView(QOpenGLWidget):
         self._last_paint_time = now
         return {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
                 "time": self._time(), "externalPhysics": self._external_physics,
+                "jumpActive": self._jump_active,
+                "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
                 "speaking": self._speaking,
                 "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
 
@@ -224,6 +312,9 @@ class CloudyRigView(QOpenGLWidget):
             self._pos = self._program.attributeLocation("pos")
             self._uv = self._program.attributeLocation("uv")
             self.context().aboutToBeDestroyed.connect(self._cleanup_gl)
+            log_event('renderer.opengl.ready', 'OpenGL 렌더 준비가 끝났습니다.',
+                      trace_id=getattr(self.planner, 'log_trace_id', None), rig_root=str(self.rig_root),
+                      device_pixel_ratio=self.devicePixelRatioF(), **self._diagnostic_snapshot())
         except Exception as exc:
             self._fail(exc)
 
@@ -239,7 +330,26 @@ class CloudyRigView(QOpenGLWidget):
         if self._error is None:
             self._error = str(exc)
             self._timer.stop()
+            log_event('renderer.opengl.failed', 'OpenGL 캐릭터 렌더에 실패했습니다.',
+                      category='오류', level='ERROR',
+                      trace_id=getattr(self.planner, 'log_trace_id', None),
+                      error=self._error, traceback=traceback.format_exc(),
+                      rig_root=str(self.rig_root), **self._diagnostic_snapshot(include_state=True))
             self.failed.emit(self._error)
+
+    def _diagnostic_snapshot(self, *, include_state=False):
+        """Diagnostics must not block fallback or native resource cleanup."""
+        snapshot = {}
+        try:
+            snapshot['stats'] = self.stats()
+        except Exception as exc:
+            snapshot['stats_error'] = str(exc)
+        if include_state:
+            try:
+                snapshot['state'] = self._state()
+            except Exception as exc:
+                snapshot['state_error'] = str(exc)
+        return snapshot
 
     def _load_texture(self, identity: str):
         name, part = self._identity_metadata[identity]
@@ -315,23 +425,10 @@ class CloudyRigView(QOpenGLWidget):
             self._buffer.bind()
             program.enableAttributeArray(self._pos)
             program.enableAttributeArray(self._uv)
-            for command in plan["commands"]:
-                for unit, name in enumerate(("base", "replacement", "bodyNegativeLower", "bodyNegativeUpper")):
-                    self._cache.get(self._identities[command[name]]).bind(unit)
-                for name in ("replacementAmount", "bodyBlendEnabled", "bodyPositiveWeight", "opacity", "sourceClipEnabled"):
-                    program.setUniformValue(self._locations[name], float(command[name]))
-                program.setUniformValue(self._locations["sourceClipAxis"], QVector3D(*command["sourceClipAxis"]))
-                program.setUniformValue(self._locations["sourceClipBounds"], QVector2D(*command["sourceClipBounds"]))
-                data = command.get("vertexBytes")
-                if data is None:
-                    data = array("f", command["vertices"]).tobytes()
-                if len(data) > self._buffer_capacity:
-                    self._buffer_capacity = max(16384, len(data))
-                    self._buffer.allocate(self._buffer_capacity)
-                self._buffer.write(0, data, len(data))
-                program.setAttributeBuffer(self._pos, _GL_FLOAT, 0, 2, 16)
-                program.setAttributeBuffer(self._uv, _GL_FLOAT, 8, 2, 16)
-                gl.glDrawArrays(_GL_TRIANGLES, 0, command["vertexCount"])
+            self._character_pixel_rect = None
+            if self._debug_painter is not None:
+                self._measure_character_pixels(plan, width, height, dpr)
+            self._draw_commands(plan['commands'])
             program.disableAttributeArray(self._pos)
             program.disableAttributeArray(self._uv)
             self._buffer.release()
@@ -339,9 +436,15 @@ class CloudyRigView(QOpenGLWidget):
             # Restore the active texture unit before Qt composites the widget.
             gl.glActiveTexture(0x84C0)
             gl.glViewport(0, 0, width, height)
-            if not self._overlay.isNull():
+            # Publish this frame's body bounds before Qt presents the host. A
+            # landing pose can extend the feet beyond the previous fall bounds.
+            self.pose_bounds_changed.emit()
+            if not self._overlay.isNull() or self._debug_painter is not None:
                 painter = QPainter(self)
-                painter.drawPixmap(self.rect(), self._overlay)
+                if not self._overlay.isNull():
+                    painter.drawPixmap(self.rect(), self._overlay)
+                if self._debug_painter is not None:
+                    self._debug_painter(painter)
                 painter.end()
             self._draw_ms = (time.perf_counter() - t0) * 1000 - self._plan_ms
             self._frames += 1
@@ -362,6 +465,7 @@ class CloudyRigView(QOpenGLWidget):
         if self.context() is None or not self.context().isValid():
             return
         self.makeCurrent()
+        self._diagnostic_fbo = None
         self._cache.clear()
         if self._buffer is not None and self._buffer.isCreated():
             self._buffer.destroy()
@@ -372,7 +476,10 @@ class CloudyRigView(QOpenGLWidget):
 
     def release(self):
         if not self._released:
+            log_event('renderer.opengl.released', 'OpenGL 캐릭터 렌더 자원을 해제합니다.',
+                      trace_id=getattr(self.planner, 'log_trace_id', None), **self._diagnostic_snapshot())
             self._released = True
+            self._debug_painter = None
             self._timer.stop()
             self._cleanup_gl()
             if hasattr(self.planner, "close"):
