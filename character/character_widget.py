@@ -1364,8 +1364,16 @@ class CharacterWidget(QLabel):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(8, 8, 64, 64)
             
-            # 아이콘 중앙에 배치
-            painter.drawPixmap(8, 8, icon_pixmap)
+            # Windows may return a smaller icon or a high-DPI pixmap.
+            # Normalize its pixels before fitting it into the ring's logical box.
+            fitted_icon = icon_pixmap.copy()
+            fitted_icon.setDevicePixelRatio(1.0)
+            fitted_icon = fitted_icon.scaled(
+                64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            icon_x = 8 + (64 - fitted_icon.width()) // 2
+            icon_y = 8 + (64 - fitted_icon.height()) // 2
+            painter.drawPixmap(icon_x, icon_y, fitted_icon)
             
             # 금색 테두리 (소유권 표시)
             painter.setPen(QPen(QColor(255, 215, 0), 3))  # 금색 3px 테두리
@@ -1400,7 +1408,10 @@ class CharacterWidget(QLabel):
             painter = QPainter(result)
             
             # 여러 아이콘을 순차적으로 표시 (최대 3개, 겹쳐서 배치)
-            base_icon_x = 90 if not self.is_flipped else 10  # 우측 또는 좌측
+            badge_size = 48
+            stack_width = badge_size + (min(len(self.held_items), 3) - 1) * 10
+            base_icon_x = (max(0, result.width() - stack_width - 10)
+                           if not self.is_flipped else 10)
             base_icon_y = 50  # 위쪽
             
             for idx, item_path in enumerate(self.held_items[:3]):  # 최대 3개만 표시
@@ -1417,6 +1428,9 @@ class CharacterWidget(QLabel):
                     icon_pixmap = self._get_item_icon(item_path)
                     if icon_pixmap is not None and not icon_pixmap.isNull():
                         decorated_icon = self._decorate_icon_with_ownership(icon_pixmap)
+                        decorated_icon = decorated_icon.scaled(
+                            badge_size, badge_size, Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
                         painter.drawPixmap(icon_x, icon_y, decorated_icon)
                 except Exception as e:
                     print(f"[경고] 아이콘 표시 실패: {e}")

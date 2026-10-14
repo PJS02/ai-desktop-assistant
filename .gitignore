@@ -240,5 +240,16 @@ $RECYCLE.BIN/
 # Local tests
 /tests/
 
+# Local Codex experiments and validation
+/integration-validation/
+/hand_landmark_lab/verification/
+/hand_landmark_lab/verify_ui.py
+/hand_landmark_lab/live_check.py
+/hand_landmark_lab/test_landmarks.py
+/hand_landmark_lab/test_detection_stability.py
+/assets_cloudy_rig_v4/directional_v5/tests/
+/assets_cloudy_rig_v4/directional_v5/validation-*/
+/scripts/validate_cloudy_native.py
+
 
 # End of https://www.toptal.com/developers/gitignore/api/python,windows,visualstudiocode
