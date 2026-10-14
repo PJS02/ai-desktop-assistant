@@ -1,0 +1,3072 @@
+{
+  "version": "actual on-disk v30, stale rollback=v22 query ignored",
+  "capture_method": "Qt QOpenGLWidget.grabFramebuffer with fixed native state; no browser launched",
+  "reference_method": "Previously captured actual v30 WebGL PNGs (720x1080), unmodified",
+  "reference_metadata": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\capture-metadata.json",
+  "canvas": [
+    720,
+    1080
+  ],
+  "fps": 20,
+  "time_range": [
+    0,
+    4.6
+  ],
+  "frames_per_side": 93,
+  "compared_frames": 186,
+  "companion": false,
+  "crop": [
+    170,
+    370,
+    520,
+    800
+  ],
+  "crop_description": "Entire near sleeve, tag, hardware and hand",
+  "source_hashes": {
+    "textures/parts.js": "dcaebfd6810f02b3f137419c93e4e08d31735bfc661af85ddb6c0246267b9bb9",
+    "motion.js": "f7ee6cab57f749e1aae138412a81e65cc4e66729caafd0a44bf94dc5e365cc28",
+    "limb-girth.js": "62927d9d84ce796dd421776c4284bb1e24fc017e8b16b60ec0981f3b5502e2e0",
+    "emotion-fx.js": "e2b8f1cb240bd44e172f226ccfd3917d998c5f4df5e815552dd4e41a5a5e7c2e",
+    "side-wave-skinning.js": "bfa7263c414c4ac5892326a874dfac9c342d6c7fc6bd68450b2d99d15845606a",
+    "side-cuff.js": "0aebcbe1d25b188cd03b407b73c8ade022ff1418f68ee8e4dc1b04c4b1534f61",
+    "side-cuff-roll.js": "b7d2a44bc9c2eee880e2c83b1a3e6a17c9f9dd5998b123731bc5c7c4fd986e1c",
+    "side-cuff-attachment.js": "9dd1c9aae3e8e540c7f16f67bddb35df467fb429f253b0a2e3515dbdb3540f43",
+    "side-cuff-motion.js": "75c00926e019d4368cafdb78e400841b6b70c265736c0fa9273cd1c292c821c8",
+    "side-cuff-art.js": "697e9132705b726847ed445e858ee1a47407dd17c53a18395db93f5e27a17c1e",
+    "side-cuff-fit.js": "adabce4ef80132fba1dfb26f1c40c3c7bd6b3e37dc448250ada1e15bbea467f8",
+    "renderer.js": "cef10f8e093d03d8ac12059691a86170a92b160f8d99d524da236ba576b03861"
+  },
+  "source_unchanged": true,
+  "view_stats": {
+    "texture_budget_bytes": 33554432,
+    "texture_bytes": 33541888,
+    "peak_texture_bytes": 33553680,
+    "resident_textures": 226,
+    "texture_uploads": 572,
+    "texture_evictions": 346,
+    "rendered_frames": 188,
+    "plan_ms": 15.678700001444668,
+    "max_plan_ms": 93.54539999912959,
+    "draw_ms": 0.4141000099480152,
+    "vertex_buffer_bytes": 294912,
+    "peak_single_decode_bytes": 383152,
+    "error": null,
+    "action": "idle",
+    "emotion": "neutral",
+    "yaw": 0,
+    "speaking": false
+  },
+  "worker_memory": {
+    "rss": 66113536,
+    "heapUsed": 11016232
+  },
+  "errors": [],
+  "worst_frame": {
+    "side": "left",
+    "time": 2.2,
+    "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2200.png",
+    "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2200.png",
+    "comparison": {
+      "mean_absolute_rgba": [
+        0.0648070987654321,
+        0.06604809670781893,
+        0.06410236625514404,
+        0.014747942386831275
+      ],
+      "pixels_difference_over_8": 87,
+      "fraction_difference_over_8": 0.00011188271604938272
+    }
+  },
+  "elapsed_seconds": 50.977994999993825,
+  "gif_note": "Compact 10fps preview of 20fps captures, shared 256-color palette; numerical comparisons use original RGBA PNGs, not GIF",
+  "frames": [
+    {
+      "side": "left",
+      "time": 0.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07327289094650206,
+          0.07334619341563786,
+          0.07102494855967079,
+          0.015302211934156379
+        ],
+        "pixels_difference_over_8": 23,
+        "fraction_difference_over_8": 2.957818930041152e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06640174897119341,
+          0.06660365226337449,
+          0.06542695473251028,
+          0.014984567901234569
+        ],
+        "pixels_difference_over_8": 17,
+        "fraction_difference_over_8": 2.186213991769547e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06186471193415638,
+          0.062463991769547325,
+          0.06089891975308642,
+          0.012775205761316872
+        ],
+        "pixels_difference_over_8": 21,
+        "fraction_difference_over_8": 2.7006172839506174e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07077803497942387,
+          0.07122427983539095,
+          0.0698533950617284,
+          0.015280349794238684
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06301954732510288,
+          0.06379501028806585,
+          0.06255658436213991,
+          0.013782150205761318
+        ],
+        "pixels_difference_over_8": 30,
+        "fraction_difference_over_8": 3.8580246913580246e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07068287037037037,
+          0.07161908436213991,
+          0.07006301440329218,
+          0.014733796296296297
+        ],
+        "pixels_difference_over_8": 29,
+        "fraction_difference_over_8": 3.7294238683127576e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07092721193415638,
+          0.07227623456790123,
+          0.07035622427983539,
+          0.01464891975308642
+        ],
+        "pixels_difference_over_8": 26,
+        "fraction_difference_over_8": 3.3436213991769545e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07279835390946503,
+          0.07346707818930041,
+          0.0719457304526749,
+          0.01699974279835391
+        ],
+        "pixels_difference_over_8": 25,
+        "fraction_difference_over_8": 3.215020576131687e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07190586419753087,
+          0.07254243827160493,
+          0.07100951646090535,
+          0.01652906378600823
+        ],
+        "pixels_difference_over_8": 37,
+        "fraction_difference_over_8": 4.758230452674897e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06827803497942386,
+          0.06907150205761317,
+          0.06748328189300412,
+          0.01483667695473251
+        ],
+        "pixels_difference_over_8": 36,
+        "fraction_difference_over_8": 4.6296296296296294e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06716949588477367,
+          0.06724022633744856,
+          0.06570087448559671,
+          0.014670781893004116
+        ],
+        "pixels_difference_over_8": 38,
+        "fraction_difference_over_8": 4.886831275720165e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0705516975308642,
+          0.07130401234567901,
+          0.06976208847736626,
+          0.015916923868312758
+        ],
+        "pixels_difference_over_8": 37,
+        "fraction_difference_over_8": 4.758230452674897e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06026877572016461,
+          0.0607690329218107,
+          0.05899048353909465,
+          0.012539866255144033
+        ],
+        "pixels_difference_over_8": 41,
+        "fraction_difference_over_8": 5.272633744855967e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07217078189300412,
+          0.07323559670781893,
+          0.07145190329218107,
+          0.015844907407407408
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0685763888888889,
+          0.06916795267489712,
+          0.06728395061728396,
+          0.014565329218106996
+        ],
+        "pixels_difference_over_8": 57,
+        "fraction_difference_over_8": 7.330246913580247e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06390946502057614,
+          0.06462191358024691,
+          0.06282664609053498,
+          0.013491512345679012
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06699202674897119,
+          0.06755787037037037,
+          0.06600951646090535,
+          0.014931841563786009
+        ],
+        "pixels_difference_over_8": 46,
+        "fraction_difference_over_8": 5.915637860082304e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06443801440329218,
+          0.06465406378600823,
+          0.06275462962962963,
+          0.014897119341563786
+        ],
+        "pixels_difference_over_8": 59,
+        "fraction_difference_over_8": 7.587448559670782e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05935570987654321,
+          0.0593016975308642,
+          0.0575951646090535,
+          0.014227109053497942
+        ],
+        "pixels_difference_over_8": 62,
+        "fraction_difference_over_8": 7.973251028806585e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 0.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-0950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-0950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06871527777777778,
+          0.07022505144032921,
+          0.06780864197530864,
+          0.015864197530864196
+        ],
+        "pixels_difference_over_8": 61,
+        "fraction_difference_over_8": 7.844650205761316e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.054005915637860086,
+          0.05459747942386831,
+          0.05300797325102881,
+          0.013125
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06362011316872428,
+          0.06441872427983539,
+          0.06251028806584362,
+          0.01466820987654321
+        ],
+        "pixels_difference_over_8": 46,
+        "fraction_difference_over_8": 5.915637860082304e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059049639917695476,
+          0.05981995884773662,
+          0.05848765432098765,
+          0.013419495884773662
+        ],
+        "pixels_difference_over_8": 49,
+        "fraction_difference_over_8": 6.301440329218108e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05873971193415638,
+          0.05990740740740741,
+          0.057671039094650205,
+          0.014165380658436214
+        ],
+        "pixels_difference_over_8": 58,
+        "fraction_difference_over_8": 7.458847736625515e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059746656378600826,
+          0.0602880658436214,
+          0.05851594650205761,
+          0.014507458847736625
+        ],
+        "pixels_difference_over_8": 60,
+        "fraction_difference_over_8": 7.716049382716049e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06504243827160494,
+          0.06601723251028807,
+          0.06421810699588477,
+          0.014166666666666666
+        ],
+        "pixels_difference_over_8": 58,
+        "fraction_difference_over_8": 7.458847736625515e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05989326131687243,
+          0.06094650205761317,
+          0.05926826131687243,
+          0.014717078189300412
+        ],
+        "pixels_difference_over_8": 72,
+        "fraction_difference_over_8": 9.259259259259259e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06364068930041153,
+          0.06519804526748971,
+          0.06288966049382716,
+          0.015181327160493828
+        ],
+        "pixels_difference_over_8": 77,
+        "fraction_difference_over_8": 9.902263374485598e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06425668724279836,
+          0.06525848765432099,
+          0.06328832304526749,
+          0.013621399176954733
+        ],
+        "pixels_difference_over_8": 62,
+        "fraction_difference_over_8": 7.973251028806585e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06594135802469135,
+          0.06689300411522633,
+          0.06491383744855968,
+          0.014636059670781893
+        ],
+        "pixels_difference_over_8": 58,
+        "fraction_difference_over_8": 7.458847736625515e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05966692386831276,
+          0.06075617283950617,
+          0.05893004115226337,
+          0.01480324074074074
+        ],
+        "pixels_difference_over_8": 69,
+        "fraction_difference_over_8": 8.873456790123456e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07263245884773663,
+          0.07420910493827161,
+          0.07171682098765432,
+          0.016590792181069958
+        ],
+        "pixels_difference_over_8": 66,
+        "fraction_difference_over_8": 8.487654320987654e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06029192386831276,
+          0.06092206790123457,
+          0.05964506172839506,
+          0.014203960905349795
+        ],
+        "pixels_difference_over_8": 47,
+        "fraction_difference_over_8": 6.044238683127572e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.058127572016460904,
+          0.05939557613168724,
+          0.05786522633744856,
+          0.012937242798353909
+        ],
+        "pixels_difference_over_8": 50,
+        "fraction_difference_over_8": 6.430041152263374e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06090792181069959,
+          0.062233796296296294,
+          0.060704732510288066,
+          0.014807098765432099
+        ],
+        "pixels_difference_over_8": 51,
+        "fraction_difference_over_8": 6.558641975308642e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06708461934156379,
+          0.06787551440329218,
+          0.06574074074074074,
+          0.017222222222222222
+        ],
+        "pixels_difference_over_8": 65,
+        "fraction_difference_over_8": 8.359053497942387e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07310313786008231,
+          0.07441615226337449,
+          0.07162422839506173,
+          0.01640432098765432
+        ],
+        "pixels_difference_over_8": 60,
+        "fraction_difference_over_8": 7.716049382716049e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06193287037037037,
+          0.06279449588477366,
+          0.060637860082304526,
+          0.015316358024691359
+        ],
+        "pixels_difference_over_8": 57,
+        "fraction_difference_over_8": 7.330246913580247e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059430298353909464,
+          0.060261059670781894,
+          0.058251028806584365,
+          0.014282407407407407
+        ],
+        "pixels_difference_over_8": 60,
+        "fraction_difference_over_8": 7.716049382716049e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 1.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-1950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-1950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.062469135802469135,
+          0.06349537037037037,
+          0.06144547325102881,
+          0.015756172839506172
+        ],
+        "pixels_difference_over_8": 62,
+        "fraction_difference_over_8": 7.973251028806585e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05835133744855967,
+          0.05886574074074074,
+          0.05731995884773663,
+          0.014135802469135803
+        ],
+        "pixels_difference_over_8": 62,
+        "fraction_difference_over_8": 7.973251028806585e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06775720164609053,
+          0.06853009259259259,
+          0.06602623456790123,
+          0.015790895061728396
+        ],
+        "pixels_difference_over_8": 61,
+        "fraction_difference_over_8": 7.844650205761316e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06330246913580247,
+          0.06437628600823045,
+          0.06236882716049383,
+          0.01558641975308642
+        ],
+        "pixels_difference_over_8": 67,
+        "fraction_difference_over_8": 8.616255144032922e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06157921810699588,
+          0.06229938271604938,
+          0.06018775720164609,
+          0.014214248971193416
+        ],
+        "pixels_difference_over_8": 62,
+        "fraction_difference_over_8": 7.973251028806585e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0648070987654321,
+          0.06604809670781893,
+          0.06410236625514404,
+          0.014747942386831275
+        ],
+        "pixels_difference_over_8": 87,
+        "fraction_difference_over_8": 0.00011188271604938272
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06484310699588478,
+          0.06593492798353909,
+          0.06392232510288066,
+          0.014907407407407407
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06695859053497942,
+          0.06790380658436214,
+          0.0660082304526749,
+          0.015289351851851853
+        ],
+        "pixels_difference_over_8": 51,
+        "fraction_difference_over_8": 6.558641975308642e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0701684670781893,
+          0.07105066872427984,
+          0.06873070987654321,
+          0.018097993827160493
+        ],
+        "pixels_difference_over_8": 60,
+        "fraction_difference_over_8": 7.716049382716049e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07440329218106996,
+          0.07551826131687243,
+          0.07252700617283951,
+          0.016410751028806583
+        ],
+        "pixels_difference_over_8": 68,
+        "fraction_difference_over_8": 8.744855967078188e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07287551440329218,
+          0.07363425925925926,
+          0.07193415637860082,
+          0.016818415637860084
+        ],
+        "pixels_difference_over_8": 60,
+        "fraction_difference_over_8": 7.716049382716049e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0633230452674897,
+          0.06427597736625515,
+          0.06296167695473251,
+          0.01566358024691358
+        ],
+        "pixels_difference_over_8": 54,
+        "fraction_difference_over_8": 6.944444444444444e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06286908436213992,
+          0.06372170781893004,
+          0.06190843621399177,
+          0.015543981481481482
+        ],
+        "pixels_difference_over_8": 58,
+        "fraction_difference_over_8": 7.458847736625515e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06131815843621399,
+          0.061988168724279834,
+          0.06011059670781893,
+          0.01539866255144033
+        ],
+        "pixels_difference_over_8": 68,
+        "fraction_difference_over_8": 8.744855967078188e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06325745884773662,
+          0.06402263374485596,
+          0.06193672839506173,
+          0.015430812757201645
+        ],
+        "pixels_difference_over_8": 72,
+        "fraction_difference_over_8": 9.259259259259259e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07065329218106996,
+          0.07157664609053498,
+          0.06912680041152264,
+          0.016984310699588476
+        ],
+        "pixels_difference_over_8": 56,
+        "fraction_difference_over_8": 7.20164609053498e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07258616255144033,
+          0.07349922839506173,
+          0.07076260288065844,
+          0.016140689300411522
+        ],
+        "pixels_difference_over_8": 56,
+        "fraction_difference_over_8": 7.20164609053498e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07317515432098766,
+          0.07434156378600823,
+          0.07204732510288066,
+          0.016768261316872427
+        ],
+        "pixels_difference_over_8": 59,
+        "fraction_difference_over_8": 7.587448559670782e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06392361111111111,
+          0.06505272633744856,
+          0.06305812757201647,
+          0.015564557613168724
+        ],
+        "pixels_difference_over_8": 52,
+        "fraction_difference_over_8": 6.687242798353909e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06523019547325103,
+          0.06537937242798354,
+          0.06332690329218107,
+          0.015313786008230452
+        ],
+        "pixels_difference_over_8": 50,
+        "fraction_difference_over_8": 6.430041152263374e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 2.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-2950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-2950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0632201646090535,
+          0.06363811728395062,
+          0.062074331275720165,
+          0.01429783950617284
+        ],
+        "pixels_difference_over_8": 56,
+        "fraction_difference_over_8": 7.20164609053498e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0613695987654321,
+          0.062218364197530865,
+          0.06024562757201646,
+          0.01457175925925926
+        ],
+        "pixels_difference_over_8": 57,
+        "fraction_difference_over_8": 7.330246913580247e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07208204732510289,
+          0.07294238683127573,
+          0.07125771604938272,
+          0.016231995884773663
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.065244341563786,
+          0.06597479423868313,
+          0.06386831275720165,
+          0.015313786008230452
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.066875,
+          0.06835390946502058,
+          0.06617283950617284,
+          0.016145833333333335
+        ],
+        "pixels_difference_over_8": 53,
+        "fraction_difference_over_8": 6.815843621399177e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06097993827160494,
+          0.06196630658436214,
+          0.060640432098765434,
+          0.014054783950617284
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06483539094650206,
+          0.06557484567901234,
+          0.06400977366255144,
+          0.016743827160493826
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06510288065843621,
+          0.0654861111111111,
+          0.06349794238683128,
+          0.014391718106995886
+        ],
+        "pixels_difference_over_8": 47,
+        "fraction_difference_over_8": 6.044238683127572e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0684130658436214,
+          0.06948431069958848,
+          0.06770704732510288,
+          0.014650205761316872
+        ],
+        "pixels_difference_over_8": 50,
+        "fraction_difference_over_8": 6.430041152263374e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07100180041152264,
+          0.07150720164609053,
+          0.06997427983539095,
+          0.015820473251028807
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06752057613168724,
+          0.06813143004115227,
+          0.06621913580246913,
+          0.014857253086419752
+        ],
+        "pixels_difference_over_8": 37,
+        "fraction_difference_over_8": 4.758230452674897e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07513117283950617,
+          0.07634387860082305,
+          0.07435828189300411,
+          0.015621141975308643
+        ],
+        "pixels_difference_over_8": 46,
+        "fraction_difference_over_8": 5.915637860082304e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07303112139917696,
+          0.07417309670781894,
+          0.07193672839506172,
+          0.01579732510288066
+        ],
+        "pixels_difference_over_8": 46,
+        "fraction_difference_over_8": 5.915637860082304e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0644212962962963,
+          0.06496784979423868,
+          0.0636741255144033,
+          0.014196244855967079
+        ],
+        "pixels_difference_over_8": 33,
+        "fraction_difference_over_8": 4.243827160493827e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06355581275720165,
+          0.06422968106995884,
+          0.0625733024691358,
+          0.014747942386831275
+        ],
+        "pixels_difference_over_8": 29,
+        "fraction_difference_over_8": 3.7294238683127576e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06420267489711934,
+          0.06463477366255144,
+          0.06326260288065844,
+          0.013652263374485597
+        ],
+        "pixels_difference_over_8": 18,
+        "fraction_difference_over_8": 2.3148148148148147e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06949974279835391,
+          0.07073688271604939,
+          0.0686085390946502,
+          0.016075102880658436
+        ],
+        "pixels_difference_over_8": 25,
+        "fraction_difference_over_8": 3.215020576131687e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.071684670781893,
+          0.07223508230452674,
+          0.07040509259259259,
+          0.01652906378600823
+        ],
+        "pixels_difference_over_8": 20,
+        "fraction_difference_over_8": 2.5720164609053497e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0765625,
+          0.07744212962962962,
+          0.07563914609053497,
+          0.017608024691358026
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07794753086419753,
+          0.07847608024691358,
+          0.07663194444444445,
+          0.016527777777777777
+        ],
+        "pixels_difference_over_8": 23,
+        "fraction_difference_over_8": 2.957818930041152e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 3.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-3950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-3950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07111496913580247,
+          0.0718968621399177,
+          0.07008487654320987,
+          0.014718364197530864
+        ],
+        "pixels_difference_over_8": 22,
+        "fraction_difference_over_8": 2.829218106995885e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07263888888888889,
+          0.07285365226337448,
+          0.07156507201646091,
+          0.014431584362139918
+        ],
+        "pixels_difference_over_8": 34,
+        "fraction_difference_over_8": 4.372427983539094e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07221579218106997,
+          0.07291409465020576,
+          0.07130401234567901,
+          0.015529835390946501
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07169753086419753,
+          0.0726247427983539,
+          0.07101208847736626,
+          0.015573559670781893
+        ],
+        "pixels_difference_over_8": 28,
+        "fraction_difference_over_8": 3.60082304526749e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07287680041152263,
+          0.0739917695473251,
+          0.07198559670781893,
+          0.015468106995884775
+        ],
+        "pixels_difference_over_8": 17,
+        "fraction_difference_over_8": 2.186213991769547e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061684670781893006,
+          0.06190843621399177,
+          0.06045781893004115,
+          0.013125
+        ],
+        "pixels_difference_over_8": 16,
+        "fraction_difference_over_8": 2.05761316872428e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07722222222222222,
+          0.07773533950617284,
+          0.07620884773662552,
+          0.016863425925925928
+        ],
+        "pixels_difference_over_8": 26,
+        "fraction_difference_over_8": 3.3436213991769545e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06880529835390946,
+          0.06911779835390947,
+          0.06765817901234568,
+          0.014891975308641975
+        ],
+        "pixels_difference_over_8": 27,
+        "fraction_difference_over_8": 3.472222222222222e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07116769547325102,
+          0.07142875514403292,
+          0.07003215020576131,
+          0.015689300411522635
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07144933127572016,
+          0.07239840534979423,
+          0.0705516975308642,
+          0.014345421810699588
+        ],
+        "pixels_difference_over_8": 26,
+        "fraction_difference_over_8": 3.3436213991769545e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06805684156378601,
+          0.06870498971193416,
+          0.06740097736625514,
+          0.01397119341563786
+        ],
+        "pixels_difference_over_8": 26,
+        "fraction_difference_over_8": 3.3436213991769545e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06725180041152264,
+          0.06823559670781892,
+          0.06659979423868313,
+          0.015079732510288065
+        ],
+        "pixels_difference_over_8": 17,
+        "fraction_difference_over_8": 2.186213991769547e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06414866255144033,
+          0.06481610082304527,
+          0.0636792695473251,
+          0.013840020576131687
+        ],
+        "pixels_difference_over_8": 11,
+        "fraction_difference_over_8": 1.4146090534979426e-05
+      }
+    },
+    {
+      "side": "left",
+      "time": 4.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\left-4600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\left\\left-4600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07327289094650206,
+          0.07334619341563786,
+          0.07102494855967079,
+          0.015302211934156379
+        ],
+        "pixels_difference_over_8": 23,
+        "fraction_difference_over_8": 2.957818930041152e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06143775720164609,
+          0.06299768518518518,
+          0.06167695473251029,
+          0.014265689300411522
+        ],
+        "pixels_difference_over_8": 17,
+        "fraction_difference_over_8": 2.186213991769547e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06624228395061728,
+          0.06792052469135802,
+          0.06662551440329217,
+          0.014733796296296297
+        ],
+        "pixels_difference_over_8": 35,
+        "fraction_difference_over_8": 4.501028806584362e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05636059670781893,
+          0.057753343621399174,
+          0.05631172839506173,
+          0.012231224279835392
+        ],
+        "pixels_difference_over_8": 16,
+        "fraction_difference_over_8": 2.05761316872428e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06607638888888889,
+          0.06806970164609054,
+          0.06641460905349794,
+          0.016300154320987654
+        ],
+        "pixels_difference_over_8": 20,
+        "fraction_difference_over_8": 2.5720164609053497e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06654706790123457,
+          0.06822916666666666,
+          0.06646476337448559,
+          0.014556327160493827
+        ],
+        "pixels_difference_over_8": 16,
+        "fraction_difference_over_8": 2.05761316872428e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061890432098765435,
+          0.06350437242798354,
+          0.062186213991769546,
+          0.015313786008230452
+        ],
+        "pixels_difference_over_8": 18,
+        "fraction_difference_over_8": 2.3148148148148147e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06417052469135802,
+          0.06645704732510288,
+          0.06501414609053498,
+          0.01525977366255144
+        ],
+        "pixels_difference_over_8": 29,
+        "fraction_difference_over_8": 3.7294238683127576e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05861496913580247,
+          0.060218621399176955,
+          0.05875128600823045,
+          0.013647119341563785
+        ],
+        "pixels_difference_over_8": 25,
+        "fraction_difference_over_8": 3.215020576131687e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06314429012345679,
+          0.06439557613168724,
+          0.06323173868312758,
+          0.014738940329218107
+        ],
+        "pixels_difference_over_8": 17,
+        "fraction_difference_over_8": 2.186213991769547e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06091692386831276,
+          0.06266332304526749,
+          0.06149948559670782,
+          0.014655349794238683
+        ],
+        "pixels_difference_over_8": 27,
+        "fraction_difference_over_8": 3.472222222222222e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0634400720164609,
+          0.06506172839506173,
+          0.06404578189300411,
+          0.01568287037037037
+        ],
+        "pixels_difference_over_8": 34,
+        "fraction_difference_over_8": 4.372427983539094e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06200360082304527,
+          0.0631468621399177,
+          0.06193158436213992,
+          0.01467335390946502
+        ],
+        "pixels_difference_over_8": 20,
+        "fraction_difference_over_8": 2.5720164609053497e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06067258230452675,
+          0.061689814814814815,
+          0.06053369341563786,
+          0.013491512345679012
+        ],
+        "pixels_difference_over_8": 26,
+        "fraction_difference_over_8": 3.3436213991769545e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06966949588477367,
+          0.07112397119341564,
+          0.06931841563786008,
+          0.014911265432098765
+        ],
+        "pixels_difference_over_8": 51,
+        "fraction_difference_over_8": 6.558641975308642e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06525462962962963,
+          0.06662551440329217,
+          0.06551440329218107,
+          0.014479166666666666
+        ],
+        "pixels_difference_over_8": 30,
+        "fraction_difference_over_8": 3.8580246913580246e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06352366255144033,
+          0.06497042181069959,
+          0.0636111111111111,
+          0.014985853909465021
+        ],
+        "pixels_difference_over_8": 39,
+        "fraction_difference_over_8": 5.015432098765432e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06243569958847737,
+          0.06383230452674897,
+          0.062285236625514405,
+          0.014552469135802468
+        ],
+        "pixels_difference_over_8": 38,
+        "fraction_difference_over_8": 4.886831275720165e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05865354938271605,
+          0.06020061728395062,
+          0.05939814814814815,
+          0.015034722222222222
+        ],
+        "pixels_difference_over_8": 38,
+        "fraction_difference_over_8": 4.886831275720165e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06881044238683127,
+          0.07000385802469136,
+          0.06850565843621399,
+          0.015801183127572015
+        ],
+        "pixels_difference_over_8": 39,
+        "fraction_difference_over_8": 5.015432098765432e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 0.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-0950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-0950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.060712448559670784,
+          0.06237397119341564,
+          0.06073173868312757,
+          0.014368569958847737
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0626929012345679,
+          0.06455632716049382,
+          0.0626440329218107,
+          0.01570216049382716
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06762731481481482,
+          0.0694238683127572,
+          0.06769804526748971,
+          0.015738168724279834
+        ],
+        "pixels_difference_over_8": 38,
+        "fraction_difference_over_8": 4.886831275720165e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.060223765432098765,
+          0.0623804012345679,
+          0.06028935185185185,
+          0.014449588477366255
+        ],
+        "pixels_difference_over_8": 54,
+        "fraction_difference_over_8": 6.944444444444444e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0654783950617284,
+          0.06719907407407408,
+          0.06568544238683127,
+          0.015776748971193414
+        ],
+        "pixels_difference_over_8": 39,
+        "fraction_difference_over_8": 5.015432098765432e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06549639917695474,
+          0.06767618312757202,
+          0.0663695987654321,
+          0.015039866255144033
+        ],
+        "pixels_difference_over_8": 44,
+        "fraction_difference_over_8": 5.65843621399177e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06219007201646091,
+          0.06426440329218107,
+          0.06281893004115226,
+          0.015498971193415638
+        ],
+        "pixels_difference_over_8": 58,
+        "fraction_difference_over_8": 7.458847736625515e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.062280092592592595,
+          0.06451003086419753,
+          0.06242798353909465,
+          0.015045010288065843
+        ],
+        "pixels_difference_over_8": 51,
+        "fraction_difference_over_8": 6.558641975308642e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0632908950617284,
+          0.065122170781893,
+          0.06297067901234568,
+          0.014722222222222222
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06620370370370371,
+          0.0677636316872428,
+          0.06572916666666667,
+          0.016724537037037038
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06671939300411522,
+          0.0693505658436214,
+          0.06756687242798354,
+          0.01605324074074074
+        ],
+        "pixels_difference_over_8": 52,
+        "fraction_difference_over_8": 6.687242798353909e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06851723251028806,
+          0.06947145061728395,
+          0.06788065843621399,
+          0.01740869341563786
+        ],
+        "pixels_difference_over_8": 49,
+        "fraction_difference_over_8": 6.301440329218108e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0622363683127572,
+          0.06368055555555556,
+          0.062362397119341564,
+          0.015128600823045268
+        ],
+        "pixels_difference_over_8": 37,
+        "fraction_difference_over_8": 4.758230452674897e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07347865226337448,
+          0.07520447530864198,
+          0.07297453703703703,
+          0.01838605967078189
+        ],
+        "pixels_difference_over_8": 44,
+        "fraction_difference_over_8": 5.65843621399177e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07605452674897119,
+          0.07796553497942386,
+          0.07554140946502058,
+          0.016295010288065844
+        ],
+        "pixels_difference_over_8": 50,
+        "fraction_difference_over_8": 6.430041152263374e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.060910493827160496,
+          0.06236625514403292,
+          0.060824331275720164,
+          0.014364711934156378
+        ],
+        "pixels_difference_over_8": 52,
+        "fraction_difference_over_8": 6.687242798353909e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06991640946502058,
+          0.07227366255144033,
+          0.07054783950617284,
+          0.017602880658436213
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06179526748971193,
+          0.06390946502057614,
+          0.06226851851851852,
+          0.015587705761316873
+        ],
+        "pixels_difference_over_8": 45,
+        "fraction_difference_over_8": 5.7870370370370366e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061938014403292184,
+          0.06308641975308642,
+          0.06205761316872428,
+          0.014205246913580247
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06201131687242798,
+          0.06429655349794239,
+          0.0629320987654321,
+          0.013617541152263374
+        ],
+        "pixels_difference_over_8": 59,
+        "fraction_difference_over_8": 7.587448559670782e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 1.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-1950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-1950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06436085390946503,
+          0.06614326131687243,
+          0.06436213991769547,
+          0.015204475308641975
+        ],
+        "pixels_difference_over_8": 64,
+        "fraction_difference_over_8": 8.23045267489712e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0661252572016461,
+          0.06803626543209877,
+          0.06626028806584362,
+          0.016382458847736626
+        ],
+        "pixels_difference_over_8": 50,
+        "fraction_difference_over_8": 6.430041152263374e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061096965020576134,
+          0.06284207818930042,
+          0.0608179012345679,
+          0.015473251028806584
+        ],
+        "pixels_difference_over_8": 45,
+        "fraction_difference_over_8": 5.7870370370370366e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06348765432098766,
+          0.06541280864197531,
+          0.06368569958847736,
+          0.01583590534979424
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06307227366255144,
+          0.06417695473251028,
+          0.06285108024691358,
+          0.01508616255144033
+        ],
+        "pixels_difference_over_8": 55,
+        "fraction_difference_over_8": 7.073045267489711e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05518389917695473,
+          0.05721836419753087,
+          0.05544624485596708,
+          0.01327417695473251
+        ],
+        "pixels_difference_over_8": 49,
+        "fraction_difference_over_8": 6.301440329218108e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06371527777777777,
+          0.06565457818930041,
+          0.06397376543209876,
+          0.014207818930041152
+        ],
+        "pixels_difference_over_8": 47,
+        "fraction_difference_over_8": 6.044238683127572e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06460519547325103,
+          0.06675154320987654,
+          0.06499485596707819,
+          0.015216049382716049
+        ],
+        "pixels_difference_over_8": 54,
+        "fraction_difference_over_8": 6.944444444444444e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05875514403292181,
+          0.060563271604938275,
+          0.05885030864197531,
+          0.013640689300411523
+        ],
+        "pixels_difference_over_8": 44,
+        "fraction_difference_over_8": 5.65843621399177e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.060583847736625514,
+          0.06303755144032921,
+          0.0612744341563786,
+          0.01510545267489712
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06037165637860082,
+          0.0623559670781893,
+          0.06126671810699588,
+          0.014162808641975309
+        ],
+        "pixels_difference_over_8": 59,
+        "fraction_difference_over_8": 7.587448559670782e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059737654320987654,
+          0.06192901234567901,
+          0.059945987654320985,
+          0.013429783950617284
+        ],
+        "pixels_difference_over_8": 38,
+        "fraction_difference_over_8": 4.886831275720165e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06115354938271605,
+          0.06253086419753086,
+          0.061035236625514404,
+          0.014113940329218108
+        ],
+        "pixels_difference_over_8": 42,
+        "fraction_difference_over_8": 5.401234567901235e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06181970164609053,
+          0.06376543209876544,
+          0.06215277777777778,
+          0.01467335390946502
+        ],
+        "pixels_difference_over_8": 43,
+        "fraction_difference_over_8": 5.5298353909465026e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06676440329218107,
+          0.06849794238683128,
+          0.06659850823045267,
+          0.016899434156378602
+        ],
+        "pixels_difference_over_8": 47,
+        "fraction_difference_over_8": 6.044238683127572e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06211548353909465,
+          0.06384002057613168,
+          0.061853137860082306,
+          0.017156635802469136
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06112268518518518,
+          0.06321759259259259,
+          0.061828703703703705,
+          0.015210905349794239
+        ],
+        "pixels_difference_over_8": 40,
+        "fraction_difference_over_8": 5.1440329218106995e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06457433127572017,
+          0.06645576131687243,
+          0.06471836419753087,
+          0.014266975308641976
+        ],
+        "pixels_difference_over_8": 44,
+        "fraction_difference_over_8": 5.65843621399177e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06317772633744856,
+          0.06496141975308642,
+          0.06320216049382717,
+          0.014260545267489712
+        ],
+        "pixels_difference_over_8": 44,
+        "fraction_difference_over_8": 5.65843621399177e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06570859053497942,
+          0.06790123456790123,
+          0.06626671810699589,
+          0.015820473251028807
+        ],
+        "pixels_difference_over_8": 51,
+        "fraction_difference_over_8": 6.558641975308642e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 2.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-2950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-2950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06122042181069959,
+          0.06346965020576131,
+          0.06148276748971193,
+          0.01533179012345679
+        ],
+        "pixels_difference_over_8": 37,
+        "fraction_difference_over_8": 4.758230452674897e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06487011316872428,
+          0.0669238683127572,
+          0.06523662551440329,
+          0.014210390946502057
+        ],
+        "pixels_difference_over_8": 45,
+        "fraction_difference_over_8": 5.7870370370370366e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06560185185185186,
+          0.06726723251028807,
+          0.06609310699588478,
+          0.014058641975308641
+        ],
+        "pixels_difference_over_8": 47,
+        "fraction_difference_over_8": 6.044238683127572e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06469135802469136,
+          0.06661008230452675,
+          0.06506172839506173,
+          0.015733024691358025
+        ],
+        "pixels_difference_over_8": 48,
+        "fraction_difference_over_8": 6.17283950617284e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.058132716049382714,
+          0.06056712962962963,
+          0.05866255144032922,
+          0.013545524691358024
+        ],
+        "pixels_difference_over_8": 41,
+        "fraction_difference_over_8": 5.272633744855967e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.058189300411522635,
+          0.06020190329218107,
+          0.05915509259259259,
+          0.014395576131687243
+        ],
+        "pixels_difference_over_8": 30,
+        "fraction_difference_over_8": 3.8580246913580246e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06118827160493827,
+          0.06281764403292181,
+          0.06154706790123457,
+          0.015790895061728396
+        ],
+        "pixels_difference_over_8": 34,
+        "fraction_difference_over_8": 4.372427983539094e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06243312757201646,
+          0.06456661522633744,
+          0.06258744855967079,
+          0.014602623456790123
+        ],
+        "pixels_difference_over_8": 37,
+        "fraction_difference_over_8": 4.758230452674897e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05643261316872428,
+          0.05765689300411523,
+          0.056613940329218106,
+          0.013206018518518518
+        ],
+        "pixels_difference_over_8": 39,
+        "fraction_difference_over_8": 5.015432098765432e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06184542181069959,
+          0.06360082304526748,
+          0.06244084362139918,
+          0.014488168724279835
+        ],
+        "pixels_difference_over_8": 33,
+        "fraction_difference_over_8": 4.243827160493827e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06503086419753086,
+          0.06670396090534979,
+          0.06555812757201646,
+          0.014396862139917695
+        ],
+        "pixels_difference_over_8": 21,
+        "fraction_difference_over_8": 2.7006172839506174e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05985082304526749,
+          0.061732253086419754,
+          0.0608667695473251,
+          0.014304269547325103
+        ],
+        "pixels_difference_over_8": 28,
+        "fraction_difference_over_8": 3.60082304526749e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061089248971193416,
+          0.0626684670781893,
+          0.06128343621399177,
+          0.013707561728395061
+        ],
+        "pixels_difference_over_8": 23,
+        "fraction_difference_over_8": 2.957818930041152e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.057869084362139916,
+          0.05978780864197531,
+          0.05809799382716049,
+          0.01304783950617284
+        ],
+        "pixels_difference_over_8": 14,
+        "fraction_difference_over_8": 1.800411522633745e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.65,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3650.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3650.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059997427983539096,
+          0.06087577160493827,
+          0.05998456790123457,
+          0.013760288065843621
+        ],
+        "pixels_difference_over_8": 21,
+        "fraction_difference_over_8": 2.7006172839506174e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.7,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3700.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3700.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.05843106995884774,
+          0.05975437242798354,
+          0.05895190329218107,
+          0.013324331275720165
+        ],
+        "pixels_difference_over_8": 32,
+        "fraction_difference_over_8": 4.11522633744856e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.75,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3750.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3750.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06326388888888888,
+          0.06532921810699588,
+          0.06354038065843622,
+          0.013939043209876543
+        ],
+        "pixels_difference_over_8": 15,
+        "fraction_difference_over_8": 1.9290123456790123e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.8,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3800.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3800.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06079732510288066,
+          0.06285751028806584,
+          0.06151748971193416,
+          0.014117798353909465
+        ],
+        "pixels_difference_over_8": 18,
+        "fraction_difference_over_8": 2.3148148148148147e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.85,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3850.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3850.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06602109053497943,
+          0.06804783950617284,
+          0.06618827160493827,
+          0.01541795267489712
+        ],
+        "pixels_difference_over_8": 28,
+        "fraction_difference_over_8": 3.60082304526749e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.9,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3900.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3900.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06499228395061728,
+          0.06651234567901235,
+          0.06497685185185186,
+          0.015771604938271604
+        ],
+        "pixels_difference_over_8": 20,
+        "fraction_difference_over_8": 2.5720164609053497e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 3.95,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-3950.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-3950.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06374871399176955,
+          0.06528163580246914,
+          0.06412808641975308,
+          0.014859825102880659
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.0,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4000.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4000.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061449331275720165,
+          0.06297325102880659,
+          0.0617039609053498,
+          0.014774948559670781
+        ],
+        "pixels_difference_over_8": 24,
+        "fraction_difference_over_8": 3.08641975308642e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.05,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4050.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4050.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06154320987654321,
+          0.0632008744855967,
+          0.06211033950617284,
+          0.01352366255144033
+        ],
+        "pixels_difference_over_8": 24,
+        "fraction_difference_over_8": 3.08641975308642e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.1,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4100.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4100.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059630915637860084,
+          0.06062885802469136,
+          0.05994984567901235,
+          0.013886316872427983
+        ],
+        "pixels_difference_over_8": 18,
+        "fraction_difference_over_8": 2.3148148148148147e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.15,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4150.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4150.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.062146347736625515,
+          0.0634375,
+          0.06226208847736626,
+          0.013311471193415638
+        ],
+        "pixels_difference_over_8": 15,
+        "fraction_difference_over_8": 1.9290123456790123e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.2,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4200.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4200.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06291923868312757,
+          0.06455504115226338,
+          0.0630979938271605,
+          0.013641975308641975
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.25,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4250.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4250.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06382844650205761,
+          0.06600180041152263,
+          0.06449845679012346,
+          0.015370370370370371
+        ],
+        "pixels_difference_over_8": 23,
+        "fraction_difference_over_8": 2.957818930041152e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.3,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4300.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4300.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.061975308641975306,
+          0.06361754115226337,
+          0.062156635802469135,
+          0.014198816872427984
+        ],
+        "pixels_difference_over_8": 25,
+        "fraction_difference_over_8": 3.215020576131687e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.35,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4350.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4350.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.07028292181069959,
+          0.07228395061728395,
+          0.07104552469135803,
+          0.014529320987654321
+        ],
+        "pixels_difference_over_8": 20,
+        "fraction_difference_over_8": 2.5720164609053497e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.4,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4400.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4400.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0597337962962963,
+          0.06200617283950617,
+          0.06082304526748971,
+          0.013575102880658435
+        ],
+        "pixels_difference_over_8": 21,
+        "fraction_difference_over_8": 2.7006172839506174e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.45,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4450.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4450.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.0589647633744856,
+          0.060469393004115225,
+          0.05901877572016461,
+          0.013434927983539095
+        ],
+        "pixels_difference_over_8": 27,
+        "fraction_difference_over_8": 3.472222222222222e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.5,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4500.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4500.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06556712962962963,
+          0.06730324074074075,
+          0.0660815329218107,
+          0.01527391975308642
+        ],
+        "pixels_difference_over_8": 22,
+        "fraction_difference_over_8": 2.829218106995885e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.55,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4550.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4550.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.059650205761316875,
+          0.061054526748971195,
+          0.059876543209876544,
+          0.01436985596707819
+        ],
+        "pixels_difference_over_8": 19,
+        "fraction_difference_over_8": 2.4434156378600824e-05
+      }
+    },
+    {
+      "side": "right",
+      "time": 4.6,
+      "native": "integration-validation\\native\\proof-v30\\native-wave\\right-4600.png",
+      "reference": "assets_cloudy_rig_v4\\directional_v5\\validation-left-elbow-v30\\final-full\\right\\right-4600.png",
+      "comparison": {
+        "mean_absolute_rgba": [
+          0.06143775720164609,
+          0.06299768518518518,
+          0.06167695473251029,
+          0.014265689300411522
+        ],
+        "pixels_difference_over_8": 17,
+        "fraction_difference_over_8": 2.186213991769547e-05
+      }
+    }
+  ],
+  "gif_frames": 47,
+  "gif_fps": 10,
+  "gif_size_bytes": 3515162,
+  "reference_source_hash_matches": {
+    "renderer.js": true,
+    "side-wave-skinning.js": true,
+    "motion.js": true,
+    "side-cuff-fit.js": true,
+    "side-cuff-surface.js": true,
+    "side-sleeve-tag.js": true,
+    "textures/parts.js": true
+  }
+}

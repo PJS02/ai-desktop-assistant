@@ -6,3 +6,4 @@ pywin32
 psutil
 pillow
 sentence-transformers
+supertonic>=1.3.1,<2.0

@@ -1,0 +1,4 @@
+# Keep original rig source bytes stable for provenance checks on Windows.
+*.js -text
+# Imported artwork sources retain existing whitespace as well as line endings.
+* whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
