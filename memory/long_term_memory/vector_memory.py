@@ -26,6 +26,9 @@ RECALL_WEIGHTS = {
 FORGETTING_HALF_LIFE_DAYS = 30
 REINFORCEMENT_BOOST = 0.20
 FORGETTING_THRESHOLD = 0.15
+# E5 점수 분포는 실제 대화로 조정해야 한다. 낮은 관련성은 순위 계산 전에 제외한다.
+MIN_RECALL_SIMILARITY = 0.75
+MIN_DUPLICATE_SIMILARITY = 0.90
 
 # 추가 컬럼은 기존 INSERT문도 계속 사용할 수 있도록 기본값을 둔다.
 METADATA_COLUMNS = {
@@ -36,6 +39,7 @@ METADATA_COLUMNS = {
     "recall_count": "INTEGER NOT NULL DEFAULT 0 CHECK (recall_count >= 0)",
     "last_recalled_at": "TEXT",
     "strength": "REAL NOT NULL DEFAULT 1.0 CHECK (strength BETWEEN 0 AND 1)",
+    "original_text": "TEXT",
 }
 
 # 기존 DB에서만 제거한다. 원문·벡터·나머지 메타데이터는 그대로 보존한다.
@@ -146,11 +150,69 @@ class LongTermMemory:
         )
         return conversation_id
 
-    def _save_messages(self, messages, importance, conversation_id, emotional_intensity) -> None:
+    def remember_fact(
+        self, text: str, *, original_text: str, importance: int,
+        emotional_intensity: int | None = None, duplicate_memory_id: int | None = None,
+    ) -> int | None:
+        """핵심 사실을 저장하거나 같은 사실로 확인된 기존 기억을 보강한다."""
+        self._validate_metadata(importance, emotional_intensity)
+        if type(importance) is not int:
+            raise ValueError("importance must be an integer from 0 to 10")
+        if duplicate_memory_id is not None and (type(duplicate_memory_id) is not int or duplicate_memory_id < 1):
+            raise ValueError("duplicate_memory_id must be a positive integer")
+        text = text.strip()
+        if not text or not original_text.strip():
+            return None
+        with self._lock:
+            # 같은 핵심 문장은 망각 여부와 무관하게 기존 행을 재사용한다.
+            rows = self._connection.execute(
+                "SELECT id, text FROM memories WHERE speaker IN ('user', 'conversation')"
+            ).fetchall()
+            normalized = " ".join(text.split())
+            matched_id = next((memory_id for memory_id, saved_text in rows
+                               if " ".join(saved_text.split()) == normalized), None)
+            if matched_id is None and duplicate_memory_id is not None:
+                # shortcut: 의미 중복은 프롬프트 후보 안에서만 확인한다. 누락이 많아지면 후보 범위를 확장한다.
+                existing = self._read_memory(duplicate_memory_id)
+                if existing.speaker in ("user", "conversation"):
+                    blob, dimension = self._connection.execute(
+                        "SELECT embedding, dimension FROM memories WHERE id = ?", (duplicate_memory_id,),
+                    ).fetchone()
+                    vector = self._embed(f"passage: {text}")
+                    saved_vector = list(array("f", blob))
+                    # LLM이 같은 사실이라고 판정한 경우만 이 경로로 들어온다.
+                    # 유사도만으로는 부정·반대 의미의 문장을 합치지 않는다.
+                    if len(vector) == dimension == len(saved_vector) and self._cosine(vector, saved_vector) >= MIN_DUPLICATE_SIMILARITY:
+                        matched_id = duplicate_memory_id
+
+            if matched_id is not None:
+                with self._connection:
+                    now = datetime.now(timezone.utc)
+                    existing = self._read_memory(matched_id)
+                    current = replace(existing, strength=self._current_strength(existing, now))
+                    self._reinforce_memory(current, now)
+                    # 기존 원문·벡터·생성 시각은 보존하고 평가값은 낮추지 않는다.
+                    self._connection.execute(
+                        "UPDATE memories SET importance = ?, emotional_intensity = ? WHERE id = ?",
+                        (max(existing.importance or 0, importance),
+                         max(existing.emotional_intensity or 0, emotional_intensity or 0), matched_id),
+                    )
+                return matched_id
+            if importance < 7:
+                return None
+            return self._save_messages(
+                [("user", text)], importance, uuid4().hex, emotional_intensity, original_text=original_text,
+            )[0]
+
+    @staticmethod
+    def _validate_metadata(importance, emotional_intensity) -> None:
         if importance is not None and (type(importance) is not int or not 0 <= importance <= 10):
             raise ValueError("importance must be an integer from 0 to 10 or None")
         if emotional_intensity is not None and (type(emotional_intensity) is not int or not 0 <= emotional_intensity <= 10):
             raise ValueError("emotional_intensity must be an integer from 0 to 10 or None")
+
+    def _save_messages(self, messages, importance, conversation_id, emotional_intensity, original_text=None) -> list[int]:
+        self._validate_metadata(importance, emotional_intensity)
         if any(speaker not in ("user", "assistant", "conversation", "unknown") for speaker, _ in messages):
             raise ValueError("unknown speaker")
 
@@ -163,16 +225,15 @@ class LongTermMemory:
                     continue
                 vector = self._embed(f"passage: {text}")
                 rows.append((text, array("f", vector).tobytes(), len(vector), created_at,
-                             importance, speaker, conversation_id, emotional_intensity))
+                             importance, speaker, conversation_id, emotional_intensity, original_text))
             # 두 발화 중 임베딩·저장이 실패하면 일부만 남기지 않는다.
             with self._connection:
-                self._connection.executemany(
+                return [self._connection.execute(
                     """INSERT INTO memories
                     (text, embedding, dimension, created_at, importance, speaker,
-                     conversation_id, emotional_intensity)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    rows,
-                )
+                     conversation_id, emotional_intensity, original_text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", row,
+                ).lastrowid for row in rows]
 
     def count(self) -> int:
         """저장된 기억 수를 반환한다. 비어 있으면 모델을 불러오지 않는다."""
@@ -180,7 +241,7 @@ class LongTermMemory:
             return self._connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
 
     def search(self, query: str, limit: int = 3) -> list[MemorySearchResult]:
-        """망각된 기억을 제외하고 회상 순위로 선택한 기억을 강화한다."""
+        """관련성·강도 기준을 통과한 기억만 반환한다. 검색만으로 강화하지 않는다."""
         if limit < 1 or not query.strip():
             return []
         with self._lock:
@@ -205,11 +266,10 @@ class LongTermMemory:
                 vector = list(array("f", blob))
                 if len(vector) == dimension == len(query_vector):
                     result = replace(memory, score=self._cosine(query_vector, vector))
-                    results.append((self._recall_score(result, now), result))
+                    if result.score >= MIN_RECALL_SIMILARITY:
+                        results.append((self._recall_score(result, now), result))
             selected = sorted(results, key=lambda item: item[0], reverse=True)[:limit]
-            with self._connection:
-                return [replace(self._reinforce_memory(result, now), recall_score=score)
-                        for score, result in selected]
+            return [replace(result, recall_score=score) for score, result in selected]
 
     def get_strength(self, memory_id: int) -> float:
         """시간 경과를 반영한 현재 기억 강도를 조회한다. 조회만으로 강화하지 않는다."""

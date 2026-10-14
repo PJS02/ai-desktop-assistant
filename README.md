@@ -14,7 +14,7 @@ pip install -r requirements.txt
 
 템플릿을 복사해 실제 설정 파일을 만드세요.
 
-context/config/gemini_config.template.json -> context/config/gemini_config.json
+ai/config/gemini_config.template.json -> ai/config/gemini_config.json
 context/config/igdb_config.template.json -> context/config/igdb_config.json
 
 gemini_config.json 예시:

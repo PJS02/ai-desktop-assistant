@@ -45,6 +45,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
+/tests/
 htmlcov/
 .tox/
 .nox/
@@ -68,8 +69,6 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
-data/long_term_memory.sqlite3*
-ai/config/gemini_config.json
 
 # Flask stuff:
 instance/
@@ -131,12 +130,36 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local runtime data (including SQLite sidecars and schema backups)
+/data/*.sqlite*
+/data/*.db*
+/character_items/
+/.ai_desktop_assistant/
+
+# Private credentials
+/.aws/
+/.ssh/
+*.pem
+*.key
+
+# Editor temporary files and local backups
+*.bak
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
 
 # cache
 context/cache/
@@ -149,7 +172,9 @@ context/*.json
 url_cache.json
 
 # API key configs
-context/config/
+context/config/*
+!context/config/*.template.json
+!context/config/README.md
 medeapipe_capstone/config/device_settings.json*
 
 # Spyder project settings
