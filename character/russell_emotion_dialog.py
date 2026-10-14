@@ -64,6 +64,9 @@ class RussellEmotionCanvas(QWidget):
     
     def _update_animation(self) -> None:
         """부드러운 이동 애니메이션"""
+        if (self.valence_current == self.valence_target
+                and self.arousal_current == self.arousal_target):
+            return
         # 선형 보간 (lerp) - 속도: 0.15 (0-1 범위에서 스무스함)
         speed = 0.15
         
@@ -89,10 +92,14 @@ class RussellEmotionCanvas(QWidget):
 
         self.valence_target = valence
         self.arousal_target = arousal
-        self.dominant = dominant or "idle"
+        next_dominant = dominant or "idle"
+        color_changed = self.dominant != next_dominant
+        self.dominant = next_dominant
         if immediate:
             self.valence_current = self.valence_target
             self.arousal_current = self.arousal_target
+        if color_changed or immediate:
+            self.update()
 
     def _label_metrics(self):
         return QFontMetrics(QFont("Malgun Gothic", 9), self)
@@ -176,11 +183,13 @@ class RussellEmotionCanvas(QWidget):
 
     def set_history(self, points) -> None:
         """최근 감정 좌표 궤적을 오래된 순서로 설정한다."""
-        self.coordinate_history = [
+        history = [
             (max(-1.0, min(1.0, float(v))), max(-1.0, min(1.0, float(a))))
             for v, a in (points or [])[-12:]
         ]
-        self.update()
+        if history != self.coordinate_history:
+            self.coordinate_history = history
+            self.update()
 
     def _dominant_color(self) -> QColor:
         color_map = {
@@ -508,10 +517,16 @@ class RussellEmotionDialog(QDialog):
         self.influence_table.setWordWrap(False)
         self.influence_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.influence_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.influence_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header = self.influence_table.horizontalHeader()
         self.influence_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (2, 3, 4):
-            self.influence_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        metrics = QFontMetrics(self.influence_table.font())
+        for column, sample in ((0, "00:00:00"), (2, "회복 99"), (3, "-0.000"), (4, "-0.000")):
+            # Content sizing on every setItem made a full history stall the GUI.
+            # Start with readable widths and keep them adjustable by the user.
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+            title = self.influence_table.horizontalHeaderItem(column).text()
+            header.resizeSection(column, max(metrics.horizontalAdvance(title),
+                                             metrics.horizontalAdvance(sample)) + 24)
         self.influence_table.setMinimumHeight(225)
 
         influence_group = QGroupBox()
@@ -755,47 +770,90 @@ class RussellEmotionDialog(QDialog):
         self._update_refresh_status()
 
     def _render_influence_events(self, events):
-        scroll_position = self.influence_table.verticalScrollBar().value()
-        self._displayed_events = deepcopy(events)
-        self.influence_table.blockSignals(True)
-        self.influence_table.clearSelection()
-        self.influence_table.setRowCount(len(events))
-        for row, item in enumerate(self._displayed_events):
-            if not item.get("event_id"):
-                item["event_id"] = f"{item.get('timestamp', 0)}:{item.get('source', '')}:{row}"
-            category = item.get("category", "")
-            marker = {"positive": "+", "negative": "-", "recovery": "회복 "}.get(category, "변화 ")
-            score = abs(int(item.get("impact_score", 0)))
-            values = [
-                datetime.fromtimestamp(item.get("timestamp", 0)).strftime("%H:%M:%S"),
-                item.get("source", "") + (f" · {item['sample_count']}회" if item.get("sample_count", 1) > 1 else ""),
-                f"{marker}{score}",
-                f"{item.get('delta_valence', 0):+.3f}",
-                f"{item.get('delta_arousal', 0):+.3f}",
-            ]
-            color = {
-                "positive": QColor("#16804b"),
-                "negative": QColor("#c23b3b"),
-                "recovery": QColor("#4667a8"),
-            }.get(category, QColor("#4b5563"))
-            for column, value in enumerate(values):
+        events = [item if item.get("event_id") else
+                  dict(item, event_id=f"{item.get('timestamp', 0)}:{item.get('source', '')}:{row}")
+                  for row, item in enumerate(events)]
+        if events == self._displayed_events:
+            return
+        table = self.influence_table
+        scroll_position = table.verticalScrollBar().value()
+        old_events = {item["event_id"]: item for item in self._displayed_events}
+        row_ids = [item["event_id"] for item in self._displayed_events]
+        new_ids = [item["event_id"] for item in events]
+        retained_ids = set(new_ids)
+        anchor_row = table.rowAt(0) if scroll_position else -1
+        anchor_id = row_ids[anchor_row] if 0 <= anchor_row < len(row_ids) else None
+        anchor_y = table.rowViewportPosition(anchor_row) if anchor_id is not None else 0
+        updates_enabled = table.updatesEnabled()
+        signals_blocked = table.blockSignals(True)
+        table.setUpdatesEnabled(False)
+        try:
+            table.clearSelection()
+            for row in range(len(row_ids) - 1, -1, -1):
+                if row_ids[row] not in retained_ids:
+                    table.removeRow(row)
+                    row_ids.pop(row)
+            for row, item in enumerate(events):
+                identity = item["event_id"]
+                if row >= len(row_ids) or row_ids[row] != identity:
+                    if identity in row_ids[row:]:
+                        previous_row = row_ids.index(identity, row)
+                        cells = [table.takeItem(previous_row, col) for col in range(table.columnCount())]
+                        table.removeRow(previous_row)
+                        row_ids.pop(previous_row)
+                        table.insertRow(row)
+                        for col, cell in enumerate(cells):
+                            table.setItem(row, col, cell)
+                    else:
+                        table.insertRow(row)
+                    row_ids.insert(row, identity)
+                if old_events.get(identity) != item or table.item(row, 0) is None:
+                    self._update_influence_row(row, item)
+            self._displayed_events = deepcopy(events)
+            if self._selected_event_id in retained_ids:
+                table.selectRow(new_ids.index(self._selected_event_id))
+            table.verticalScrollBar().setValue(scroll_position)
+            if anchor_id in retained_ids:
+                shift = table.rowViewportPosition(new_ids.index(anchor_id)) - anchor_y
+                table.verticalScrollBar().setValue(scroll_position + shift)
+        finally:
+            table.blockSignals(signals_blocked)
+            table.setUpdatesEnabled(updates_enabled)
+
+    def _update_influence_row(self, row, item):
+        category = item.get("category", "")
+        marker = {"positive": "+", "negative": "-", "recovery": "회복 "}.get(category, "변화 ")
+        values = [
+            datetime.fromtimestamp(item.get("timestamp", 0)).strftime("%H:%M:%S"),
+            item.get("source", "") + (f" · {item['sample_count']}회" if item.get("sample_count", 1) > 1 else ""),
+            f"{marker}{abs(int(item.get('impact_score', 0)))}",
+            f"{item.get('delta_valence', 0):+.3f}", f"{item.get('delta_arousal', 0):+.3f}",
+        ]
+        color = QColor({"positive": "#16804b", "negative": "#c23b3b",
+                        "recovery": "#4667a8"}.get(category, "#4b5563"))
+        for column, value in enumerate(values):
+            cell = self.influence_table.item(row, column)
+            fresh = cell is None
+            if fresh:
                 cell = QTableWidgetItem(value)
-                cell.setData(Qt.ItemDataRole.UserRole, item.get("event_id"))
-                cell.setToolTip(value)
-                if column == 2:
-                    cell.setToolTip("사건 반영 시 현재 좌표가 이동한 크기(0~99). 목표 좌표·감정 성분 변화는 상세에서 확인하세요.")
                 if column >= 2:
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if column == 2:
-                    cell.setForeground(color)
                     font = cell.font()
                     font.setBold(True)
                     cell.setFont(font)
+            elif cell.text() != value:
+                cell.setText(value)
+            if cell.data(Qt.ItemDataRole.UserRole) != item["event_id"]:
+                cell.setData(Qt.ItemDataRole.UserRole, item["event_id"])
+            tooltip = ("사건 반영 시 현재 좌표가 이동한 크기(0~99). 목표 좌표·감정 성분 변화는 상세에서 확인하세요."
+                       if column == 2 else value)
+            if cell.toolTip() != tooltip:
+                cell.setToolTip(tooltip)
+            if column == 2 and cell.foreground().color() != color:
+                cell.setForeground(color)
+            if fresh:
                 self.influence_table.setItem(row, column, cell)
-            if self._selected_event_id is not None and item.get("event_id") == self._selected_event_id:
-                self.influence_table.selectRow(row)
-        self.influence_table.blockSignals(False)
-        self.influence_table.verticalScrollBar().setValue(scroll_position)
 
     def _on_influence_selected(self):
         selected = self.influence_table.selectedItems()

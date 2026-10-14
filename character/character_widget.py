@@ -1894,9 +1894,10 @@ class CharacterWidget(QLabel):
             self.russell_dialog.set_explanation_provider(
                 self.mood_system.get_emotion_explanation
             )
-        self.russell_dialog.set_live_mode()
-        valence, arousal, dominant = state_provider()
-        self.russell_dialog.update_state(valence, arousal, dominant)
+        # A hidden dialog fetches once in showEvent. Refresh an already visible
+        # dialog here instead of rebuilding the same explanation twice on open.
+        if self.russell_dialog.isVisible():
+            self.russell_dialog.set_live_mode()
         self.russell_dialog.start_auto_refresh()
 
         if not self.russell_dialog.isVisible():
