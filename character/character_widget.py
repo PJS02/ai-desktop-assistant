@@ -28,6 +28,8 @@ from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_optio
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 
+CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
+
 
 # Context 모듈 import
 try:
@@ -189,9 +191,10 @@ class CharacterWidget(QLabel):
         self._remaining_items_to_release = []  # 반환 대기 중인 아이템
         
         # 캐릭터 아이템 폴더 생성
-        self.character_items_path = self.assets_path.parent / "character_items"
+        self.character_items_path = CHARACTER_ITEMS_DIRECTORY
         self.character_items_path.mkdir(parents=True, exist_ok=True)
         print(f"[캐릭터 아이템 폴더] {self.character_items_path}")
+        self._restore_held_items()
         
         # 이벤트 트래킹
         self.last_interaction_time = 0  # 마지막 상호작용 시간
@@ -518,7 +521,7 @@ class CharacterWidget(QLabel):
 
     def _refresh_rig_overlay(self):
         if self.rig_view is not None:
-            key = (tuple(self.held_items), self.is_flipped)
+            key = (tuple(self.held_items), self.is_flipped, self.show_debug)
             if key == self._rig_overlay_key:
                 return
             self._rig_overlay_key = key
@@ -1362,11 +1365,11 @@ class CharacterWidget(QLabel):
             painter = QPainter(decorated)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            # 광환 (흐린 노란색 원형)
-            glow_color = QColor(255, 215, 0, 80)  # 금색, 반투명
-            painter.setBrush(QBrush(glow_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(8, 8, 64, 64)
+            if self.show_debug:
+                # Ownership decoration follows the hitbox display setting.
+                painter.setBrush(QBrush(QColor(255, 215, 0, 80)))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(8, 8, 64, 64)
             
             # Windows may return a smaller icon or a high-DPI pixmap.
             # Normalize its pixels before fitting it into the ring's logical box.
@@ -1379,18 +1382,13 @@ class CharacterWidget(QLabel):
             icon_y = 8 + (64 - fitted_icon.height()) // 2
             painter.drawPixmap(icon_x, icon_y, fitted_icon)
             
-            # 금색 테두리 (소유권 표시)
-            painter.setPen(QPen(QColor(255, 215, 0), 3))  # 금색 3px 테두리
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(8, 8, 64, 64)
-            
-            # 코너에 별 모양 배지 (캐릭터 소유 표시)
-            star_color = QColor(255, 255, 0)  # 노란색 별
-            painter.setBrush(QBrush(star_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            
-            # 우상단 별 (작은 원으로 표현)
-            painter.drawEllipse(66, 6, 12, 12)
+            if self.show_debug:
+                painter.setPen(QPen(QColor(255, 215, 0), 3))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(8, 8, 64, 64)
+                painter.setBrush(QBrush(QColor(255, 255, 0)))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(66, 6, 12, 12)
             
             painter.end()
             
@@ -1756,6 +1754,9 @@ class CharacterWidget(QLabel):
         self.show_debug = bool(enabled)
         if self.rig_view is not None:
             self.rig_view.set_debug_painter(self._paint_debug if self.show_debug else None)
+            self._refresh_rig_overlay()
+        elif self.current_pixmap is not None and not self.current_pixmap.isNull():
+            self.set_pixmap_with_flip(self.current_pixmap)
         self.update()
 
     def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, *, trace_id=None):
@@ -1944,6 +1945,21 @@ class CharacterWidget(QLabel):
                 file_path = url.toLocalFile()
                 self.acquire_item(file_path)
             event.acceptProposedAction()
+
+    def _restore_held_items(self):
+        """The existing storage folder is the inventory across app restarts."""
+        try:
+            items = sorted(self.character_items_path.iterdir(), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            log_event('character.items.restore_failed', '보관 아이템 목록을 불러오지 못했습니다.',
+                      category='캐릭터 상태', level='WARNING', error=str(exc),
+                      path=str(self.character_items_path))
+            return
+        self.held_items = [str(item) for item in items]
+        self.held_items_icons = {}
+        if self.held_items:
+            log_event('character.items.restored', '보관 아이템 목록을 복구했습니다.',
+                      category='캐릭터 상태', held_item_count=len(self.held_items))
 
     def acquire_item(self, file_path):
         """파일/폴더를 획득했을 때 - 캐릭터 폴더로 이동 (여러 개 가능)"""
