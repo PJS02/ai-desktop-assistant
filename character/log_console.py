@@ -7,7 +7,7 @@ import threading
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, qInstallMessageHandler
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QLineEdit,
-    QPlainTextEdit, QPushButton, QSplitter, QTabBar, QVBoxLayout, QWidget,
+    QListWidget, QPlainTextEdit, QPushButton, QSplitter, QTabBar, QVBoxLayout, QWidget,
     QTreeWidget, QTreeWidgetItem, QHeaderView, QTabWidget, QComboBox, QMenu, QFrame, QToolButton)
 from app_logging import EventLoggingHandler, LogEvent, file_status, get_events, log_event, subscribe
 from log_classification import classify_output
@@ -243,23 +243,44 @@ class LogWindow(QWidget):
             top.addWidget(widget)
         layout.addLayout(top)
 
+        content = QHBoxLayout()
+        content.setSpacing(10)
+        self.topic_sidebar = QFrame()
+        self.topic_sidebar.setObjectName('logTopicSidebar')
+        self.topic_sidebar.setFixedWidth(170)
+        self.topic_sidebar.setStyleSheet('QFrame#logTopicSidebar { background: #f8fafc; border: 1px solid #dce3eb; border-radius: 5px; }')
+        topics = QVBoxLayout(self.topic_sidebar)
+        topics.setContentsMargins(8, 10, 8, 8)
+        topics.setSpacing(8)
+        self.topic_heading = QLabel('전체 · 세부 보기')
+        self.topic_heading.setWordWrap(True)
+        self.topic_heading.setStyleSheet('color: #536b87; padding: 0 4px;')
+        self.subtabs = QListWidget()
+        self.subtabs.setObjectName('logTopicList')
+        self.subtabs.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.subtabs.setStyleSheet('''
+            QListWidget#logTopicList { background: transparent; border: none; outline: 0; }
+            QListWidget#logTopicList::item { padding: 8px 10px; margin-bottom: 4px;
+                border: 1px solid transparent; border-radius: 4px; color: #44556b; }
+            QListWidget#logTopicList::item:hover { background: #e7eef7; }
+            QListWidget#logTopicList::item:selected { background: #dce9f8; color: #234c78;
+                border-color: #abc3de; font-weight: 600; }
+        ''')
+        topics.addWidget(self.topic_heading)
+        topics.addWidget(self.subtabs, 1)
+        content.addWidget(self.topic_sidebar)
+        log_content = QVBoxLayout()
+        log_content.setContentsMargins(0, 0, 0, 0)
+        log_content.setSpacing(6)
+        content.addLayout(log_content, 1)
+        layout.addLayout(content, 1)
+
         self.controls_panel = QFrame()
         self.controls_panel.setObjectName('logToolsPanel')
         self.controls_panel.setStyleSheet('QFrame#logToolsPanel { background: #f8fafc; border: 1px solid #dce3eb; border-radius: 5px; }')
         controls = QVBoxLayout(self.controls_panel)
         controls.setContentsMargins(8, 6, 8, 6)
         controls.setSpacing(6)
-        topic_row = QHBoxLayout()
-        self.topic_heading = QLabel('전체 · 세부 보기')
-        self.subtabs = QTabBar()
-        self.subtabs.setExpanding(False)
-        self.subtabs.setDrawBase(False)
-        self.subtabs.setUsesScrollButtons(True)
-        self.subtabs.setStyleSheet('QTabBar::tab { padding: 4px 9px; margin-right: 3px; border: 1px solid transparent; border-radius: 4px; } '
-                                  'QTabBar::tab:selected { background: white; color: #234c78; border-color: #abc3de; }')
-        topic_row.addWidget(self.topic_heading)
-        topic_row.addWidget(self.subtabs, 1)
-        controls.addLayout(topic_row)
         toolbar = QHBoxLayout()
         self.auto_scroll = QCheckBox('자동 스크롤')
         self.auto_scroll.setChecked(True)
@@ -282,7 +303,7 @@ class LogWindow(QWidget):
         self.view_hint.setWordWrap(True)
         self.view_hint.setStyleSheet('color: #65738a;')
         controls.addWidget(self.view_hint)
-        layout.addWidget(self.controls_panel)
+        log_content.addWidget(self.controls_panel)
         self.controls_panel.hide()
 
         self.filter_bar = QWidget()
@@ -296,7 +317,7 @@ class LogWindow(QWidget):
         self.reset_filters_button.clicked.connect(self.reset_filters)
         filter_layout.addWidget(self.filter_label, 1)
         filter_layout.addWidget(self.reset_filters_button)
-        layout.addWidget(self.filter_bar)
+        log_content.addWidget(self.filter_bar)
         self.filter_bar.hide()
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
@@ -337,12 +358,12 @@ class LogWindow(QWidget):
         self.detail_tabs.setCornerWidget(self.trace_button, Qt.Corner.TopRightCorner)
         self.splitter.addWidget(self.detail_tabs)
         self.detail_tabs.hide()
-        layout.addWidget(self.splitter, 1)
+        log_content.addWidget(self.splitter, 1)
         self.status_label = QLabel()
         self.status_label.setStyleSheet('color: #65738a;')
-        layout.addWidget(self.status_label)
+        log_content.addWidget(self.status_label)
         self.tabs.currentChanged.connect(self._category_changed)
-        self.subtabs.currentChanged.connect(self._topic_changed)
+        self.subtabs.currentRowChanged.connect(self._topic_changed)
         manager.entry_added.connect(self.on_entry_added)
         manager.logs_cleared.connect(self._on_logs_cleared)
         self._category_changed()
@@ -364,7 +385,7 @@ class LogWindow(QWidget):
     def reset_filters(self):
         self.search_input.clear()
         self.level_filter.setCurrentIndex(0)
-        self.subtabs.setCurrentIndex(0)
+        self.subtabs.setCurrentRow(0)
 
     def _update_filter_badge(self):
         filters = []
@@ -390,13 +411,11 @@ class LogWindow(QWidget):
         visible_category = self.tabs.tabText(max(0, self.tabs.currentIndex()))
         self.topic_heading.setText(f'{visible_category} · 세부 보기')
         self.subtabs.blockSignals(True)
-        while self.subtabs.count():
-            self.subtabs.removeTab(0)
-        for name in CATEGORY_TABS[category]:
-            self.subtabs.addTab(name)
+        self.subtabs.clear()
+        self.subtabs.addItems(CATEGORY_TABS[category])
         remembered = self._saved_topics.get(category, '통합')
         names = CATEGORY_TABS[category]
-        self.subtabs.setCurrentIndex(names.index(remembered) if remembered in names else 0)
+        self.subtabs.setCurrentRow(names.index(remembered) if remembered in names else 0)
         self.subtabs.blockSignals(False)
         self._update_hint()
         self.refresh()
@@ -421,8 +440,8 @@ class LogWindow(QWidget):
         return LOG_CATEGORIES[max(0, self.tabs.currentIndex())]
 
     def current_topic(self):
-        index = self.subtabs.currentIndex()
-        return self.subtabs.tabText(index) if index >= 0 else '통합'
+        item = self.subtabs.currentItem()
+        return item.text() if item is not None else '통합'
 
     def matches_filters(self, entry):
         presentation = self._presentation(entry)
@@ -588,7 +607,7 @@ class LogWindow(QWidget):
             return
         self._saved_topics['전체'] = '통합'
         self.tabs.setCurrentIndex(0)
-        self.subtabs.setCurrentIndex(0)
+        self.subtabs.setCurrentRow(0)
         self.level_filter.setCurrentIndex(0)
         self.search_input.setText(entry.trace_id)
 
