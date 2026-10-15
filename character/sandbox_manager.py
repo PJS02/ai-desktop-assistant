@@ -138,7 +138,7 @@ class BallWidget(QWidget):
 
     def _check_character_collision(self, character):
         ball_rect = QRect(self.x(), self.y(), self.width(), self.height())
-        character_rect = QRect(character.x(), character.y(), character.width(), character.height())
+        character_rect = character._physics_body_rect().translated(character.x(), character.y())
         if not ball_rect.intersects(character_rect):
             return
 
@@ -151,7 +151,7 @@ class BallWidget(QWidget):
 
         self._last_collision_at = now
         ball_center_x = self.x() + self.width() // 2
-        character_center_x = character.x() + character.width() // 2
+        character_center_x = character_rect.x() + character_rect.width() // 2
         kick_direction = 1 if ball_center_x >= character_center_x else -1
         self.x_velocity = 14.0 * kick_direction
         self.y_velocity = -9.0

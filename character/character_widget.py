@@ -468,6 +468,7 @@ class CharacterWidget(QLabel):
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
                 view.failed.connect(self._queue_sprite_fallback)
                 view.pose_bounds_changed.connect(self._align_grounded_pose, Qt.ConnectionType.DirectConnection)
+                view.pose_bounds_changed.connect(self._refresh_body_hover, Qt.ConnectionType.DirectConnection)
                 view.show()
                 return
             except Exception as exc:
@@ -880,6 +881,22 @@ class CharacterWidget(QLabel):
         measure = getattr(self, '_character_visual_rect', None)
         body = measure() if measure is not None else QRect(0, 0, self.width(), self.height())
         return body if not body.isEmpty() else QRect(0, 0, self.width(), self.height())
+
+    def _body_contains(self, position):
+        """All pointer interactions use the same local box as physics/debug."""
+        return self._physics_body_rect().contains(position)
+
+    def _refresh_body_hover(self, position=None):
+        if position is None:
+            position = self.mapFromGlobal(QCursor.pos())
+        inside = self._body_contains(position)
+        if not inside:
+            CharacterWidget._finish_pet_log(self, 'cursor_left')
+            self._pet_last_position = None
+            self._pet_session_logged = False
+            self._pet_refusal_session_logged = False
+        self._cursor_over_character = inside
+        return inside
 
     def _align_grounded_pose(self):
         """Keep rendered feet on their existing support in the same paint frame.
@@ -1318,6 +1335,16 @@ class CharacterWidget(QLabel):
             final_pixmap = flipped_pixmap
         else:
             final_pixmap = scaled_pixmap
+
+        # Measure before decorating: held icons must never expand the body box.
+        body_canvas = QPixmap(target_width, target_height)
+        body_canvas.fill(Qt.GlobalColor.transparent)
+        body_painter = QPainter(body_canvas)
+        body_painter.drawPixmap(0, 0, final_pixmap)
+        body_painter.end()
+        body_canvas = body_canvas.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+        self._sprite_body_rect = QRegion(body_canvas.mask()).boundingRect()
         
         # 아이콘 오버레이 (들고있는 아이템이 있을 때)
         if self.held_items:
@@ -1330,6 +1357,7 @@ class CharacterWidget(QLabel):
         painter.end()
         self.setPixmap(canvas.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatio,
                                      Qt.TransformationMode.SmoothTransformation))
+        self._refresh_body_hover()
         self.repaint()
 
     def _get_item_icon(self, file_path):
@@ -1455,6 +1483,10 @@ class CharacterWidget(QLabel):
             return character_pixmap
 
     def contextMenuEvent(self, event):
+        if (event.reason() != QContextMenuEvent.Reason.Keyboard
+                and not self._body_contains(event.pos())):
+            event.ignore()
+            return
         # The mouse path opens on press; do not open it again on release.
         menu = getattr(self, "_context_menu", None)
         if menu is None or not menu.isVisible():
@@ -1466,6 +1498,9 @@ class CharacterWidget(QLabel):
 
     # 클릭 이벤트
     def mousePressEvent(self, event):
+        if not self._refresh_body_hover(event.position().toPoint()):
+            event.ignore()
+            return
         print(f"[mousePressEvent] button={event.button()} pos={event.globalPosition().toPoint()}")
         if event.button() == Qt.MouseButton.RightButton:
             self._show_context_menu(event.globalPosition().toPoint(), include_dialogue=True)
@@ -1534,6 +1569,9 @@ class CharacterWidget(QLabel):
             self.dialogue_system.update_dialogue_position()
             return
 
+        if not self._refresh_body_hover(event.position().toPoint()):
+            event.ignore()
+            return
         current_pos = event.globalPosition().toPoint()
         current_time = time.monotonic()
         if self._pet_last_position is None:
@@ -1615,7 +1653,7 @@ class CharacterWidget(QLabel):
             return {'unavailable': str(exc)}
 
     def enterEvent(self, event):
-        self._cursor_over_character = True
+        self._refresh_body_hover(event.position().toPoint())
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -1627,6 +1665,11 @@ class CharacterWidget(QLabel):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if (not getattr(self, 'is_dragging', False)
+                or (event is not None and event.button() != Qt.MouseButton.LeftButton)):
+            if event is not None:
+                event.ignore()
+            return
         drag_duration = getattr(self, 'drag_time', 0)
         was_dragging = getattr(self, 'is_dragging', False)
         self.is_dragging = False
@@ -1922,14 +1965,17 @@ class CharacterWidget(QLabel):
     # ====== 드래그 앤 드롭 시스템 ======
     def dragEnterEvent(self, event):
         """드래그가 위젯으로 진입했을 때"""
+        # Accept entry so a file can travel through host padding into the body.
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             print(f"[드래그 진입] 파일/폴더 감지")
 
     def dragMoveEvent(self, event):
         """드래그하는 중"""
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() and self._body_contains(event.position().toPoint()):
             event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dragLeaveEvent(self, event):
         """드래그가 위젯을 벗어났을 때"""
@@ -1937,6 +1983,9 @@ class CharacterWidget(QLabel):
 
     def dropEvent(self, event):
         """파일/폴더를 드롭했을 때 - 여러 개 파일 수용"""
+        if not self._body_contains(event.position().toPoint()):
+            event.ignore()
+            return
         mime_data = event.mimeData()
         
         if mime_data.hasUrls():
@@ -2242,11 +2291,9 @@ class CharacterWidget(QLabel):
         """Character bounds exclude transparent host padding and effect icons."""
         if self.rig_view is not None:
             return self.rig_view.character_rect().toAlignedRect()
-        pixmap = self.pixmap()
-        if pixmap is not None and not pixmap.isNull():
-            mask = pixmap.mask()
-            if not mask.isNull():
-                return QRegion(mask).boundingRect()
+        body = getattr(self, '_sprite_body_rect', None)
+        if body is not None:
+            return QRect(body)
         return self.rect()
 
     def update_dragging(self):
@@ -2361,7 +2408,8 @@ class CharacterWidget(QLabel):
 
         was_chasing = getattr(self, '_ball_chasing', False)
         self._ball_chasing = True
-        target_x = ball_x - self.width() // 2
+        body = self._physics_body_rect()
+        target_x = ball_x - (body.x() + body.width() // 2)
         left, right = CharacterWidget._horizontal_limits(self)
         target_x = max(left, min(target_x, right))
         delta_x = target_x - self.x()
