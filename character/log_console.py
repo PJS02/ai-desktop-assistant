@@ -247,21 +247,21 @@ class LogWindow(QWidget):
         content.setSpacing(10)
         self.topic_sidebar = QFrame()
         self.topic_sidebar.setObjectName('logTopicSidebar')
-        self.topic_sidebar.setFixedWidth(170)
-        self.topic_sidebar.setStyleSheet('QFrame#logTopicSidebar { background: #f8fafc; border: 1px solid #dce3eb; border-radius: 5px; }')
+        self.topic_sidebar.setFixedWidth(150)
+        self.topic_sidebar.setStyleSheet('QFrame#logTopicSidebar { background: transparent; border: none; border-right: 1px solid #dce3eb; }')
         topics = QVBoxLayout(self.topic_sidebar)
-        topics.setContentsMargins(8, 10, 8, 8)
-        topics.setSpacing(8)
+        topics.setContentsMargins(0, 4, 8, 0)
+        topics.setSpacing(0)
         self.subtabs = QListWidget()
         self.subtabs.setObjectName('logTopicList')
         self.subtabs.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.subtabs.setStyleSheet('''
             QListWidget#logTopicList { background: transparent; border: none; outline: 0; }
-            QListWidget#logTopicList::item { padding: 8px 10px; margin-bottom: 4px;
-                border: 1px solid transparent; border-radius: 4px; color: #44556b; }
-            QListWidget#logTopicList::item:hover { background: #e7eef7; }
-            QListWidget#logTopicList::item:selected { background: #dce9f8; color: #234c78;
-                border-color: #abc3de; font-weight: 600; }
+            QListWidget#logTopicList::item { min-height: 22px; padding: 5px 10px; margin-bottom: 3px;
+                border: none; border-left: 3px solid transparent; border-radius: 3px; color: #536174; }
+            QListWidget#logTopicList::item:hover { background: #edf1f6; color: #234c78; }
+            QListWidget#logTopicList::item:selected { background: #e8f0fa; color: #234c78;
+                border-left-color: #5685ba; font-weight: 600; }
         ''')
         topics.addWidget(self.subtabs, 1)
         content.addWidget(self.topic_sidebar)
