@@ -252,9 +252,6 @@ class LogWindow(QWidget):
         topics = QVBoxLayout(self.topic_sidebar)
         topics.setContentsMargins(8, 10, 8, 8)
         topics.setSpacing(8)
-        self.topic_heading = QLabel('전체 · 세부 보기')
-        self.topic_heading.setWordWrap(True)
-        self.topic_heading.setStyleSheet('color: #536b87; padding: 0 4px;')
         self.subtabs = QListWidget()
         self.subtabs.setObjectName('logTopicList')
         self.subtabs.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -266,7 +263,6 @@ class LogWindow(QWidget):
             QListWidget#logTopicList::item:selected { background: #dce9f8; color: #234c78;
                 border-color: #abc3de; font-weight: 600; }
         ''')
-        topics.addWidget(self.topic_heading)
         topics.addWidget(self.subtabs, 1)
         content.addWidget(self.topic_sidebar)
         log_content = QVBoxLayout()
@@ -408,8 +404,6 @@ class LogWindow(QWidget):
 
     def _category_changed(self, *_args):
         category = self.current_category()
-        visible_category = self.tabs.tabText(max(0, self.tabs.currentIndex()))
-        self.topic_heading.setText(f'{visible_category} · 세부 보기')
         self.subtabs.blockSignals(True)
         self.subtabs.clear()
         self.subtabs.addItems(CATEGORY_TABS[category])
