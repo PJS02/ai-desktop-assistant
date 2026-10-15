@@ -57,6 +57,12 @@ AI 답변을 Supertonic 3 모델로 기기에서 합성해 읽습니다. 별도 
 Supertonic 3의 기본 목소리 F1–F5, M1–M5를 고를 수 있습니다. 처음에는 F1로
 음성 읽기가 켜져 있으며 선택은 저장됩니다. 모델은 OpenRAIL-M 라이선스를 따릅니다.
 
+GPT-SoVITS와 OpenVoice V2도 **설정 → 음성**에서 설치하고 선택할 수 있습니다.
+추가 음성은 Windows Python 3.10과 지원되는 NVIDIA GPU/드라이버가 필요하며,
+앱을 닫고 `setup_tts_runtime.cmd`로 전용 실행 환경을 한 번 준비한 뒤 모델만 다운로드합니다.
+학습한 목소리는 [TTS 릴리스](https://github.com/PJS02/ai-desktop-assistant/releases/tag/tts-74107e113436-v1)에서 제공하며, 설정창이 필요한 파일을 자동으로 다운로드하고 검증합니다.
+설치·배포 절차와 파일 구성은 [추가 TTS 설치 안내](docs/tts-installation.md)를 참고하세요.
+
 ## 통합 설정
 
 앱은 저장된 설정으로 바로 시작합니다. 캐릭터를 우클릭해 **설정**을 열면

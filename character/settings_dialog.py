@@ -5,11 +5,13 @@ from app_logging import log_event
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QLineEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .personality_system import PersonalitySystem
 from .tts_service import available_voices
+from .tts_models import ENGINE_NAMES, download_manager
+from .tts_backend import runtime_python
 from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
 from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
@@ -24,7 +26,7 @@ class SettingsDialog(QDialog):
     character_command_requested = pyqtSignal(str)
     display_emotion_requested = pyqtSignal(str)
 
-    def __init__(self, local, parent=None):
+    def __init__(self, local, parent=None, model_manager=None):
         super().__init__(parent)
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
@@ -39,6 +41,7 @@ class SettingsDialog(QDialog):
         self.close_on_success = False
         self.tabs = QTabWidget()
         self.controls = {}
+        self.model_manager = model_manager if model_manager is not None else download_manager()
         root = QVBoxLayout(self)
         title = QLabel('통합 설정')
         title.setStyleSheet('font-size: 22px; font-weight: 600;')
@@ -326,6 +329,82 @@ class SettingsDialog(QDialog):
         self.tts_enabled.toggled.connect(self.voice.setEnabled)
         form.addRow(self.tts_enabled)
         form.addRow('목소리', self.voice)
+        self.voice_runtime_status = QLabel()
+        self.voice_runtime_status.setWordWrap(True)
+        form.addRow(self.voice_runtime_status)
+        self.model_rows = {}
+        for engine, name in ENGINE_NAMES.items():
+            row = QWidget()
+            layout = QVBoxLayout(row)
+            layout.setContentsMargins(0, 6, 0, 6)
+            heading = QHBoxLayout()
+            heading.addWidget(QLabel(name))
+            heading.addStretch()
+            button = QPushButton('다운로드')
+            button.clicked.connect(lambda checked=False, key=engine: self._download_voice_model(key))
+            heading.addWidget(button)
+            layout.addLayout(heading)
+            status = QLabel()
+            status.setWordWrap(True)
+            layout.addWidget(status)
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            progress.hide()
+            layout.addWidget(progress)
+            form.addRow(row)
+            self.model_rows[engine] = (button, status, progress)
+        self.model_manager.changed.connect(self._refresh_voice_models)
+        self.model_manager.progress_changed.connect(self._voice_download_progress)
+        self.model_manager.finished.connect(self._voice_download_finished)
+        self._refresh_voice_models()
+
+    def _refresh_voice_models(self):
+        try:
+            runtime_python()
+            ready = True
+            self.voice_runtime_status.setText('추가 음성 실행 환경이 준비되어 있습니다.')
+        except ValueError:
+            ready = False
+            self.voice_runtime_status.setText('추가 음성은 프로젝트의 setup_tts_runtime.cmd로 실행 환경을 먼저 준비해 주세요.')
+        store, active = self.model_manager.store, self.model_manager.active_engine
+        for engine, (button, status, progress) in self.model_rows.items():
+            installed = store.installed(engine)
+            self.voice.model().item(self.voice.findData(engine)).setEnabled(installed and ready)
+            if active == engine:
+                button.setText('취소')
+                button.setEnabled(True)
+                progress.show()
+                status.setText('음성 모델을 다운로드하고 검증하는 중입니다.')
+            else:
+                progress.hide()
+                button.setText('설치 완료' if installed else '다시 다운로드' if engine in self.model_manager.last_result else '다운로드')
+                button.setEnabled(active is None and not installed and store.published(engine))
+                if engine in self.model_manager.last_result:
+                    status.setText(self.model_manager.last_result[engine][1])
+                elif installed:
+                    status.setText('설치 완료 — 목소리를 선택하고 적용해 주세요.')
+                elif not store.published(engine):
+                    status.setText('배포 준비 중 — 학습한 목소리가 게시되면 다운로드할 수 있습니다.')
+                else:
+                    size = sum(a['size'] for a in store.assets(engine)) / 1024**3
+                    status.setText(f'미설치 · 최대 {size:.2f} GiB 다운로드 · 공통 파일은 재사용합니다.')
+
+    def _download_voice_model(self, engine):
+        if self.model_manager.active_engine == engine:
+            self.model_manager.cancel()
+            self.model_rows[engine][1].setText('취소 중…')
+        else:
+            self.model_rows[engine][2].setValue(0)
+            self.model_manager.start(engine)
+
+    def _voice_download_progress(self, engine, value, text):
+        _, status, progress = self.model_rows[engine]
+        progress.setValue(value)
+        status.setText(text)
+
+    def _voice_download_finished(self, engine, ok, message):
+        self._refresh_voice_models()
+        self.model_rows[engine][1].setText(message)
 
     def _recognition_page(self, local):
         _, layout, self.remote_form = self._page('사용자 인식', '카메라·감정 인식은 실행 중에 적용됩니다. 마이크·STT 옵션을 바꾸면 실행 중인 음성 인식을 자동으로 다시 시작합니다.')

@@ -1,0 +1,1045 @@
+{
+  "source": "Voice Lab export 74107e113436 / GPT-SoVITS-v2pro-20250604, OpenVoice, MeloTTS",
+  "files": [
+    {
+      "path": "GPT_SoVITS/download.py",
+      "sha256": "7879662f75fb02b47c97317326afd0d9586db7c62093dfc4ebc8c11dffe8ed18"
+    },
+    {
+      "path": "GPT_SoVITS/LICENSE",
+      "sha256": "8a064eada186601fc602e45feef61c6abb62246d5ae9c3764dd1fc92d946c3c6"
+    },
+    {
+      "path": "GPT_SoVITS/process_ckpt.py",
+      "sha256": "327c433017946118443d56cd10571a1773d39fc7745c6004ad53f2d1fd500d10"
+    },
+    {
+      "path": "GPT_SoVITS/stream_v2pro.py",
+      "sha256": "6021e1cd0501ede46b2e71fea990f92edddebccd05a4690eeff5f5a40f09ab6d"
+    },
+    {
+      "path": "GPT_SoVITS/sv.py",
+      "sha256": "5e05784161685ae5d97be5280584cb74eaff08e4e5d5ae3150ef4ad602157e60"
+    },
+    {
+      "path": "GPT_SoVITS/utils.py",
+      "sha256": "46ba575b44fadc92177a8aac38c7d32d0bc394b96364e369009ccb96ba31f1a0"
+    },
+    {
+      "path": "GPT_SoVITS/AR/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/embedding_cudagraph.py",
+      "sha256": "dbf48ad802f7ef3a996401bc73ad9a2795713b15070d0f49a815e2ed6f8a556f"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/structs_cudagraph.py",
+      "sha256": "30c05752483fc7e6e2a7ba72f84f29751bcd7b18ec09b7ceda78f9c86631bad3"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/t2s_lightning_module.py",
+      "sha256": "6a4d3173181000a6012bbdf055ca8a29ea6e48ce5a09605a579b509a548f8588"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/t2s_lightning_module_onnx.py",
+      "sha256": "b4db6c8260dc8ec361487e6d52cfd6d994061d3ba8e0c7a8214d480bcc57bf5a"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/t2s_model.py",
+      "sha256": "46dc6d1a5bc9bf4b6d87454f666369b880e9e214a785f1ac5f6c6126145d8e5f"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/t2s_model0.py",
+      "sha256": "833b080125040239167733dbcf47be52b934e51901194fe6d2be6c09f2adfe0f"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/t2s_model_cudagraph.py",
+      "sha256": "5166dcda160c6c9e5e2374d833644ada38fcb7e59567420a95b371b6a939745d"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/t2s_model_onnx.py",
+      "sha256": "2687ae578b37e953ef121058d6c333c03177674726a9151f53a42300e58da07e"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/utils.py",
+      "sha256": "65c2892719fcd91800be472483be554396ff886fce8ee4c418df346ae70a566f"
+    },
+    {
+      "path": "GPT_SoVITS/AR/models/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/activation.py",
+      "sha256": "251a65e9bf09820b030844be281afef3c56056bea27e8b20ec1144d7e4b31dd8"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/activation_onnx.py",
+      "sha256": "a727263e9a95910bf07071d337ef27feb5fbda95edec9f923833f92bde3e41cd"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/embedding.py",
+      "sha256": "cf4c8b3e1d838c130549af7b8e8eddeadf0da1fe2060e87c5db29d489b9bf70a"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/embedding_onnx.py",
+      "sha256": "a7350a21826a5f69210b07d4d21421ca462ddc2e8afcf7aa990c02aa2a11fe6a"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/lr_schedulers.py",
+      "sha256": "4c14d8e8aa6a6c65d91aad593684efbc40c35e5b81f42acb078aaeb3124827c0"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/optim.py",
+      "sha256": "fb89351de254beeb09718823665b2e6a23ccfa3c766fcb881dffdb0aa043817a"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/patched_mha_with_cache.py",
+      "sha256": "537c028d9fa72506066da0f157239ae3a6d7ba942afe8634d0fc787233afac56"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/patched_mha_with_cache_onnx.py",
+      "sha256": "bcb70ca8a488b673c229808d47caedf6cbeebcf2dd0e2bb1b3926b0856cc89ad"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/scaling.py",
+      "sha256": "7be6b209c636ef55f9fc1f054302c2490b32b3459d35146c13727c180a2f18a7"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/transformer.py",
+      "sha256": "60acf1608642ef890981da732246efa4f34226d3e75d1a9d4bd27b9ac36a6d21"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/transformer_onnx.py",
+      "sha256": "70d5582c97bfdb9b43ef1880ede8d2ecfe8641d5c35059debb3712ed95eecdb1"
+    },
+    {
+      "path": "GPT_SoVITS/AR/modules/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/AR/text_processing/phonemizer.py",
+      "sha256": "e6faa7e1b4cb4131cc217182bb0678aaaf0c3a846ffcbee97f89aba77f87ae0e"
+    },
+    {
+      "path": "GPT_SoVITS/AR/text_processing/symbols.py",
+      "sha256": "d9d920c30d4effd2561ce50f705ffd4094e663e1b3c1e85027154df6bc44f25b"
+    },
+    {
+      "path": "GPT_SoVITS/AR/text_processing/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/AR/utils/initialize.py",
+      "sha256": "f70885f0d3b9f67f20bb271361f925e8edce5f72079e24a48ea91865f15800e8"
+    },
+    {
+      "path": "GPT_SoVITS/AR/utils/io.py",
+      "sha256": "3d529b1788e38dc4f7af3d007f6a91264182c372d88ae42cec86749ed6071b92"
+    },
+    {
+      "path": "GPT_SoVITS/AR/utils/__init__.py",
+      "sha256": "e1c7513851c84fb8f4664530dacd38e4c2bf8150d9023b2919da6d9d7ac1bf3c"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/activations.py",
+      "sha256": "12cfc80f62a0f905fafa9f6192de18dd13e7913fb0805af8c8c357f2f8e220f6"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/bigvgan.py",
+      "sha256": "afacf98c9f3c6a188f4d3aca77578c1c6de5c0c3daea26a382c3e76b697de10c"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/discriminators.py",
+      "sha256": "571bb1ca947227ee70e6e1cba601df066a752fa5be7fd1e97363d3f0455f6d0d"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/env.py",
+      "sha256": "0c458da3132ebcce272eb277f9af489d09f3cf3dd4378ceeeb915b467aa039a5"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/inference.py",
+      "sha256": "be3f4ebeccb27bc1dde55550335e51f199b291bad3972a70980d3256d56f424c"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/inference_e2e.py",
+      "sha256": "b9b45c9ae09e78fb9a62fbdcdafe6b3f6bf1a9fb4961c7dc737eb8bb8cfc5fae"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/LICENSE",
+      "sha256": "5c7f573db5f807a9adc2a755c4901e203ea067f73c7a20fa6b703da7e77d7b35"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/loss.py",
+      "sha256": "65210b8d6cfb906c17cdf34a5ef8fe7ab7e4c3052d7d248fb458883e56854107"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/meldataset.py",
+      "sha256": "a3170b12b66fc935dd3997068883a643f1ed4b87952875a15f73df87c903ec8b"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/README.md",
+      "sha256": "4af6c6b58d3c11a383aea5020689694d7668fdc76c6d2d6b07dde8dc068c3eff"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/requirements.txt",
+      "sha256": "1bd45835597faf3f0104a753908560896a1ea757b0cfa93fb27a011b8e607b2e"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/utils0.py",
+      "sha256": "52ea19ace53f3e41007cbda2f6de23abcd90f75228643277bb34c66c22ec5d96"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/cuda/activation1d.py",
+      "sha256": "2ef253e7679af3cc55d0a6740c66a5fa96488c52dcce5156d78e961f7e1addb8"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/cuda/load.py",
+      "sha256": "1578709cb85f0c9c7161b6ba8c51473a0189cbfeb2a59784412f2ea0ea81ff09"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/cuda/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/torch/act.py",
+      "sha256": "0b92766f905251989a160f265f672cf76bce1726f7e1d6df63fa7fc403970219"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/torch/filter.py",
+      "sha256": "4957ea20f81607f4424bff13d0705837056059b4b7702d32a2536249129d59d3"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/torch/resample.py",
+      "sha256": "548232e2e5f61e2aa847d8c7fcfeaa7a397cfac9762433db789a9f94facae791"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/alias_free_activation/torch/__init__.py",
+      "sha256": "2e3138e1052e377ba2e51ea59c7d5d255a519559001757af21dbec4cb9c22471"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/demo/app.py",
+      "sha256": "57c0d8638ab509677758737964b249a89596a00b08ef99d9c96315d370254e38"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/demo/requirements.txt",
+      "sha256": "9c9b9d153612070eaaa48aafa3a0d6e62668ecb04f2bf132d7d0a08887133739"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/demo/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_1",
+      "sha256": "5eec017ce442989e01a46cd9cd6aeb13cd0aa3b3943f681577bda00475afaa23"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_2",
+      "sha256": "7441474b0fe03def0efc41a6340b4818359453c7cb32423c647839f8799e68df"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_3",
+      "sha256": "7339fa418c9ad3e8e12e74ad0fd26a9cc4be8703f9c110728a992b193be85cb2"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_4",
+      "sha256": "9a2fbb788a9d584a2a0766e4bb790c8368911143472d257952581455313cf2c6"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_5",
+      "sha256": "b6234401b9831a86505fbeecad803a0b2fe17b06997f614d5325c6d0e1a6fa7f"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_6",
+      "sha256": "3fb4aef5b76dc0ccb1f57499d75c2fe039df5c9793778ede172f5ac7a4045681"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_7",
+      "sha256": "8f36ba0c214d4f487ffd7ee0b8528da9b67b459bef2d115de9cd001316589f46"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/incl_licenses/LICENSE_8",
+      "sha256": "ff474afe15f36bab44711fc45c1a77314a4b9d8c96fa2d333f3fefe719fd76f9"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/nv-modelcard++/bias.md",
+      "sha256": "0b374821eb4a1a1a0c4f7e3d5d0474620eea573ec3cc4bd238cce78b6595b375"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/nv-modelcard++/explainability.md",
+      "sha256": "58d21b235cca347db09b7e120199351840b456d7475d90006df0ff7c49239e35"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/nv-modelcard++/overview.md",
+      "sha256": "0c9016e379a90a4cbb8476e09845d3e197fa4bb12bd1912ccb01b96436849721"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/nv-modelcard++/privacy.md",
+      "sha256": "87f3de69d52bf16ea8bc5fe8671eee7fd2a4ba0ce9fd7ae1fe9fbe9c7771df0d"
+    },
+    {
+      "path": "GPT_SoVITS/BigVGAN/nv-modelcard++/safety.md",
+      "sha256": "f244890262cd9074fad924fcadfc8bfa66e99ddeb2bf33b379ad04f325861386"
+    },
+    {
+      "path": "GPT_SoVITS/eres2net/ERes2Net.py",
+      "sha256": "4c2582ffc59707514c4f2273262c408d424b5043d55511c4769956e11235778a"
+    },
+    {
+      "path": "GPT_SoVITS/eres2net/ERes2NetV2.py",
+      "sha256": "e6a17f01a36e8133b9c3e15be2358f41951c9d887c5c536dd3788f128801f8fd"
+    },
+    {
+      "path": "GPT_SoVITS/eres2net/ERes2Net_huge.py",
+      "sha256": "45d2bddae25565fcc01acff069bd10fb17ec2a527c8ae813b1b57368af256240"
+    },
+    {
+      "path": "GPT_SoVITS/eres2net/fusion.py",
+      "sha256": "e92db5cc722247f98580f2ed221bbd5b108290cda7ff694ae66d1557dbde792f"
+    },
+    {
+      "path": "GPT_SoVITS/eres2net/kaldi.py",
+      "sha256": "e444877f02586c28ee26c3cac976463dc3c582a81a7f2e4953b3156d881b39b8"
+    },
+    {
+      "path": "GPT_SoVITS/eres2net/pooling_layers.py",
+      "sha256": "f7fb8d8bb4a9080a0b7ffc060a06d622b7eb7e945c145fe801ee051df837e70c"
+    },
+    {
+      "path": "GPT_SoVITS/f5_tts/model/modules.py",
+      "sha256": "fdb7dc8d4febfcf03c278733df3ce7e0377807e8898be0a2111e7d456bd133ad"
+    },
+    {
+      "path": "GPT_SoVITS/f5_tts/model/__init__.py",
+      "sha256": "cc308f3667d8e7e80e539678049818f17eabdd0cae14455914f3582218e43a78"
+    },
+    {
+      "path": "GPT_SoVITS/f5_tts/model/backbones/dit.py",
+      "sha256": "3ca187eec764e7481cd880bef647898cebbe3c6f9e91260a24c897d012b6da55"
+    },
+    {
+      "path": "GPT_SoVITS/f5_tts/model/backbones/mmdit.py",
+      "sha256": "a3888a4c27269b0ff49ad28faab1048d55b18a3e3181137a242b537178eb7b4f"
+    },
+    {
+      "path": "GPT_SoVITS/f5_tts/model/backbones/README.md",
+      "sha256": "f8f4726746136766bd023a2b63a77bd26a8be051a0bf55dd138a923e15074038"
+    },
+    {
+      "path": "GPT_SoVITS/f5_tts/model/backbones/unett.py",
+      "sha256": "852e63fcd735376abb5572df733fb3d7ce64af8d3377c4930a0a4d02090be47a"
+    },
+    {
+      "path": "GPT_SoVITS/feature_extractor/cnhubert.py",
+      "sha256": "df960190ff97a001f0d557dafec2e4ba70d8e0f2e56641231d588f479c5e4b19"
+    },
+    {
+      "path": "GPT_SoVITS/feature_extractor/whisper_enc.py",
+      "sha256": "bde344cfa97d29a5c221a738153277a914813aa2ca5ea7909b83189beb5f2b0a"
+    },
+    {
+      "path": "GPT_SoVITS/feature_extractor/__init__.py",
+      "sha256": "5fbffa5194fe677cdbf6e5e14fcb1bf89bf0ec320f34fa4a00db123951de1d08"
+    },
+    {
+      "path": "GPT_SoVITS/module/attentions.py",
+      "sha256": "62f29564c1e99f69d5421ecefe80c998271123a2cee85241a67174c91fc49b9d"
+    },
+    {
+      "path": "GPT_SoVITS/module/attentions_onnx.py",
+      "sha256": "d63ccb69827d74f00eef6676a192775241ad491655599ee8db7e7a09b42e0990"
+    },
+    {
+      "path": "GPT_SoVITS/module/commons.py",
+      "sha256": "f1255895385b1655e4afa5d01cf51d5e09e6c31ebb9d4d6726594a9b5af4883c"
+    },
+    {
+      "path": "GPT_SoVITS/module/core_vq.py",
+      "sha256": "aeb413a37f661a50b84c28a98f2f7dfbbdf622dd672ee403fcaadb63456cc8fb"
+    },
+    {
+      "path": "GPT_SoVITS/module/data_utils.py",
+      "sha256": "1ee636c04b6a0438ec6438167dce16b8505b55f0581080171a942dcc523b9da8"
+    },
+    {
+      "path": "GPT_SoVITS/module/ddp_utils.py",
+      "sha256": "a7b5e9eb8ab34dedc80199f6aeff7df70b15042206313b15561e5fcc5c6897c2"
+    },
+    {
+      "path": "GPT_SoVITS/module/distrib.py",
+      "sha256": "f75201e277bc7e9c376cb1ed88b68e1a954300069953dca308796ab11de375f2"
+    },
+    {
+      "path": "GPT_SoVITS/module/losses.py",
+      "sha256": "1a8030ad13c7c7029378b3c469fbd10b035582a7c89a3dd1380f28225dee2829"
+    },
+    {
+      "path": "GPT_SoVITS/module/mel_processing.py",
+      "sha256": "4f5349e7adc21bea933ac652908f29dc2b7a87336761c5d480f32da25acfbe3b"
+    },
+    {
+      "path": "GPT_SoVITS/module/models.py",
+      "sha256": "c6cdf422538fce98a4bb5bc3f85db1c11e4b43d8fb0126ca96954a9cd0d11ad3"
+    },
+    {
+      "path": "GPT_SoVITS/module/models_onnx.py",
+      "sha256": "777a0281e8fa38a642526a4db0d049437e5c984915e7b9c8e6197916f41d72eb"
+    },
+    {
+      "path": "GPT_SoVITS/module/modules.py",
+      "sha256": "1d501146e0e736d7a4aad552f5311cb37d1f1cf3ed6f95138225aa4a08e75933"
+    },
+    {
+      "path": "GPT_SoVITS/module/mrte_model.py",
+      "sha256": "3b7b6ae4eb4139e1e0138c24516a25f9576641623345be5f0ac90c7034ed0a38"
+    },
+    {
+      "path": "GPT_SoVITS/module/quantize.py",
+      "sha256": "ed9308ff173caf6f32d32054a387576c9e664ea2af62d1585cc200622d9e63f2"
+    },
+    {
+      "path": "GPT_SoVITS/module/transforms.py",
+      "sha256": "cb84be9d8eefa678b85dba0a2c588da21de7516b31a3a993be96c20228491929"
+    },
+    {
+      "path": "GPT_SoVITS/module/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "GPT_SoVITS/text/cantonese.py",
+      "sha256": "777b593d86b2d89a7a0bdc5f01dbbd9d67132d8270097161dba3288ae31c20e7"
+    },
+    {
+      "path": "GPT_SoVITS/text/chinese.py",
+      "sha256": "9a7cba5e6604bf2590e71e23a01c5634c9d621269cf1c6777defc3821981a8f7"
+    },
+    {
+      "path": "GPT_SoVITS/text/chinese2.py",
+      "sha256": "a33a7fced1496c034522e46be2702c49f71f93cf4bc8e2bd216fab5d3fc08ae5"
+    },
+    {
+      "path": "GPT_SoVITS/text/cleaner.py",
+      "sha256": "c37c7768a635d7a4ac191cd2cb2dcbeb0544c5e3de60348117fac75fa24cb713"
+    },
+    {
+      "path": "GPT_SoVITS/text/cmudict-fast.rep",
+      "sha256": "53bfef0f27d7dd74d1ba74563d1e076d3e0672ce3596cb2d6c0d52ac9ad01f6d"
+    },
+    {
+      "path": "GPT_SoVITS/text/cmudict.rep",
+      "sha256": "4dc921e50ddafc8637d4b7dec23ad5db2183528af6ed422b3f88592629c3bcd0"
+    },
+    {
+      "path": "GPT_SoVITS/text/cmudict_cache.pickle",
+      "sha256": "b9b21b20325471934ba92f2e4a5976989e7d920caa32e7a286eacb027d197949"
+    },
+    {
+      "path": "GPT_SoVITS/text/engdict-hot.rep",
+      "sha256": "1c80418fe6fe5d537302ae67afd3612478997b35f2cf37cff52f959ed4334a71"
+    },
+    {
+      "path": "GPT_SoVITS/text/engdict_cache.pickle",
+      "sha256": "9bff9393f4b192d873a11335efc8f124771087b6dc847d34fd240c2846889d2b"
+    },
+    {
+      "path": "GPT_SoVITS/text/english.py",
+      "sha256": "77837d1dfe2a21664d7cc3162e21f623e09cae93f1c96f0fa91ae97718fc0afb"
+    },
+    {
+      "path": "GPT_SoVITS/text/japanese.py",
+      "sha256": "2b898d16ac912797d19d78c936f700ef31fa34b298f3e222f8d33a17faa610e2"
+    },
+    {
+      "path": "GPT_SoVITS/text/korean.py",
+      "sha256": "762ecd468d6cb56c82524deabc059cf9dd2185e1fac0f6d5e602b2c8691f03fb"
+    },
+    {
+      "path": "GPT_SoVITS/text/namedict_cache.pickle",
+      "sha256": "559552094c4a6e995213e3fa586330e078ef8cb3a7a95a3109e945111cd2bfc1"
+    },
+    {
+      "path": "GPT_SoVITS/text/opencpop-strict.txt",
+      "sha256": "d66bbb1380a8ebf17d7ace5bf4b459f3728a469eea2aaeae2aeb3969b88223ff"
+    },
+    {
+      "path": "GPT_SoVITS/text/symbols.py",
+      "sha256": "c0e4576761cb0a254899208f4990d6e2fbbbc59ccd8bc06e7677229cb3721e44"
+    },
+    {
+      "path": "GPT_SoVITS/text/symbols2.py",
+      "sha256": "160f85789ae647bdfd1e5b15daa83f81d6d903dea22dcb131a8cd96894e19626"
+    },
+    {
+      "path": "GPT_SoVITS/text/tone_sandhi.py",
+      "sha256": "b651a9cf7a94b66401101876616a85479bb2fb266aa41f85423b9371bbe4137d"
+    },
+    {
+      "path": "GPT_SoVITS/text/__init__.py",
+      "sha256": "8d72e92e3f5f868e64242c686e52863f69bd1fc1d4c3fa38d994cc82f174bf6b"
+    },
+    {
+      "path": "GPT_SoVITS/text/en_normalization/expend.py",
+      "sha256": "a42d670da8d10665283c53cd95d18c5b5b840b1912075d12d41a213587fffe27"
+    },
+    {
+      "path": "GPT_SoVITS/text/g2pw/dataset.py",
+      "sha256": "a25b92cd77d3776bba04ba4cfdd67869562758e50e91c75ef15dee151a6f43a4"
+    },
+    {
+      "path": "GPT_SoVITS/text/g2pw/g2pw.py",
+      "sha256": "255300e1878433b4baac99abd79d5a3bf84d4178b4d330115985879bc0e6f046"
+    },
+    {
+      "path": "GPT_SoVITS/text/g2pw/onnx_api.py",
+      "sha256": "f18917fb2bfa60fe901f88ee58c6f73242d36ddfb0bdd734780afd02e1481485"
+    },
+    {
+      "path": "GPT_SoVITS/text/g2pw/polyphonic.pickle",
+      "sha256": "f425246160a32c578557cd3151cd0bb97f5f44c3aaf65e718dd2c3213c04fb4b"
+    },
+    {
+      "path": "GPT_SoVITS/text/g2pw/utils.py",
+      "sha256": "68ce30b84d53385822b798e5032cc5a2f5f57a320586afc1669a9009e82f4d37"
+    },
+    {
+      "path": "GPT_SoVITS/text/g2pw/__init__.py",
+      "sha256": "9d9634039425e42c0d78e6321fce93d7da62f46cf6a2d52e3201e2d21c6ed631"
+    },
+    {
+      "path": "GPT_SoVITS/text/G2PWModel/bopomofo_to_pinyin_wo_tune_dict.json",
+      "sha256": "1279d193f47adb3c280ce79c0e6eee87a894199ed79e0a1f7b0c5e4e763fc270"
+    },
+    {
+      "path": "GPT_SoVITS/text/G2PWModel/char_bopomofo_dict.json",
+      "sha256": "4832fb6a553a9c5ee0c18b5cb698ce0acc312f324ee77ee61c340266d228184d"
+    },
+    {
+      "path": "GPT_SoVITS/text/G2PWModel/config.py",
+      "sha256": "b6154e494355d14a8d2c8a38d07720f77b34479e26aab21a5f63495ae904da76"
+    },
+    {
+      "path": "GPT_SoVITS/text/G2PWModel/MONOPHONIC_CHARS.txt",
+      "sha256": "fe7ed53098648441a94f414ed5fd3395789d1dceb98dc1e584489c2d43036b69"
+    },
+    {
+      "path": "GPT_SoVITS/text/G2PWModel/POLYPHONIC_CHARS.txt",
+      "sha256": "cc7e5a3eb377e3289af5e3a6be7505ac11a0d21422f80cfbf161059798f8671b"
+    },
+    {
+      "path": "GPT_SoVITS/text/LangSegmenter/langsegmenter.py",
+      "sha256": "ccb0ad618f4ce4c947fa142dde2e4e4c86ae7726955a901bc1938d4babdbb101"
+    },
+    {
+      "path": "GPT_SoVITS/text/LangSegmenter/__init__.py",
+      "sha256": "325aeb7453d371e8e30bebf51937e2897d7df593ff08833ee45f08012b2ea421"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/char_convert.py",
+      "sha256": "df066ce8e2a3385c7f3b4749f02049f2fdbabbfcc76e6784462a99f0347795e7"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/chronology.py",
+      "sha256": "bd873579e79976aaa465708791da13b79fd7beeafa6981743f438ec18f7d680a"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/constants.py",
+      "sha256": "33dd3cbe8443454ab51f12f513d4ce4ba43770981cd0605e240f6d942a9b675b"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/num.py",
+      "sha256": "403d613bacc9a8d922db65dd89a6ecb9a283ff4f07b5b38f645005c24387a7e2"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/phonecode.py",
+      "sha256": "d8279ca6ddf1af8f26119a75b4dfbb28c7da0adba5c51f807f4503c59d9816a5"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/quantifier.py",
+      "sha256": "de2d3367906a9df18edcf30698ae286d441c13c090f89d1f492ffdbe0edf93d0"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/README.md",
+      "sha256": "f861937c41df6fbe711923a1829e12d62b3abe5300fc173091cd87d115e10d28"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/text_normlization.py",
+      "sha256": "2010a90d73d0e03cc4f99c22a774a4e127fc3a1fe5c0fdc38b03fb3b5754cbb3"
+    },
+    {
+      "path": "GPT_SoVITS/text/zh_normalization/__init__.py",
+      "sha256": "61e674c9950d1d2a2241a39ecb87bc4172c9b0ed03082ec1dc06ec8dbcaf11e5"
+    },
+    {
+      "path": "GPT_SoVITS/TTS_infer_pack/TextPreprocessor.py",
+      "sha256": "450f3340cd6283b35d9d94bf35d2349ebd8e819d8f3f44962b673efb78b71316"
+    },
+    {
+      "path": "GPT_SoVITS/TTS_infer_pack/text_segmentation_method.py",
+      "sha256": "e848adbcde7ba00d7c3b689a186f8303d0e4a2064658912e7f853bc59ebfc11f"
+    },
+    {
+      "path": "GPT_SoVITS/TTS_infer_pack/TTS.py",
+      "sha256": "ffb3979c9de1084e3f924c56141301b2a0644314f977851dfce556f49c4abfb7"
+    },
+    {
+      "path": "GPT_SoVITS/TTS_infer_pack/__init__.py",
+      "sha256": "1721246a053cc246bc9983827772e33bd8fdd617af2c75acc859c46ec0891f4c"
+    },
+    {
+      "path": "MeloTTS/LICENSE",
+      "sha256": "7018bd16b0dca61f76e7a7c901c3e97b64a0636b9574ae8be36856cade9e11a1"
+    },
+    {
+      "path": "MeloTTS/melo/api.py",
+      "sha256": "cfd54d6d22e8fab884dab20ce176ad83c80749d8f11fb278a9b40f0543e2bfae"
+    },
+    {
+      "path": "MeloTTS/melo/app.py",
+      "sha256": "fb8763cea8b21e714a2fa56f55835c85643db23d72ee916da7bda84132594f84"
+    },
+    {
+      "path": "MeloTTS/melo/attentions.py",
+      "sha256": "174791bf09bb353878cdc762b80f6e85c004a837f0158c560c19b626a3fbd36e"
+    },
+    {
+      "path": "MeloTTS/melo/commons.py",
+      "sha256": "2771bc10e6e93ab436c794e02ec052b9454bdcf3f8d32f2d72b3fa3cf7364d14"
+    },
+    {
+      "path": "MeloTTS/melo/data_utils.py",
+      "sha256": "e51bd5a3accf100bd3751949add845f6b8ede8acfa6ee1cfe13c82d5b0627aed"
+    },
+    {
+      "path": "MeloTTS/melo/download_utils.py",
+      "sha256": "0edf5c8f7bc62404768892720f69863e63b475c30f82715227ef63aba4c4dc73"
+    },
+    {
+      "path": "MeloTTS/melo/infer.py",
+      "sha256": "fd7129fb6a408d32eb0762cfa85dbcb34b3b54a81154edb9f1da0851bb55492a"
+    },
+    {
+      "path": "MeloTTS/melo/init_downloads.py",
+      "sha256": "abfd1b201e780ee7a30957a348e1a8ed43891f08858af325101f415994259b98"
+    },
+    {
+      "path": "MeloTTS/melo/losses.py",
+      "sha256": "6eb912eb073b44cf624bac90cced3ff8fa21a3ed1eb5022d0c7d8fefbe1cd075"
+    },
+    {
+      "path": "MeloTTS/melo/main.py",
+      "sha256": "9eb4d1a80042067124a87397b8816983a580c09daaf18bb0827daf0594bc15e3"
+    },
+    {
+      "path": "MeloTTS/melo/mel_processing.py",
+      "sha256": "7e2892563de8921bfdcde57b18393fd9b39e7ba13bb89ba6c613e96890b69470"
+    },
+    {
+      "path": "MeloTTS/melo/models.py",
+      "sha256": "0f0717d20595506220d1b734e79cfc3d9335d81a216231f4f854acb94c801b73"
+    },
+    {
+      "path": "MeloTTS/melo/modules.py",
+      "sha256": "27d9f379c86dcb863e7833c889d3197ea3bc11b0b7af254e18631eb118432402"
+    },
+    {
+      "path": "MeloTTS/melo/preprocess_text.py",
+      "sha256": "de5a502bc74c131ecadc798cb8825ef923c72607a585db63ca1a27e51dd7b38e"
+    },
+    {
+      "path": "MeloTTS/melo/split_utils.py",
+      "sha256": "08c76dcf4981bf7821365f5cdd984e8e1e0871a92671a88453034ba817f6a24a"
+    },
+    {
+      "path": "MeloTTS/melo/transforms.py",
+      "sha256": "678810ab9bddd4975211a77af088d423a6961d51462102bb54a54b648eedee31"
+    },
+    {
+      "path": "MeloTTS/melo/utils.py",
+      "sha256": "c6a008a66b58c620228c03564675bff2e344c95aaafe90083d47a5a74893a319"
+    },
+    {
+      "path": "MeloTTS/melo/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "MeloTTS/melo/monotonic_align/core.py",
+      "sha256": "c8c4ad29ba99479164a51a36191ebc2372d4686d8e84b45a0d8e0d7b89b0f2e5"
+    },
+    {
+      "path": "MeloTTS/melo/monotonic_align/__init__.py",
+      "sha256": "bcd65a2cd9a27974b095ba187f160966c76f8ae99eb967fc365f0f12947718bc"
+    },
+    {
+      "path": "MeloTTS/melo/text/chinese.py",
+      "sha256": "54485927ecb19a4432744a644267851e7b73161ab5ad0e0f116ab948917fa763"
+    },
+    {
+      "path": "MeloTTS/melo/text/chinese_bert.py",
+      "sha256": "6fde7de58d99c756667cb5002e7229e34101126590512b9fa831a1391c7045d1"
+    },
+    {
+      "path": "MeloTTS/melo/text/chinese_mix.py",
+      "sha256": "b40718210545c5cc7786e6ea646e001c891de45fd95bbeafbef92bf9b6eaca11"
+    },
+    {
+      "path": "MeloTTS/melo/text/cleaner.py",
+      "sha256": "fba6afd1c935f1922448de34f3ebeae6be375d493289b5807d237386ffb9ffbc"
+    },
+    {
+      "path": "MeloTTS/melo/text/cleaner_multiling.py",
+      "sha256": "643518baabe35657c249d516de83099268108c9633847b6b628b3e7164bd76dc"
+    },
+    {
+      "path": "MeloTTS/melo/text/cmudict_cache.pickle",
+      "sha256": "b9b21b20325471934ba92f2e4a5976989e7d920caa32e7a286eacb027d197949"
+    },
+    {
+      "path": "MeloTTS/melo/text/english.py",
+      "sha256": "b0bb255a1d59fd62d20d90c47a8a34c2f3fceae6e7a8a49b9dcb42267bfa603e"
+    },
+    {
+      "path": "MeloTTS/melo/text/english_bert.py",
+      "sha256": "82abf1514e3a32cc4e3c4536c74ede6c735130e48a9df664513e5f3b683f1a0c"
+    },
+    {
+      "path": "MeloTTS/melo/text/french.py",
+      "sha256": "13ceb0fa85d902e6500aa594d80cc6caa66c5e4254686cb1948f36d3640c39ba"
+    },
+    {
+      "path": "MeloTTS/melo/text/french_bert.py",
+      "sha256": "435c7cb1ca1b9ce61faab1b829031f124699e53f8b9543ff3e0358c73ad8c25e"
+    },
+    {
+      "path": "MeloTTS/melo/text/japanese.py",
+      "sha256": "453e84008a8911225af3d551b008835c8fe0484556488c1191db520bb8185c7b"
+    },
+    {
+      "path": "MeloTTS/melo/text/japanese_bert.py",
+      "sha256": "7ac829ab9199c372af5ce6f36b2b69ba51b77fce29bede1c1a030b49541825e3"
+    },
+    {
+      "path": "MeloTTS/melo/text/korean.py",
+      "sha256": "4375de3d61e027dbe68f543b38d68e114c1a7e292eeb14327a7ff23cdb45933a"
+    },
+    {
+      "path": "MeloTTS/melo/text/ko_dictionary.py",
+      "sha256": "e51d544e074de5314df9f409c948e39648891c2d6097da17f2f542ec1de0fe3e"
+    },
+    {
+      "path": "MeloTTS/melo/text/opencpop-strict.txt",
+      "sha256": "86c4b30928e3a4305c9148058c9e2e56b04ce741363fedff382421f4a1e3709d"
+    },
+    {
+      "path": "MeloTTS/melo/text/spanish.py",
+      "sha256": "98e477c20af124902a575d3462cd6205b990c870b004c60d9bb2eb3b6526d931"
+    },
+    {
+      "path": "MeloTTS/melo/text/spanish_bert.py",
+      "sha256": "12a50c48b50244121d7cb015adb0ac1d7e5dc85ac4700c44b25b03b2df9f70de"
+    },
+    {
+      "path": "MeloTTS/melo/text/symbols.py",
+      "sha256": "9a5da048be3aea188c8219684280ccea5fd4b7a1078704148c5b34bcaf5c6cbc"
+    },
+    {
+      "path": "MeloTTS/melo/text/tone_sandhi.py",
+      "sha256": "5ff7f5a973466db8f2049db193fc80d679466b0f6f3124d80fc465a26a29af70"
+    },
+    {
+      "path": "MeloTTS/melo/text/__init__.py",
+      "sha256": "948d0705f62e9d41c36049cf3dd808da4f3fa363b465716be33de354febe3377"
+    },
+    {
+      "path": "MeloTTS/melo/text/english_utils/abbreviations.py",
+      "sha256": "39ddbac02dfc64939dab8127a33fb6350636a4e5162c1b2c1c62207eac240218"
+    },
+    {
+      "path": "MeloTTS/melo/text/english_utils/number_norm.py",
+      "sha256": "28d6f8e9bb47730e56378c22a22d1083f9d0bb3e532ba5d743fef683e84df27c"
+    },
+    {
+      "path": "MeloTTS/melo/text/english_utils/time_norm.py",
+      "sha256": "acbd71d89ab990e1ccb7a27f4e4a4e5c910c4d5cf8aa01df633c8c1117123195"
+    },
+    {
+      "path": "MeloTTS/melo/text/english_utils/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/base.py",
+      "sha256": "31fef488100ecc0b29314b952a0f63db670330d7b3e81b118643986c4ddf33d6"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/cleaner.py",
+      "sha256": "ebc5bd39a78ce4106178b4b18d909e88ad55dc621eb172d7ed6dd4a25728503a"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/es_symbols.json",
+      "sha256": "89138ff7cb785030a9e61d3b4a0e08c888644d04b3fde6da0aa3d5e7ae146b68"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/es_symbols.txt",
+      "sha256": "bc688f4e8126fb8a50f263f09791d5a4529ab44003eab3ee0faabbf9c95da020"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/es_symbols_v2.json",
+      "sha256": "1b501a3fdaba64a26853ec30fe28f2bb0a0a04d6029ba0f7e8c172df4d4c0049"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/es_to_ipa.py",
+      "sha256": "605ec53a49773fc07fb45754551c46ffe653895905dab303d8c97f6403535bdc"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/example_ipa.txt",
+      "sha256": "ba8eb2ff3ec487da77dd657659305a1156b06addc2b56e53193397002a0a4a02"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/gruut_wrapper.py",
+      "sha256": "ed01cd4be1a7ef318841e1864a3edfee356312c35b543b4dd35a1fd78dd1c82c"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/punctuation.py",
+      "sha256": "b2f1b3f6afbc2c5c2ff3336a16e5867a39d362a9d2886dce2fd33dbe22e68824"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/spanish_symbols.txt",
+      "sha256": "397607363c76607883f904fd605c84256457caa91fe23f8829dcdc6bb0733371"
+    },
+    {
+      "path": "MeloTTS/melo/text/es_phonemizer/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/base.py",
+      "sha256": "31fef488100ecc0b29314b952a0f63db670330d7b3e81b118643986c4ddf33d6"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/cleaner.py",
+      "sha256": "def715a5e09c68382d30cb97b940f3aa37646de372fa194064bf206da13934b2"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/en_symbols.json",
+      "sha256": "bcd135acbbc60d66d8c559ac1502da4936b13f2d5dab73df4f245f6e32e8ee5f"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/french_abbreviations.py",
+      "sha256": "bbfbc179e69e385b7d67c367aa27f8240ada4a1a0a83928a2d1e07929fe9afd1"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/french_symbols.txt",
+      "sha256": "be2a06cd06277e2f042502d8fc9de4f10a7dc2dea45357c5c89da93beea29e88"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/fr_symbols.json",
+      "sha256": "1c14048ba5a2fefff131ab7de030b85d9191b422956c952833f536eeaec67555"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/fr_to_ipa.py",
+      "sha256": "dcdb1c12a2a2f668d23829c7d478ebf1742be3d7c377b53fa979607c5da24a04"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/gruut_wrapper.py",
+      "sha256": "d8c534f14cbd0094228d54ca7717ce50a7bb7baec7a5371b2dda56ec96242b9b"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/punctuation.py",
+      "sha256": "864f01c68e591e15e67c474d02cec8f8424945d9da34cba38b4bf0561958eb0e"
+    },
+    {
+      "path": "MeloTTS/melo/text/fr_phonemizer/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "OpenVoice/LICENSE",
+      "sha256": "e50a2bc0a6308c602813957287d8c6a80f923be3836cbb533bf0192d1f37b286"
+    },
+    {
+      "path": "OpenVoice/openvoice/api.py",
+      "sha256": "d9d9de96591658f6bdc3b1c296ba677b6e9656b5fe2da5bf326c79e8074d9a59"
+    },
+    {
+      "path": "OpenVoice/openvoice/attentions.py",
+      "sha256": "4dc32a2808c1563628cf8e5a19af0611c8298db93b930be59c19b95a8933cfd9"
+    },
+    {
+      "path": "OpenVoice/openvoice/commons.py",
+      "sha256": "2771bc10e6e93ab436c794e02ec052b9454bdcf3f8d32f2d72b3fa3cf7364d14"
+    },
+    {
+      "path": "OpenVoice/openvoice/mel_processing.py",
+      "sha256": "67d50ad4e733ce8c54023208267a0c4dd3879f178039fbffb25d4976a97966b8"
+    },
+    {
+      "path": "OpenVoice/openvoice/models.py",
+      "sha256": "5fb1c0b910ed660861f5ce15b63f09baccca811864d76c767ab951bfad413f49"
+    },
+    {
+      "path": "OpenVoice/openvoice/modules.py",
+      "sha256": "99777ab99d27d339651707156f23fd6912807f14d160fad851dc9fbd28044e9c"
+    },
+    {
+      "path": "OpenVoice/openvoice/openvoice_app.py",
+      "sha256": "d160f2e7239d420733b267a1ac8f14fee8a87e2cc61447c1c30ab9d164d71251"
+    },
+    {
+      "path": "OpenVoice/openvoice/se_extractor.py",
+      "sha256": "b42dc048143ba8ee603cef4f4a9ffbb9b3624a2ddf8893075ab92ee52d047d8a"
+    },
+    {
+      "path": "OpenVoice/openvoice/transforms.py",
+      "sha256": "678810ab9bddd4975211a77af088d423a6961d51462102bb54a54b648eedee31"
+    },
+    {
+      "path": "OpenVoice/openvoice/utils.py",
+      "sha256": "ca2f000342343b0ce95bbeb43d86fa78987a7f3b78c1a87c7b84d526e96a5b49"
+    },
+    {
+      "path": "OpenVoice/openvoice/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "OpenVoice/openvoice/text/cleaners.py",
+      "sha256": "937d20a35e43d23de5f8cf344d20f3bf29e1b77e3473f137ce13b348b2112e05"
+    },
+    {
+      "path": "OpenVoice/openvoice/text/english.py",
+      "sha256": "f439b50c707a4a8dd383af3e992ead4ccabab43eb8c5ab515d4b2dfcdbd85f10"
+    },
+    {
+      "path": "OpenVoice/openvoice/text/mandarin.py",
+      "sha256": "8d7a2f5e9e4751c6b1cad0ad8ba0ebebe1a5d6ea3c7e26818ec978a7ac96721b"
+    },
+    {
+      "path": "OpenVoice/openvoice/text/symbols.py",
+      "sha256": "66c9c44ffbd849836af7723d60506743d239e255bafff45d0287cdf023460860"
+    },
+    {
+      "path": "OpenVoice/openvoice/text/__init__.py",
+      "sha256": "f04afd34eb0f2258eeb19a8bac80ce329eb2b2b4c0c13dc0c0502f6a752d19b5"
+    },
+    {
+      "path": "tools/assets.py",
+      "sha256": "929c86ea71d87c11d564a5296c2a12fc9032cde1fb7f752db38178b807ee3108"
+    },
+    {
+      "path": "tools/audio_sr.py",
+      "sha256": "c45860814826f2b2a23e3d1fefb54e0c894a6446d135abd438fd328c9e33275a"
+    },
+    {
+      "path": "tools/cmd-denoise.py",
+      "sha256": "acf7f5bae743124cb0ed184291cb3002236295fbf328b02746867f87e171fb1d"
+    },
+    {
+      "path": "tools/my_utils.py",
+      "sha256": "7b181ffa49aa540d457863dee57cd44984147dba54c6b13befa71159f5012e8e"
+    },
+    {
+      "path": "tools/slicer2.py",
+      "sha256": "5c69c5729b440babefa4ecbeb540dcfd2216091e1f370c8d38631f1d6fffb269"
+    },
+    {
+      "path": "tools/slice_audio.py",
+      "sha256": "cb680f2d77d3f09803e1d8de25968d8ff46a4fbc6b19e8c1b5153c7f8befbca3"
+    },
+    {
+      "path": "tools/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "tools/AP_BWE_main/LICENSE",
+      "sha256": "ebb9bf8bb881d60baf37b56772ad9e83813286ecc8b0853914de9d15fe3fec66"
+    },
+    {
+      "path": "tools/AP_BWE_main/README.md",
+      "sha256": "4fc090a5447afbb0bea41f0906fed210a2b7aa8b7f329fe91ed078a9b2d65a65"
+    },
+    {
+      "path": "tools/AP_BWE_main/24kto48k/config.json",
+      "sha256": "e6135b54f9746adf5ef9630c1393ad90dcc04d83685121d56918663da7e8c201"
+    },
+    {
+      "path": "tools/AP_BWE_main/24kto48k/readme.txt",
+      "sha256": "7092f0acaf4463fbea1c4093d42a376a37298e8a2b561b81df8f2a0756ee51a4"
+    },
+    {
+      "path": "tools/AP_BWE_main/datasets1/dataset.py",
+      "sha256": "9f99f7c55775aeee515a2eafeac48faecb5aac84262feefafe3e50201ca2a3a1"
+    },
+    {
+      "path": "tools/AP_BWE_main/datasets1/__init__.py",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "tools/AP_BWE_main/models/model.py",
+      "sha256": "77c77b83060b0efe9ce56b6e5e4062ed6981f282ebbc8f3d6598b7216aa7fa31"
+    },
+    {
+      "path": "tools/AP_BWE_main/models/__init__.py",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "tools/i18n/i18n.py",
+      "sha256": "d586d7544abc567f9ee14ab68e501745eeca7eac35fe2f1433a6b6c12d3b3059"
+    },
+    {
+      "path": "tools/i18n/locale_diff.py",
+      "sha256": "662becf2ae6c0210a3fe576adec017a1d0d62108c5e885ca264684838bf360e0"
+    },
+    {
+      "path": "tools/i18n/scan_i18n.py",
+      "sha256": "7530e7d0bc78f7909ba20a61e6691b684c0cc49c9c7ab0025821da191e65cbb1"
+    },
+    {
+      "path": "tools/i18n/locale/en_US.json",
+      "sha256": "aa4258e6176555b0cb5bb83fd71aa48853c75b89c3f60745618863fcf915dfb5"
+    },
+    {
+      "path": "tools/i18n/locale/es_ES.json",
+      "sha256": "2655c12777c568d4bfdcfa5c4f2323d2e542cb8b06216875cbad3f72f5d1c5fd"
+    },
+    {
+      "path": "tools/i18n/locale/fr_FR.json",
+      "sha256": "f1f628a1bd35ecd9c77cfee2543c990b571db81dbde6de36029fef6420880590"
+    },
+    {
+      "path": "tools/i18n/locale/it_IT.json",
+      "sha256": "9e9311e307e12624e076ca7b19298e9edbbc0b950c74b9fe4bfc76e1e41d9d9c"
+    },
+    {
+      "path": "tools/i18n/locale/ja_JP.json",
+      "sha256": "25d91fb7c98933a281b8fafefef7e9c9d9e2f207d587fd905ddb360c251501ca"
+    },
+    {
+      "path": "tools/i18n/locale/ko_KR.json",
+      "sha256": "eaabeffb8985e431d97dc17d2f3bd4ad27b675eb8e4ff17d9c6fa6e794a99212"
+    },
+    {
+      "path": "tools/i18n/locale/pt_BR.json",
+      "sha256": "9cdea09a441bee20915d22a525d676d31b348d26a0f89330d23a6d9ef6f76827"
+    },
+    {
+      "path": "tools/i18n/locale/ru_RU.json",
+      "sha256": "58c7bc6294863920a26b5b0b221b84c4b218e076722279266384a0c2211e0a11"
+    },
+    {
+      "path": "tools/i18n/locale/tr_TR.json",
+      "sha256": "5553bfae8246500631a6745da6dace12bd1d6d161e2cda9df065b64edb8fc8cc"
+    },
+    {
+      "path": "tools/i18n/locale/zh_CN.json",
+      "sha256": "9ca5f9b557f48f3927406dd0ddd2e9b0c81f658ab716a6149ae2e6669a6808b6"
+    },
+    {
+      "path": "tools/i18n/locale/zh_HK.json",
+      "sha256": "7213472afefb8a6cd0eb813be7422a7267f8feccb97de4ce4c593635acaf78f9"
+    },
+    {
+      "path": "tools/i18n/locale/zh_SG.json",
+      "sha256": "8666325d0cd7a63364be3ff875482fb4309b1f572e1aa3656a9a9c089ff71782"
+    },
+    {
+      "path": "tools/i18n/locale/zh_TW.json",
+      "sha256": "9fe84124b39cf72061cea4c4d5025c93607ffe32d25aac137b448cf3082e42f1"
+    }
+  ]
+}

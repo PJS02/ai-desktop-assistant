@@ -116,8 +116,13 @@ class SettingsController(QObject):
                     apply_runtime(value['width'], value['height'], value['personality'], **runtime_options)
                 elif section == 'voice':
                     tts = self.character.dialogue_system.tts
+                    # Turning speech off must work even if its saved model was
+                    # removed or the optional runtime is no longer available.
+                    if not value['enabled']:
+                        tts.set_enabled(False)
                     tts.set_voice(value['voice_id'])
-                    tts.set_enabled(value['enabled'])
+                    if value['enabled']:
+                        tts.set_enabled(True)
                     tts.sync_settings()
                 elif section == 'dialogue':
                     width, height, personality = load_config()
