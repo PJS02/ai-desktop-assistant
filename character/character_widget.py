@@ -491,6 +491,7 @@ class CharacterWidget(QLabel):
         self.sprite_animator = SpriteAnimator(self.assets_path)
         self.sprite_animator.frame_changed.connect(self.on_sprite_frame_changed)
         self.sprite_animator.animation_finished.connect(self.on_animation_finished)
+        log_event('renderer.sprite.ready', 'PNG 캐릭터 화면 준비 완료', category='캐릭터 상태')
 
     def _queue_sprite_fallback(self, reason):
         if (self.rig_view is not None and not self._rig_fallback_pending

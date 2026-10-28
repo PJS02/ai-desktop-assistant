@@ -27,13 +27,6 @@ if __name__ == '__main__':
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from dotenv import load_dotenv
-from character.character_widget import CharacterWidget
-from character.config_manager import load_config, load_character_options
-from character.settings_controller import SettingsController
-from character.config_manager import load_hand_overlay_options
-from hand_overlay.controller import HandOverlayController
-from hand_overlay.interaction_host import HandInteractionController
-from character.log_console import AppLogManager, LogWindow
 
 
 load_dotenv()
@@ -336,6 +329,19 @@ def main():
     app = QApplication(sys.argv)
     if _startup_capture is not None:
         _startup_capture.handoff_python()
+    # Paint the lightweight panel before importing/constructing the character.
+    from character.preparation_status import PreparationPanel, PreparationStatus
+    preparation = PreparationStatus(app)
+    preparation_panel = PreparationPanel(preparation)
+    preparation_panel.show()
+    app.processEvents()
+
+    from character.character_widget import CharacterWidget
+    from character.config_manager import load_config, load_character_options, load_hand_overlay_options
+    from character.settings_controller import SettingsController
+    from hand_overlay.controller import HandOverlayController
+    from hand_overlay.interaction_host import HandInteractionController
+    from character.log_console import AppLogManager, LogWindow
     log_manager = AppLogManager()
     log_manager.install_capture()
     log_event('application.qt_ready', 'Qt 앱 준비 완료')
@@ -359,6 +365,8 @@ def main():
         on_rps_command=mediapipe_manager.send_game_command,
         character_options=load_character_options(),
     )
+    character.preparation_status = preparation
+    preparation.configure_hands(load_hand_overlay_options()['enabled'])
     hand_overlay = HandOverlayController(character.perception_receiver, mediapipe_manager,
                                          character, load_hand_overlay_options())
     character.hand_overlay = hand_overlay
@@ -366,6 +374,8 @@ def main():
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
     character._show_perception_console_callback = settings_controller.show_recognition
+    preparation_panel.settings_requested.connect(settings_controller.show)
+    preparation_panel.bind_character(character)
     character.show()
 
     # 캐릭터의 인식 수신기가 준비된 다음 창 없는 인식 작업을 실행한다.
@@ -373,6 +383,8 @@ def main():
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
     app.aboutToQuit.connect(hand_overlay.stop)
     app.aboutToQuit.connect(mediapipe_manager.stop)
+    app.aboutToQuit.connect(preparation_panel.hide)
+    app.aboutToQuit.connect(preparation.close)
 
     exit_code = None
     try:

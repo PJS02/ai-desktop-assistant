@@ -214,6 +214,7 @@ class RecognitionEngine(SettingsBridge):
         # Single-threaded image conversion avoids waking a pool for every frame.
         cv2.setNumThreads(1)
         holistic_options = holistic_configuration()
+        log_event('recognition.tracker.loading', 'MediaPipe 모델 불러오기 시작', category='사용자 인식')
         self.holistic = core.mp_holistic.Holistic(**holistic_options)
         # Bound the lightweight trial to 10 FPS so cheaper inference buys CPU
         # headroom instead of immediately running twice as often. The separate

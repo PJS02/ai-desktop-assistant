@@ -114,6 +114,14 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(scroll, name)
         return content, layout, form
 
+    def set_preparation_status(self, status):
+        from .preparation_status import PreparationView
+
+        for index, keys in ((0, ('character',)), (1, ('microphone', 'voice')),
+                            (2, ('tracker', 'emotion', 'camera', 'hands'))):
+            content = self.tabs.widget(index).widget()
+            content.layout().insertWidget(1, PreparationView(status, keys, content, compact=True))
+
     @staticmethod
     def _combo(choices, current):
         combo = QComboBox()

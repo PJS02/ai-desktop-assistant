@@ -57,6 +57,9 @@ class SettingsController(QObject):
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character)
+        preparation = getattr(self.character, 'preparation_status', None)
+        if preparation is not None:
+            self.dialog.set_preparation_status(preparation)
         self.dialog.preview_requested.connect(self._set_preview)
         self.dialog.device_requested.connect(self._device_command)
         self.dialog.finished.connect(lambda _result: self._set_preview(False))

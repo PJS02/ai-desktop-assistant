@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import wave
+from app_logging import log_event
 
 from .tts_models import ModelStore
 
@@ -57,6 +58,13 @@ class LocalVoiceBackend:
                 result = json.loads(line[len('CAPSTONE_TTS:'):])
                 if result.get('error'):
                     raise RuntimeError(result['error'])
+                if result.get('status') == 'loading':
+                    done, total = result.get('completed'), result.get('total')
+                    if type(done) is int and type(total) is int and 0 <= done < total:
+                        log_event('tts.model_progress', '음성 모델 준비 단계 완료', category='대화·AI',
+                                  model=self.voice, completed=done, total=total,
+                                  detail=str(result.get('detail', '음성 모델을 준비하는 중'))[:160])
+                    continue
                 return result
         self.stop()
         raise TimeoutError('TTS 응답 시간이 초과되었습니다. 다시 시도해 주세요.')
@@ -68,6 +76,7 @@ class LocalVoiceBackend:
             if self.process is not None and self.process.poll() is None and self.voice == voice:
                 return
             self.stop()
+            log_event('tts.model_loading', '음성 모델 불러오기 시작', category='대화·AI', model=voice)
             python = runtime_python()
             self.store.verify_engine(voice)
             work = self.store.root / voice
@@ -105,9 +114,18 @@ class LocalVoiceBackend:
             threading.Thread(target=stderr, daemon=True, name='tts-errors').start()
         if self._line(cancelled, 180).get('status') != 'ready':
             raise RuntimeError('TTS 모델 준비 응답이 올바르지 않습니다.')
+        log_event('tts.model_ready', '음성 모델 준비 완료', category='대화·AI', model=voice)
 
     def synthesize(self, text, voice, cancelled):
-        self._start(voice, cancelled)
+        try:
+            self._start(voice, cancelled)
+        except SynthesisCancelled:
+            raise
+        except Exception as exc:
+            self.stop()
+            log_event('tts.model_failed', '음성 모델 준비 실패', category='대화·AI',
+                      level='ERROR', model=voice, error=str(exc))
+            raise
         if cancelled():
             raise SynthesisCancelled()
         fd, name = tempfile.mkstemp(suffix='.wav', prefix='capstone-tts-')
@@ -131,6 +149,7 @@ class LocalVoiceBackend:
     def stop(self):
         with self.lock:
             process, self.process = self.process, None
+            voice = self.voice
             self.voice = None
             if process is not None:
                 if process.poll() is None:
@@ -143,6 +162,7 @@ class LocalVoiceBackend:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None:
                         stream.close()
+                log_event('tts.model_unloaded', '음성 모델 실행기 종료', category='대화·AI', model=voice)
 
     def close(self):
         self.closed = True

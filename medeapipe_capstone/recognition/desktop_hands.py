@@ -130,8 +130,10 @@ class DesktopHandTracker:
                     continue
                 try:
                     if detector is None:
+                        log_event('hand_overlay.model.loading', '손 추적 모델 불러오기 시작', category='사용자 인식')
                         detector = self._detector_factory()
                         detector_session = session
+                        log_event('hand_overlay.model.ready', '손 추적 모델 준비 완료', category='사용자 인식')
                     image = frame.image
                     height, width = image.shape[:2]
                     if width > self.MAX_INPUT_WIDTH:

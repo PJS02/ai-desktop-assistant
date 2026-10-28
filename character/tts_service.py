@@ -80,6 +80,11 @@ class SupertonicTTS(QObject):
         self._playback_started_at = None
         self.audio_ready.connect(self._play_audio)
         self.request_finished.connect(self._finish_request, Qt.ConnectionType.QueuedConnection)
+        self._log_configuration()
+
+    def _log_configuration(self):
+        log_event('tts.configuration', '음성 출력 준비 설정', category='대화·AI',
+                  enabled=self._enabled, voice_id=self._voice_id)
 
     @property
     def enabled(self) -> bool:
@@ -98,6 +103,7 @@ class SupertonicTTS(QObject):
             self._validate_custom_voice(self._voice_id)
         self._enabled = bool(enabled)
         self._settings.setValue("tts/enabled", self._enabled)
+        self._log_configuration()
         if not self._enabled:
             self._cancel_request(self._generation, 'disabled')
             self._generation += 1
@@ -118,6 +124,7 @@ class SupertonicTTS(QObject):
             self._set_busy(False)
         self._voice_id = voice_id
         self._settings.setValue("tts/voice_id", voice_id)
+        self._log_configuration()
 
     @staticmethod
     def _validate_custom_voice(voice_id):
