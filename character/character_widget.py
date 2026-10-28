@@ -1001,6 +1001,7 @@ class CharacterWidget(QLabel):
         info = None
         dialogue_text = None
         request_time = None
+        failed = False
         context = log_context or {'trace_id': new_trace_id('ambient'), 'source': 'activity'}
         try:
             # 활성 창 정보 수집
@@ -1042,8 +1043,9 @@ class CharacterWidget(QLabel):
             
             request_time = time.time()
             response = _with_log_context(call_gemini, prompt, config, log_context=context)
+            failed = DialogueSystem._is_error_response(response)
             log_event('dialogue.automatic_response', '활동 기반 응답 수신', category='대화·AI', trace_id=context['trace_id'], response=response,
-                      outcome='failed' if not response or DialogueSystem._is_error_response(response) else 'received')
+                      outcome='failed' if failed else 'received')
             
             if response:
                 # The same decoder handles plain, JSON and fenced JSON output.
@@ -1057,13 +1059,13 @@ class CharacterWidget(QLabel):
         finally:
             if not getattr(self, '_character_closing', False):
                 self.automatic_response_ready.emit(
-                    (generation, input_epoch, dialogue_text, info, request_time))
+                    (generation, input_epoch, dialogue_text, info, request_time, failed))
             else:
                 log_event('dialogue.automatic_discarded', '종료 후 자동 응답 폐기', category='대화·AI', trace_id=context['trace_id'], reason='closing')
 
     @pyqtSlot(object)
     def _finish_automatic_response(self, result):
-        generation, epoch, text, info, request_time = result
+        generation, epoch, text, info, request_time, failed = result
         context = getattr(self, '_automatic_log_contexts', {}).pop(generation, {'trace_id': None, 'source': 'activity'})
         if (getattr(self, '_character_closing', False)
                 or generation != self._automatic_request_generation):
@@ -1075,7 +1077,7 @@ class CharacterWidget(QLabel):
         if info:
             self.last_detected_activity = info
         if text:
-            shown = _with_log_context(self.dialogue_system.show_automatic_response, text, expected_input_epoch=epoch, log_context=context)
+            shown = _with_log_context(self.dialogue_system.show_automatic_response, text, expected_input_epoch=epoch, log_context=context, failed=failed)
             log_event('dialogue.automatic_finished', '자동 대화 처리 완료', category='대화·AI', trace_id=context.get('trace_id'), shown=bool(shown), input_epoch=epoch, current_input_epoch=self.dialogue_system.user_input_epoch)
         else:
             log_event('dialogue.automatic_finished', '표시할 자동 대화 없음', category='대화·AI', trace_id=context.get('trace_id'), shown=False, reason='empty_response_or_no_window')

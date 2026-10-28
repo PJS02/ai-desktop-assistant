@@ -537,7 +537,7 @@ class DialogueSystem(QObject):
         self._active_input = None
         self.is_ai_responding = False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(response_text, log_context=turn['log_context'])
+        self.show_ai_response(response_text, log_context=turn['log_context'], failed=failed)
         self._process_next_input()
 
     def retry_last_input(self):
@@ -567,7 +567,7 @@ class DialogueSystem(QObject):
                     or self._speaking or self._tts_busy
                     or self._time_provider() < self._response_hold_until)
 
-    def show_automatic_response(self, text, expected_input_epoch=None, *, log_context=None):
+    def show_automatic_response(self, text, expected_input_epoch=None, *, log_context=None, failed=False):
         """Ambient responses never replace a conversation or a later user turn."""
         if self.is_conversation_busy():
             log_event('dialogue.automatic_discarded', '대화 우선으로 자동 대사 폐기', category='대화·AI',
@@ -580,10 +580,10 @@ class DialogueSystem(QObject):
                       text=text)
             return False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(text, log_context=log_context)
+        self.show_ai_response(text, log_context=log_context, failed=failed)
         return True
 
-    def show_ai_response(self, response_text: str, *, log_context=None):
+    def show_ai_response(self, response_text: str, *, log_context=None, failed=False):
         """Display on the Qt thread and use the existing voice/enabled settings."""
         if self._closed:
             return
@@ -593,6 +593,12 @@ class DialogueSystem(QObject):
             self.show_dialogue(response_text, duration=5000)
         else:
             self.show_dialogue(response_text, duration=5000, log_context=context)
+        # Preserve failure status through normalization: friendly error notices
+        # belong in the bubble, but must not be synthesized as character speech.
+        if failed or self._is_error_response(response_text):
+            log_event('dialogue.tts_skipped', 'AI 오류 안내 음성 생략', category='대화·AI',
+                      trace_id=context['trace_id'], reason='ai_error', text=response_text)
+            return
         log_event('dialogue.tts_requested', '대화 음성 출력 요청', category='대화·AI',
                   trace_id=context['trace_id'], text=response_text)
         # Only opt into an explicitly implemented API; Mock/dynamic providers keep speak(text).
