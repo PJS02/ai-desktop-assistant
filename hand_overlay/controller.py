@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import time
 
-from PyQt6.QtCore import QObject, QTimer, Qt
+from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled
@@ -14,6 +14,8 @@ from .renderer import DesktopHandWindow
 
 
 class HandOverlayController(QObject):
+    hands_cleared = pyqtSignal()
+    tracking_interrupted = pyqtSignal()
     STALE_SECONDS = .35
 
     def __init__(self, receiver, manager, character=None, options=None, *,
@@ -88,6 +90,8 @@ class HandOverlayController(QObject):
         elif previous['smooth'] != updated['smooth']:
             self._reset()
         elif updated['enabled']:
+            if any(previous[key] != updated[key] for key in ('size_percent', 'range_percent', 'max_hands')):
+                self.hands_cleared.emit()  # A settings remap must not drag a held target.
             self._display(self._hands)
         log_event('hand_overlay.settings.applied', '바탕화면 손 표시 설정 적용', options=updated)
 
@@ -106,13 +110,26 @@ class HandOverlayController(QObject):
         self._retired_sessions.clear()
         self._metadata = None
 
-    def _clear_display(self):
+    def _clear_display(self, *, transient=False):
         self._smoother.reset()
         self._hands = ()
         self._bindings.clear()
         self._received_at = None
         for window in self._windows:
             window.clear_hand()
+        if transient:
+            self.tracking_interrupted.emit()
+        else:
+            self.hands_cleared.emit()
+
+    def displayed_hands(self):
+        from .interactions import DisplayedHand
+        result = []
+        for identity, window in self._bindings.items():
+            if window.isVisible() and window.hand is not None and len(window.points) == 21:
+                points = tuple((p.x() + window.x(), p.y() + window.y()) for p in window.points)
+                result.append(DisplayedHand(identity, points, window.hand.points))
+        return tuple(result)
 
     def poll(self):
         if self._closed or not self._options['enabled']:
@@ -130,7 +147,7 @@ class HandOverlayController(QObject):
                 log_throttled('hand_overlay.display.failed', '바탕화면 손 표시 실패',
                               key='hand-overlay-display', interval=10, level='ERROR', error=str(exc))
         if self._received_at is not None and now - self._received_at > self.STALE_SECONDS:
-            self._clear_display()
+            self._clear_display(transient=True)
 
     @staticmethod
     def _finite(value):

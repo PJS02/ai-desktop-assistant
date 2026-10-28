@@ -1505,6 +1505,9 @@ class CharacterWidget(QLabel):
         if not self._refresh_body_hover(event.position().toPoint()):
             event.ignore()
             return
+        hand_interactions = getattr(self, 'hand_interactions', None)
+        if hand_interactions is not None:
+            hand_interactions.cancel('mouse_input')
         print(f"[mousePressEvent] button={event.button()} pos={event.globalPosition().toPoint()}")
         if event.button() == Qt.MouseButton.RightButton:
             self._show_context_menu(event.globalPosition().toPoint(), include_dialogue=True)
@@ -2301,6 +2304,8 @@ class CharacterWidget(QLabel):
         return self.rect()
 
     def update_dragging(self):
+        if getattr(self, '_hand_control_mode', None) in ('grab', 'palm'):
+            return  # Hand interactions currently affect movement only, not mood or files.
         if self.is_dragging:
             self.drag_time += 0.1
             

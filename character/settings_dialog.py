@@ -431,6 +431,13 @@ class SettingsDialog(QDialog):
         heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
         self.remote_form.addRow(heading)
         self.hand_display = QCheckBox('바탕화면에 손 랜드마크 표시')
+        self.hand_display.setToolTip(
+            '검지만 펴고 나머지는 굽힌 채 머리 윗부분에 닿으면 쓰다듬습니다.\n'
+            '엄지·검지를 살짝 굽혀 머리를 잡고, 손가락을 모두 펴면 놓습니다.\n'
+            '검지로 볼을 찌르면 뒤로 밀립니다.\n'
+            '공은 엄지·검지를 맞대어 집고, 손을 펴서 놓습니다.\n'
+            '편 손을 가로로 놓으면 캐릭터를 손 위에 태울 수 있습니다.\n'
+            '공은 캐릭터 우클릭 메뉴의 공 꺼내기로 만드세요.')
         self.hand_display.setChecked(options['enabled'])
         self.remote_form.addRow(self.hand_display)
         self.hand_inputs = {}

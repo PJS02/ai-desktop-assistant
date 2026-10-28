@@ -126,6 +126,9 @@ class ManualControl(QObject):
             host.set_pixmap_with_flip(host.current_pixmap)
 
     def execute(self, command):
+        interactions = getattr(self.host, 'hand_interactions', None)
+        if interactions is not None:
+            interactions.cancel('manual_command')
         host = self.host
         self.log_trace_id = new_trace_id('manual')
         log_event('character.manual.requested', '캐릭터 직접 조작을 요청했습니다.',

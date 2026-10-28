@@ -31,6 +31,7 @@ from character.config_manager import load_config, load_character_options
 from character.settings_controller import SettingsController
 from character.config_manager import load_hand_overlay_options
 from hand_overlay.controller import HandOverlayController
+from hand_overlay.interaction_host import HandInteractionController
 from character.log_console import AppLogManager, LogWindow
 
 
@@ -275,6 +276,7 @@ def main():
     hand_overlay = HandOverlayController(character.perception_receiver, mediapipe_manager,
                                          character, load_hand_overlay_options())
     character.hand_overlay = hand_overlay
+    character.hand_interactions = HandInteractionController(character, hand_overlay)
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
     character.show()
