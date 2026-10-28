@@ -18,7 +18,8 @@ class SettingsBridge:
         microphones = [device.label for device in self.stt.audio_devices]
         values = {'camera': self.camera_var.get() if cameras else None,
                   'microphone': self.stt_mic_var.get() if microphones else None,
-                  'mode': self.rps_previous_mode if self.rps_session else self.active_mode,
+                  'mode': (self.rps_previous_mode if self.rps_session else
+                           self.cham_previous_mode if getattr(self, 'cham_session', None) else self.active_mode),
                   'emotion_model': MODEL_OPTIONS[self.emotion_model_var.get()]}
         for key in BOOL_FIELDS:
             variable = self.stt_timestamps_var if key == 'timestamps' else getattr(self, key + '_var')
@@ -39,9 +40,10 @@ class SettingsBridge:
             for item in choices[key]:
                 item['label'] = names.get(item['value'], item['value'].replace(' sec', '초'))
         status = f"카메라 {'실행 중' if self.cap is not None else '중지'} · 음성 인식 {'실행 중' if self.stt.is_running else '중지'}"
-        if self.rps_session:
-            status += '\n가위바위보 게임을 닫으면 인식 모드를 변경할 수 있습니다.'
-        return {'values': values, 'choices': choices, 'status': status, 'game_active': bool(self.rps_session),
+        game_active = bool(self.rps_session or getattr(self, 'cham_session', None))
+        if game_active:
+            status += '\n게임을 닫으면 인식 모드를 변경할 수 있습니다.'
+        return {'values': values, 'choices': choices, 'status': status, 'game_active': game_active,
                 'camera_running': self.cap is not None, 'stt_running': self.stt.is_running}
 
     @staticmethod
@@ -106,8 +108,8 @@ class SettingsBridge:
         original_settings = deepcopy(self.device_settings)
         previous_model = getattr(self, 'emotion_recognizer', None)
         previous_model_key = getattr(self, 'loaded_emotion_model_key', None)
-        if self.rps_session and 'mode' in patch:
-            raise ValueError('가위바위보 게임을 닫은 뒤 인식 모드를 변경하세요.')
+        if (self.rps_session or getattr(self, 'cham_session', None)) and 'mode' in patch:
+            raise ValueError('게임을 닫은 뒤 인식 모드를 변경하세요.')
         if self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive():
             raise ValueError('장치 검색이 끝난 뒤 적용하세요.')
         for key, value in patch.items():
@@ -179,7 +181,7 @@ class SettingsBridge:
             for key in ('provider', 'language', 'silence', 'sensitivity'):
                 getattr(self, 'stt_' + key + '_var').set(state['values'][key])
             self.stt_mic_var.set(state['values']['microphone'] or '')
-            if not self.rps_session:
+            if not (self.rps_session or getattr(self, 'cham_session', None)):
                 self.active_mode = state['values']['mode']
                 self.update_mode_status()
             log_event('settings.recognition.rolled_back', '저장 실패 후 설정 복원', category='오류', level='ERROR',

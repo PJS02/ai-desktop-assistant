@@ -316,6 +316,9 @@ class DialogueSystem(QObject):
             measure = getattr(host, '_physics_body_rect', None)
             body = measure() if measure else QRect(0, 0, host.width(), host.height())
             game = getattr(host, 'rps_game', None)
+            cham = getattr(host, 'cham_game', None)
+            if cham is not None and cham.isVisible():
+                game = cham
             avoid = game.geometry() if game is not None and game.isVisible() else None
             self.current_dialogue.update_position_with_character(
                 host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), avoid)

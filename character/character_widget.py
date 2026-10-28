@@ -24,6 +24,7 @@ from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
+from .cham_game import ChamGameOverlay
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
@@ -146,6 +147,8 @@ class CharacterWidget(QLabel):
         self._rps_command_callback = on_rps_command
         self._show_settings_callback = on_show_settings
         self.rps_game = None
+        self.cham_game = None
+        self._cham_saved_pose = None
 
         # 배경창 투명화
         self.setWindowFlags(
@@ -620,6 +623,8 @@ class CharacterWidget(QLabel):
     def _handle_perception_payload(self, payload):
         if self.rps_game is not None and self.rps_game.isVisible():
             self.rps_game.handle_payload(payload)
+        if CharacterWidget._cham_game_active(self):
+            self.cham_game.handle_payload(payload)
         try:
             self.perception_controller.handle_payload(payload)
         except ValueError as exc:
@@ -687,6 +692,7 @@ class CharacterWidget(QLabel):
         if (self.is_dragging or self.is_jumping or not self.on_ground
                 or getattr(self, '_ball_session_active', False)
                 or (self.rps_game is not None and self.rps_game.isVisible())
+                or CharacterWidget._cham_game_active(self)
                 or (self.rig_view is not None and self.sprite_animator.is_playing
                     and self.sprite_animator.current_action in {'land', 'wave'})):
             return False
@@ -738,6 +744,8 @@ class CharacterWidget(QLabel):
             self.sprite_animator.stop()
 
     def closeEvent(self, event):
+        if getattr(self, 'cham_game', None) is not None:
+            self.cham_game.close()
         hand_overlay = getattr(self, 'hand_overlay', None)
         if hand_overlay is not None:
             hand_overlay.stop()
@@ -1151,6 +1159,8 @@ class CharacterWidget(QLabel):
 
     def _maybe_run_autonomous_event(self, idle_seconds: float) -> None:
         """상호작용이 없을 때 낮은 빈도로 캐릭터 혼자 이벤트를 발생시킨다."""
+        if CharacterWidget._cham_game_active(self):
+            return
         if self._manual_control_active():
             return
         now = time.monotonic()
@@ -1211,6 +1221,8 @@ class CharacterWidget(QLabel):
 
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
+        if CharacterWidget._cham_game_active(self):
+            return
         if self.rig_view is not None:
             self.sprite_animator.set_emotion(mood["emotion"])
             self._refresh_rig_overlay()
@@ -1516,6 +1528,8 @@ class CharacterWidget(QLabel):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            if CharacterWidget._cham_game_active(self):
+                self.cham_game.close()
             sandbox_response = self.sandbox_manager.use_selected_item()
             if sandbox_response:
                 self.dialogue_system.show_dialogue(sandbox_response, duration=2500)
@@ -1732,6 +1746,8 @@ class CharacterWidget(QLabel):
     
     # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
     def show_rps_game(self):
+        if CharacterWidget._cham_game_active(self):
+            self.cham_game.close()
         if self.rps_game is None:
             self.rps_game = RpsGameOverlay(self._rps_command_callback, self)
         self._mark_character_interaction()
@@ -1743,6 +1759,64 @@ class CharacterWidget(QLabel):
         if self.rps_game is not None:
             self.rps_game.close()
         self.dialogue_system.update_dialogue_position()
+
+    def _cham_game_active(self):
+        return bool(getattr(getattr(self, 'cham_game', None), 'is_active', False))
+
+    def show_cham_game(self):
+        if self.is_dragging or self.is_jumping or not self.on_ground:
+            self.dialogue_system.show_dialogue('착지한 뒤 참참참을 시작해주세요.', duration=2500)
+            return
+        if self.rps_game is not None:
+            self.rps_game.close()
+        if self.cham_game is None:
+            self.cham_game = ChamGameOverlay(self._rps_command_callback, self,
+                                             pose_callback=self._apply_cham_pose)
+        if self.cham_game.is_active:
+            self.cham_game.close()
+        self._cham_saved_pose = (self._rig_preferred_yaw, getattr(self, '_rig_direction_explicit', False),
+                                 self.is_flipped, getattr(self.sprite_animator, 'yaw', 0))
+        self.manual_control._stop_horizontal()
+        self.animation_controller.idle.stop()
+        self._pending_user_greeting_until = None
+        self._greeting_retry_timer.stop()
+        hand_interactions = getattr(self, 'hand_interactions', None)
+        if hand_interactions is not None:
+            hand_interactions.cancel('cham_game')
+        self._mark_character_interaction()
+        self.current_action = 'idle'
+        self.update_render('idle')
+        self.cham_game.start_game()
+        self.dialogue_system.update_dialogue_position()
+        self.cham_game.raise_()
+
+    def _apply_cham_pose(self, yaw, emotion=None):
+        if yaw is None:
+            saved, self._cham_saved_pose = self._cham_saved_pose, None
+            if saved is None:
+                return
+            self._rig_preferred_yaw, self._rig_direction_explicit, self.is_flipped, _ = saved
+            self._rig_manual_action = None
+            if self.rig_view is not None:
+                self.sprite_animator.set_yaw(saved[3])
+                self.sprite_animator.set_emotion_override(self.manual_control.display_emotion)
+            self.update_action(self.mood_system.decide_emotion())
+            if not self._manual_control_active() and not self._character_closing:
+                self.animation_controller.update_base_pos(self.pos())
+                self.animation_controller.start_idle()
+            self.dialogue_system.update_dialogue_position()
+            return
+        self.is_flipped = yaw > 0
+        if self.rig_view is not None:
+            self.sprite_animator.set_yaw(yaw)
+            self.sprite_animator.set_emotion_override(emotion or 'neutral')
+            self._refresh_rig_overlay()
+        else:
+            self.update_render('happy' if emotion == 'happy' else 'sad' if emotion == 'sad' else 'idle')
+
+    def end_cham_game(self):
+        if self.cham_game is not None:
+            self.cham_game.close()
 
     def show_perception_console(self):
         """백그라운드에서 실행 중인 사용자 인식 창의 표시를 요청한다."""
@@ -1791,6 +1865,13 @@ class CharacterWidget(QLabel):
             restart_action.triggered.connect(self.show_rps_game)
             end_action = menu.addAction("가위바위보 종료")
             end_action.triggered.connect(self.end_rps_game)
+        cham_action = menu.addAction("참참참 하기")
+        cham_action.triggered.connect(self.show_cham_game)
+        if CharacterWidget._cham_game_active(self):
+            restart_action = menu.addAction("참참참 다시 하기")
+            restart_action.triggered.connect(self.show_cham_game)
+            end_action = menu.addAction("참참참 종료")
+            end_action.triggered.connect(self.end_cham_game)
         self._context_menu = menu
         menu.popup(global_pos)
 
@@ -1891,6 +1972,8 @@ class CharacterWidget(QLabel):
 
     def select_ball(self):
         """Select the sandbox ball for the next character click."""
+        if CharacterWidget._cham_game_active(self):
+            self.cham_game.close()
         message = self.sandbox_manager.select_ball()
         if message:
             self.dialogue_system.show_dialogue(message, duration=3000)
@@ -2169,6 +2252,8 @@ class CharacterWidget(QLabel):
 
     def jump(self, force=False):
         """캐릭터 점프 실행 (지면에 있을 때만)"""
+        if CharacterWidget._cham_game_active(self):
+            return
         if self._manual_control_active() and not force:
             return
         if self._cursor_over_character and not force:
@@ -2321,6 +2406,8 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
+        if CharacterWidget._cham_game_active(self):
+            return
         if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
@@ -2407,6 +2494,8 @@ class CharacterWidget(QLabel):
 
     def move_toward_ball(self, ball_x: int) -> None:
         """Scale configured pixels/second by PJS02's emotion and intensity."""
+        if CharacterWidget._cham_game_active(self):
+            return
         if self._manual_control_active() or self.is_dragging or self.is_jumping:
             self._chase_last_time = None
             return

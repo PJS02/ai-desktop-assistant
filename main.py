@@ -196,7 +196,7 @@ class MediaPipeProcessManager(QObject):
         return self._send_command("show")
 
     def send_game_command(self, command: str) -> bool:
-        if command.startswith("rps_begin ") and not self.is_running:
+        if command.startswith(("rps_begin ", "cham_begin ")) and not self.is_running:
             if not self.start():
                 return False
         return self._send_command(command)

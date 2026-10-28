@@ -166,6 +166,9 @@ class ManualControl(QObject):
                           command=command, reason='missing_asset', assets_path=str(host.assets_path))
                 self._status('현재 PNG 캐릭터에는 이 동작 이미지가 없습니다.')
                 return
+        game = getattr(host, 'cham_game', None)
+        if game is not None and game.is_active:
+            game.close()
         if command == 'resume':
             self._stop_horizontal()
             self.active = False

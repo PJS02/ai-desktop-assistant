@@ -128,6 +128,9 @@ class HolisticGuiApp(SettingsBridge):
         self.rps_session = None
         self.rps_previous_mode = None
         self.rps_sample = None
+        self.cham_session = None
+        self.cham_previous_mode = None
+        self.cham_sample = None
         saved_recognition = self.device_settings.get("recognition", {})
         saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
         saved_mode = saved_recognition.get("mode", "rps")
@@ -318,6 +321,10 @@ class HolisticGuiApp(SettingsBridge):
                 self.begin_rps_game(command.split(" ", 1)[1])
             elif command.startswith("rps_end "):
                 self.end_rps_game(command.split(" ", 1)[1])
+            elif command.startswith("cham_begin "):
+                self.begin_cham_game(command.split(" ", 1)[1])
+            elif command.startswith("cham_end "):
+                self.end_cham_game(command.split(" ", 1)[1])
             elif command.startswith('settings '):
                 self.handle_settings_command(command[len('settings '):])
             elif command in ('tts_speaking 1', 'tts_speaking 0'):
@@ -333,6 +340,8 @@ class HolisticGuiApp(SettingsBridge):
         self.root.after(100, self.poll_control_commands)
 
     def begin_rps_game(self, session):
+        if getattr(self, 'cham_session', None):
+            self.end_cham_game(self.cham_session)
         # 임시 게임 모드는 저장된 사용자 모드를 덮어쓰지 않는다.
         if self.rps_session is None:
             self.rps_previous_mode = self.active_mode
@@ -358,6 +367,28 @@ class HolisticGuiApp(SettingsBridge):
         log_event('recognition.game.finished', '게임 인식 종료 및 모드 복원',
                   category='사용자 인식', trace_id=session, restored_mode=self.active_mode)
         print("[가위바위보] 이전 인식 모드 복원")
+
+    def begin_cham_game(self, session):
+        if self.rps_session:
+            self.end_rps_game(self.rps_session)
+        if self.cham_session is None:
+            self.cham_previous_mode = self.active_mode
+        self.cham_session, self.cham_sample = session, None
+        self.active_mode = "cham"
+        self.update_mode_status()
+        if self.cap is None:
+            self.start_selected_camera()
+        log_event('recognition.game.started', '참참참 인식 시작', category='사용자 인식',
+                  trace_id=session, mode='cham', previous_mode=self.cham_previous_mode)
+
+    def end_cham_game(self, session):
+        if session != self.cham_session:
+            return
+        self.active_mode = self.cham_previous_mode
+        self.cham_session, self.cham_sample = None, None
+        self.update_mode_status()
+        log_event('recognition.game.finished', '참참참 종료 및 모드 복원',
+                  category='사용자 인식', trace_id=session, restored_mode=self.active_mode)
 
     def show_console(self):
         """숨겨진 사용자 인식 콘솔을 복원해 화면 앞으로 가져온다."""
@@ -1134,7 +1165,8 @@ class HolisticGuiApp(SettingsBridge):
     def save_recognition_settings(self):
         """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
         self.device_settings["recognition"] = {
-            "mode": self.rps_previous_mode if self.rps_session else self.active_mode,
+            "mode": (self.rps_previous_mode if self.rps_session else
+                     self.cham_previous_mode if getattr(self, 'cham_session', None) else self.active_mode),
             "tracking": bool(self.tracking_var.get()),
             "marker_only": bool(self.marker_only_var.get()),
             "mirror": bool(self.mirror_var.get()),
@@ -1161,8 +1193,8 @@ class HolisticGuiApp(SettingsBridge):
         return 'saved'
 
     def set_mode(self, mode_key):
-        if self.rps_session is not None:
-            self.status_var.set("가위바위보 게임을 닫으면 모드를 변경할 수 있습니다.")
+        if self.rps_session is not None or getattr(self, 'cham_session', None) is not None:
+            self.status_var.set("게임을 닫으면 모드를 변경할 수 있습니다.")
             return
         if self.active_mode == mode_key:
             self.active_mode = None
@@ -1310,6 +1342,8 @@ class HolisticGuiApp(SettingsBridge):
                 "hands": dict(self.mode_result.get("result") or {}),
             }
         self.apply_emotion_overlay(annotated)
+        if self.cham_session is not None:
+            self.cham_sample = self.build_cham_sample(frame_record, frame.captured_at)
         self.send_recognition_state()
         self.render_frame(annotated)
 
@@ -1450,6 +1484,7 @@ class HolisticGuiApp(SettingsBridge):
             },
             "mode": self.mode_result,
             "rps_game": self.rps_sample,
+            "cham_game": getattr(self, 'cham_sample', None),
             "speech": {
                 "latest_text": self.latest_speech_text,
                 "sequence": self.speech_sequence,
@@ -1698,6 +1733,19 @@ class HolisticGuiApp(SettingsBridge):
             2,
             cv2.LINE_AA,
         )
+
+    def build_cham_sample(self, frame_record, captured_at):
+        upper = frame_record["upper_body_landmarks"]
+        visible = (bool(frame_record["face_landmarks"])
+                   and all(upper.get(name) is not None and
+                           upper[name].get("visibility", 0) >= 0.5
+                           for name in ("NOSE", "LEFT_EYE", "RIGHT_EYE")))
+        direction = self.detect_face_direction(upper) if visible else "NONE"
+        # The game always uses mirror coordinates, matching physical user movement.
+        if not self.mirror_var.get():
+            direction = {"LEFT": "RIGHT", "RIGHT": "LEFT"}.get(direction, direction)
+        return {"session": self.cham_session, "captured_at": captured_at,
+                "direction": direction}
 
     def apply_air_overlay(self, frame_bgr, frame_record):
         self.update_air_paths(frame_record)

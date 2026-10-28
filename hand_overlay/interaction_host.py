@@ -77,6 +77,7 @@ class CharacterHandActions:
                 and QApplication.activePopupWidget() is None
                 and QApplication.activeModalWidget() is None
                 and not (getattr(c, 'rps_game', None) and c.rps_game.isVisible())
+                and not (getattr(c, 'cham_game', None) and c.cham_game.is_active)
                 and (not c.is_dragging or self.mode in ('grab', 'palm')))
 
     def body_rect(self):
