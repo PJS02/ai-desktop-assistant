@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from app.camera_stream import LatestCameraStream
 from app.device_settings import (
     load_device_settings,
     merge_camera_candidates,
@@ -27,6 +28,7 @@ from app.project_version import __version__
 from app.settings_bridge import SettingsBridge
 from bridge.interaction_event_client import InteractionEventClient
 from recognition import holistic_tracker as core
+from recognition.desktop_hands import DesktopHandTracker
 from recognition.emotion_recognizer import EmotionRecognizer
 from recognition.emotieff_recognizer import EmotiEffNetB2Recognizer
 from recognition.stt_engine import (
@@ -111,13 +113,11 @@ class HolisticGuiApp(SettingsBridge):
         )
 
         self.cap = None
+        self.camera_stream = None
+        self.desktop_hands = None
+        self.camera_sequence = 0
         self.capture_fps = 30.0
-        self.pending_frame = None
-        self.pending_frame_captured_at = None
         self.hand_overlay_enabled = False
-        self.hand_overlay_session = uuid.uuid4().hex
-        self.hand_overlay_sequence = 0
-        self.hand_overlay_image_size = (1280, 720)
         self.current_photo = None
         self.frame_index = 0
         self.camera_candidates = []
@@ -204,6 +204,7 @@ class HolisticGuiApp(SettingsBridge):
         self.mirror_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "mirror", False)
         )
+        self.mirror_var.trace_add('write', lambda *_: self.sync_desktop_hands())
         self.info_overlay_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "info_overlay", True)
         )
@@ -827,7 +828,10 @@ class HolisticGuiApp(SettingsBridge):
         # 새로고침 동안만 해제하고 검색 후 같은 선택으로 자동 재시작한다.
         self.restart_camera_after_discovery = self.cap is not None
         if self.restart_camera_after_discovery:
-            self.release_camera()
+            if not self.release_camera():
+                self.status_var.set('이전 카메라가 종료 중입니다. 잠시 후 다시 검색하세요.')
+                self.restart_camera_after_discovery = False
+                return
         self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
         self.camera_discovery_thread = threading.Thread(
             target=self.discover_all_cameras,
@@ -1051,7 +1055,9 @@ class HolisticGuiApp(SettingsBridge):
         log_event('device.camera.starting', '선택한 카메라 열기', category='사용자 인식', requested=selected_label, selected=selected_candidate,
                   reason='label_match' if selected_label == f"index {selected_candidate['index']} / {selected_candidate['backend_label']}" else 'first_available',
                   requested_width=self.capture_settings.camera_width, requested_height=self.capture_settings.camera_height)
-        self.release_camera()
+        if not self.release_camera():
+            self.status_var.set('이전 카메라가 종료 중입니다. 잠시 후 다시 시작하세요.')
+            return
         result = core.try_open_webcam(
             selected_candidate["index"],
             selected_candidate["backend"],
@@ -1067,11 +1073,6 @@ class HolisticGuiApp(SettingsBridge):
 
         self.cap = result["cap"]
         self.active_camera_candidate = dict(selected_candidate)
-        self.pending_frame = result["frame"]
-        self.pending_frame_captured_at = time.time()
-        self.hand_overlay_session = uuid.uuid4().hex
-        self.hand_overlay_sequence = 0
-        self.hand_overlay_image_size = (self.pending_frame.shape[1], self.pending_frame.shape[0])
         self.capture_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         if self.capture_fps <= 0:
             self.capture_fps = 30.0
@@ -1084,6 +1085,14 @@ class HolisticGuiApp(SettingsBridge):
         self.status_var.set("\uce74\uba54\ub77c \uc2e4\ud589 \uc911")
         log_event('device.camera.started', '카메라 캡처 시작', category='사용자 인식', requested=selected_label, selected=selected_candidate, requested_width=self.capture_settings.camera_width, requested_height=self.capture_settings.camera_height, fps=self.capture_fps, actual_width=self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), actual_height=self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.save_camera_device_settings(selected_candidate)
+        # The stream now owns capture.read/release. Both consumers see only its
+        # newest image; slow Holistic/emotion inference cannot block desktop hands.
+        self.camera_sequence = 0
+        self.camera_stream = LatestCameraStream(self.cap, result['frame'])
+        self.desktop_hands = DesktopHandTracker(self.camera_stream, self.event_client.send_hand_frame)
+        self.sync_desktop_hands()
+        self.camera_stream.start()
+        self.desktop_hands.start()
 
     def save_camera_device_settings(self, candidate):
         self.device_settings["camera"] = {
@@ -1196,82 +1205,59 @@ class HolisticGuiApp(SettingsBridge):
         self.away_frame_count = 0
 
     def release_camera(self):
+        tracker = getattr(self, 'desktop_hands', None)
+        stream = getattr(self, 'camera_stream', None)
+        if tracker is not None:
+            tracker.stop()
+        if stream is not None:
+            stream.stop()
+        if tracker is not None:
+            if not tracker.join():
+                log_event('hand_overlay.tracking.stopping', '손 추적 종료 대기 중',
+                          category='사용자 인식')
+                return False
+            self.desktop_hands = None
+        if stream is not None:
+            if not stream.join():
+                log_event('device.camera.stopping', '카메라 읽기 종료 대기 중',
+                          category='사용자 인식')
+                return False
+            self.camera_stream = None
         if self.cap is not None:
-            self.cap.release()
+            if stream is None:
+                self.cap.release()
             self.cap = None
             log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
-        self.pending_frame = None
-        self.pending_frame_captured_at = None
-        if getattr(self, 'hand_overlay_enabled', False):
-            self.send_hand_overlay_clear()
+        return True
 
     def set_hand_overlay_enabled(self, enabled):
-        if enabled == getattr(self, 'hand_overlay_enabled', False):
-            return
-        if enabled:
-            # A new subscription cannot inherit pending poses from an older one.
-            self.hand_overlay_session = uuid.uuid4().hex
-            self.hand_overlay_sequence = 0
-            self.hand_overlay_enabled = True
-            if self.cap is None:
-                self.send_hand_overlay_clear()
-        else:
-            self.send_hand_overlay_clear()
-            self.hand_overlay_enabled = False
+        self.hand_overlay_enabled = bool(enabled)
+        self.sync_desktop_hands()
 
-    def _publish_hand_overlay(self, hands, captured_at, width, height, clear=False):
-        self.hand_overlay_sequence += 1
-        packet = {
-            'type': 'hand_landmarks', 'version': 1,
-            'session_id': self.hand_overlay_session,
-            'sequence': self.hand_overlay_sequence,
-            'captured_at': captured_at,
-            'image_size': {'width': width, 'height': height},
-            'mirror': bool(self.mirror_var.get()),
-            'hands': hands,
-        }
-        if clear:
-            packet['clear'] = True
-        self.event_client.send_hand_frame(packet)
-
-    def send_hand_overlay_clear(self):
-        width, height = self.hand_overlay_image_size
-        self._publish_hand_overlay([], time.time(), width, height, clear=True)
-
-    def send_hand_landmarks(self, results, width, height, captured_at):
-        if not getattr(self, 'hand_overlay_enabled', False):
-            return
-        self.hand_overlay_image_size = (width, height)
-        hands = []
-        for label, landmarks in (('Left', results.left_hand_landmarks),
-                                 ('Right', results.right_hand_landmarks)):
-            if landmarks is not None:
-                hands.append({'label': label,
-                              'points': [[p.x, p.y, p.z] for p in landmarks.landmark]})
-        self._publish_hand_overlay(hands, captured_at, width, height)
+    def sync_desktop_hands(self):
+        tracker = getattr(self, 'desktop_hands', None)
+        if tracker is not None:
+            tracker.configure(self.hand_overlay_enabled, bool(self.mirror_var.get()))
 
     def update_frame(self):
         if self.cap is None:
             self.root.after(30, self.update_frame)
             return
 
-        if self.pending_frame is not None:
-            has_frame = True
-            frame_bgr = self.pending_frame
-            self.pending_frame = None
-            captured_at = self.pending_frame_captured_at or time.time()
-            self.pending_frame_captured_at = None
-        else:
-            has_frame, frame_bgr = self.cap.read()
-            captured_at = time.time()
-
-        if not has_frame or frame_bgr is None:
+        if self.camera_stream.error:
             log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
             self.status_var.set("\ud504\ub808\uc784\uc744 \uc77d\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
             self.release_camera()
             self.root.after(30, self.update_frame)
             return
 
+        frame = self.camera_stream.latest(self.camera_sequence)
+        if frame is None:
+            self.root.after(5, self.update_frame)
+            return
+        self.camera_sequence = frame.sequence
+        # Annotation must never modify the image the hand worker is reading.
+        frame_bgr = frame.image.copy()
         if self.mirror_var.get():
             frame_bgr = cv2.flip(frame_bgr, 1)
 
@@ -1281,7 +1267,6 @@ class HolisticGuiApp(SettingsBridge):
         frame_rgb.flags.writeable = True
 
         height, width = frame_bgr.shape[:2]
-        self.send_hand_landmarks(results, width, height, captured_at)
         timestamp_ms = int((self.frame_index / self.capture_fps) * 1000)
         tracking_enabled = self.tracking_var.get()
         rps_enabled = self.active_mode == "rps"
@@ -2233,9 +2218,9 @@ class HolisticGuiApp(SettingsBridge):
             return
         self.is_shutting_down = True
         log_event('recognition.shutdown.started', '사용자 인식 종료 시작', category='사용자 인식')
-        self.event_client.stop()
         self.stt.stop()
         self.release_camera()
+        self.event_client.stop()
         self.holistic.close()
         self.root.destroy()
         log_event('recognition.shutdown.completed', '사용자 인식 종료 완료', category='사용자 인식')
