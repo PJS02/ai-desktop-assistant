@@ -1,11 +1,14 @@
 """One settings entry point; remote controls use acknowledged process messages."""
 from copy import deepcopy
+import base64
+import binascii
 from app_logging import log_event
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QLineEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .personality_system import PersonalitySystem
@@ -25,6 +28,8 @@ class SettingsDialog(QDialog):
     refresh_requested = pyqtSignal(bool)
     character_command_requested = pyqtSignal(str)
     display_emotion_requested = pyqtSignal(str)
+    preview_requested = pyqtSignal(bool)
+    device_requested = pyqtSignal(str)
 
     def __init__(self, local, parent=None, model_manager=None):
         super().__init__(parent)
@@ -52,6 +57,8 @@ class SettingsDialog(QDialog):
         self._recognition_page(local)
         self._ai_page(local)
         self._manual_page()
+        self._preview_active = False
+        self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
         self.status.setWordWrap(True)
         self.status.setMinimumHeight(40)
@@ -424,6 +431,77 @@ class SettingsDialog(QDialog):
         self.fields_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.remote_form.addRow(self.remote_fields)
         self.remote_fields.setEnabled(False)
+        self.preview_button = QPushButton('카메라 미리보기')
+        self.preview_button.setCheckable(True)
+        self.preview_button.toggled.connect(self._sync_preview)
+        self.remote_form.insertRow(0, self.preview_button)
+        self.preview_label = QLabel('미리보기를 켜면 카메라 영상과 인식 결과가 표시됩니다.')
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setMinimumHeight(180)
+        self.preview_label.setMaximumHeight(240)
+        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.preview_label.setStyleSheet('background: #15202c; color: #dce5f0; border-radius: 6px;')
+        self.remote_form.insertRow(1, self.preview_label)
+        self.preview_status = QLabel('')
+        self.preview_status.setWordWrap(True)
+        self.remote_form.insertRow(2, self.preview_status)
+        self.device_buttons = {}
+        device_row = QHBoxLayout()
+        for operation, label in [('camera_start', '카메라 시작'), ('camera_stop', '카메라 중지'),
+                                 ('stt_start', '음성 인식 시작'), ('stt_stop', '음성 인식 중지')]:
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, op=operation: self.device_requested.emit(op))
+            device_row.addWidget(button)
+            self.device_buttons[operation] = button
+        self.remote_form.insertRow(3, device_row)
+        for button in self.device_buttons.values():
+            button.setEnabled(False)
+
+    def _sync_preview(self, *_args):
+        if not hasattr(self, '_preview_active'):
+            return
+        enabled = (self.isVisible() and not self.isMinimized() and self.tabs.currentIndex() == 2
+                   and self.preview_button.isChecked())
+        if enabled != self._preview_active:
+            self._preview_active = enabled
+            self.preview_requested.emit(enabled)
+            if not enabled:
+                self.preview_label.clear()
+                self.preview_label.setText('미리보기가 꺼져 있습니다. 카메라 인식은 계속됩니다.')
+                self.preview_status.clear()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_preview()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_preview()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_preview()
+
+    def show_preview_packet(self, packet):
+        if not self._preview_active:
+            return
+        try:
+            encoded = packet['jpeg']
+            if not isinstance(encoded, str) or len(encoded) > 270_000:
+                return
+            image = QImage.fromData(base64.b64decode(encoded, validate=True), 'JPEG')
+        except (ValueError, KeyError, TypeError, binascii.Error):
+            return
+        if image.isNull() or image.width() > 1280 or image.height() > 1280:
+            return
+        self.preview_label.setPixmap(QPixmap.fromImage(image).scaled(
+            max(1, self.preview_label.width()), max(1, self.preview_label.height()),
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        state = packet.get('state') or {}
+        emotion = (state.get('emotion') or {}).get('label') or '인식 대기'
+        self.preview_status.setText(f"{state.get('result', '')}\n감정: {emotion}\n음성: {state.get('speech', '')}")
 
     def _hand_overlay_fields(self, local):
         options = normalize_hand_overlay_options(local.get('hand_overlay'))
@@ -490,16 +568,31 @@ class SettingsDialog(QDialog):
         self.controls = {}
         choices = state['choices']
         labels = {'camera': '카메라', 'microphone': '마이크',
-                  'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
+                  'mode': '인식 도구', 'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
                   'language': '인식 언어', 'silence': '발화 종료 대기', 'sensitivity': '마이크 민감도'}
         for key, label in labels.items():
+            if key not in choices:
+                continue
             combo = self._combo([(item['label'], item['value']) for item in choices[key]], state['values'].get(key))
             if not combo.count():
                 combo.addItem('사용 가능한 장치 없음', None)
                 combo.setEnabled(False)
             self.controls[key] = combo
             self.fields_form.addRow(label, combo)
+            if key == 'mode':
+                combo.setEnabled(not state.get('game_active', False))
+        for key, label in [('tracking', '추적 지점 표시'), ('marker_only', '검은 배경에 추적 지점 표시'),
+                           ('mirror', '좌우 반전'), ('info_overlay', '영상에 상태 표시'),
+                           ('emotion', '영상에 감정 결과 표시'), ('always_recognition', '영상에 동작 결과 표시')]:
+            if key not in state['values']:
+                continue
+            check = QCheckBox(label)
+            check.setChecked(bool(state['values'].get(key)))
+            self.controls[key] = check
+            self.fields_form.addRow(check)
         for key, value in draft.items():
+            if key not in self.controls:
+                continue
             control = self.controls[key]
             if isinstance(control, QCheckBox):
                 control.setChecked(value)
@@ -509,11 +602,22 @@ class SettingsDialog(QDialog):
                     control.setCurrentIndex(index)
         self.remote_fields.setEnabled(True)
         self.remote_status.setText(state.get('status', '현재 설정을 불러왔습니다.'))
+        if not state.get('camera_running', False) and self._preview_active:
+            self.preview_label.clear()
+            self.preview_label.setText('카메라가 중지되어 있습니다. 카메라 시작을 눌러 주세요.')
+        for operation, button in self.device_buttons.items():
+            running = state.get('camera_running', False) if operation.startswith('camera_') else state.get('stt_running', False)
+            button.setEnabled(bool(running) != operation.endswith('_start'))
 
     def remote_unavailable(self, message):
         self.remote_status.setText(message)
         self.remote_fields.setEnabled(False)
         self.remote_baseline = None
+        self.preview_label.clear()
+        self.preview_label.setText('인식 작업에 연결하지 못했습니다. 장치 새로고침으로 다시 연결하세요.')
+        self.preview_status.clear()
+        for button in self.device_buttons.values():
+            button.setEnabled(False)
 
     def _ai_page(self, local):
         _, _, form = self._page('AI', 'Gemini API 키와 모델을 설정하세요. 저장하면 이후 대화와 자동 대사 요청부터 적용됩니다.')

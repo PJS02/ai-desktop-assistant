@@ -1,4 +1,4 @@
-"""Settings commands run on the existing Tk loop, never the stdin thread."""
+"""Settings commands run on the recognition scheduler, never the stdin thread."""
 import json
 import time
 from copy import deepcopy
@@ -89,6 +89,8 @@ class SettingsBridge:
                 if getattr(self, 'settings_apply_pending', False):
                     raise ValueError('이전 설정을 적용하는 중입니다. 잠시 후 다시 시도하세요.')
                 self.apply_unified_settings(request.get('request_id'), request.get('values'))
+            elif action == 'device':
+                self.control_device(request.get('operation'))
             else:
                 raise ValueError('지원하지 않는 설정 요청입니다.')
         except (ValueError, OSError, RuntimeError) as exc:
@@ -96,6 +98,20 @@ class SettingsBridge:
             log_event('settings.recognition.failed', '인식 설정 요청 실패', category='오류', level='ERROR',
                       trace_id=request_id, error=str(exc))
             self.settings_result(request_id, False, f'사용자 인식 설정을 모두 적용하지 못했습니다: {exc}')
+
+    def control_device(self, operation):
+        operations = {'camera_start': self.start_selected_camera, 'camera_stop': self.release_camera,
+                      'stt_start': lambda: self.start_stt(show_error=False), 'stt_stop': self.stop_stt}
+        if operation not in operations:
+            raise ValueError('지원하지 않는 장치 명령입니다.')
+        if (getattr(self, 'settings_apply_pending', False)
+                or self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive()):
+            raise RuntimeError('장치 설정이나 검색이 끝난 뒤 다시 시도하세요.')
+        operations[operation]()
+        running = self.cap is not None if operation.startswith('camera_') else self.stt.is_running
+        ok = bool(running) == operation.endswith('_start')
+        self.emit_settings({'kind': 'device_result', 'ok': ok, 'state': self.settings_state(),
+                            'message': '장치 명령을 적용했습니다.' if ok else '장치 상태와 로그를 확인하세요.'})
 
     def apply_unified_settings(self, request_id, patch):
         self._settings_request_id = request_id or new_trace_id('settings')
@@ -198,7 +214,7 @@ class SettingsBridge:
                       category='사용자 인식', trace_id=request_id)
             self.stop_stt()
             deadline = time.monotonic() + 20
-            self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline))
+            self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline))
         else:
             self.settings_result(request_id, True, '설정을 저장하고 적용했습니다. 중지된 장치는 다음 시작부터 새 설정을 사용합니다.')
 
@@ -208,20 +224,20 @@ class SettingsBridge:
         if time.monotonic() > deadline:
             log_event('settings.recognition.stt_timeout', '설정 저장 후 음성 재시작 확인 시간 초과',
                       category='오류', level='WARNING', trace_id=request_id, saved=True, runtime_status='unknown')
-            self.settings_result(request_id, False, '설정은 저장했지만 음성 인식 재시작을 확인하지 못했습니다. 인식 콘솔에서 상태를 확인하세요.', runtime_status='unknown')
+            self.settings_result(request_id, False, '설정은 저장했지만 음성 인식 재시작을 확인하지 못했습니다. 설정과 로그창에서 상태를 확인하세요.', runtime_status='unknown')
             return
         if not started:
             if self.stt.is_running:
-                self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline))
+                self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline))
                 return
             self.start_stt(show_error=False)
             if not self.stt.is_running:
                 self.settings_result(request_id, False, '설정은 저장했지만 음성 인식을 시작하지 못했습니다. 마이크 상태를 확인하세요.')
                 return
-            self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))
+            self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))
         elif self.stt.is_running and self.stt.stream is not None:
             self.settings_result(request_id, True, '설정을 저장하고 적용했습니다. 음성 인식도 새 설정으로 다시 시작했습니다.')
         elif not self.stt.is_running:
-            self.settings_result(request_id, False, '설정은 저장했지만 마이크를 열지 못했습니다. 인식 콘솔에서 상태를 확인하세요.')
+            self.settings_result(request_id, False, '설정은 저장했지만 마이크를 열지 못했습니다. 설정과 로그창에서 상태를 확인하세요.')
         else:
-            self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))
+            self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))

@@ -21,7 +21,12 @@ class SettingsController(QObject):
         self.applied_local = {}
         self.operation_id = None
         self._operations = {}
+        self._preview_active = False
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setInterval(100)
+        self.preview_timer.timeout.connect(self._poll_preview)
         manager.settings_message.connect(self.handle_message)
+        manager.process_started.connect(self._restore_preview)
         self.load_timeout = QTimer(self)
         self.load_timeout.setSingleShot(True)
         self.load_timeout.timeout.connect(self.connection_timeout)
@@ -52,6 +57,9 @@ class SettingsController(QObject):
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character)
+        self.dialog.preview_requested.connect(self._set_preview)
+        self.dialog.device_requested.connect(self._device_command)
+        self.dialog.finished.connect(lambda _result: self._set_preview(False))
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.apply_timeout.connect(self._apply_timed_out)
         self.dialog.refresh_requested.connect(self.refresh)
@@ -67,6 +75,33 @@ class SettingsController(QObject):
             self.dialog.model.setEnabled(False)
         self.dialog.show()
         self.refresh(False)
+
+    def show_recognition(self):
+        self.show()
+        self.dialog.tabs.setCurrentIndex(2)
+        self.dialog.preview_button.setChecked(True)
+        return True
+
+    def _set_preview(self, enabled):
+        self._preview_active = bool(enabled)
+        if enabled:
+            self.preview_timer.start()
+        else:
+            self.preview_timer.stop()
+        self.manager.set_preview_enabled(enabled)
+
+    def _restore_preview(self):
+        if self._preview_active:
+            self.manager.set_preview_enabled(True)
+
+    def _poll_preview(self):
+        packet = self.manager.take_preview()
+        if packet is not None and self.dialog is not None:
+            self.dialog.show_preview_packet(packet)
+
+    def _device_command(self, operation):
+        if not self.dialog.pending:
+            self.manager.device_command(operation)
 
     def refresh(self, devices=False):
         if self.dialog.pending:
@@ -179,12 +214,16 @@ class SettingsController(QObject):
                       level='WARNING', trace_id=self.request_id)
         if self.dialog is None:
             return
+        if message.get('kind') == 'device_result':
+            self.dialog.set_remote(message['state'], preserve_draft=True)
+            self.dialog.status.setText(message['message'])
+            return
         if message.get('kind') == 'unavailable':
             self.load_timeout.stop()
             self.request_id = None
             self.connection_timeout()
             if self.dialog.pending:
-                self.dialog.complete('인식 기능이 종료되어 적용 결과를 확인하지 못했습니다. 인식 콘솔과 로그창을 확인하세요.', False, local=self.applied_local)
+                self.dialog.complete('인식 기능이 종료되어 적용 결과를 확인하지 못했습니다. 설정과 로그창을 확인하세요.', False, local=self.applied_local)
         elif message.get('kind') == 'state':
             self.load_timeout.stop()
             self.dialog.refresh_button.setEnabled(True)

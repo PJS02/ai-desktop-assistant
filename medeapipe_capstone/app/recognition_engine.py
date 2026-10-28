@@ -1,0 +1,1972 @@
+from collections import deque
+import json
+import math
+from pathlib import Path
+import queue
+import threading
+import time
+import uuid
+from types import SimpleNamespace
+from app_logging import log_event, log_throttled, new_trace_id
+
+import cv2
+import numpy as np
+import torch
+
+from app.camera_stream import LatestCameraStream
+from app.recognition_performance import RecognitionPerformance
+from app.recognition_profile import holistic_configuration
+from app.device_settings import (
+    load_device_settings,
+    merge_camera_candidates,
+    microphone_name,
+    save_device_settings,
+    select_saved_camera,
+    select_saved_microphone,
+)
+from app.project_version import __version__
+from app.settings_bridge import SettingsBridge
+from bridge.interaction_event_client import InteractionEventClient
+from recognition import holistic_tracker as core
+from recognition.desktop_hands import DesktopHandTracker
+from recognition.emotion_recognizer import EmotionRecognizer
+from recognition.emotieff_recognizer import EmotiEffNetB2Recognizer
+from recognition.stt_engine import (
+    LANGUAGE_OPTIONS,
+    PROVIDER_OPTIONS,
+    SENSITIVITY_OPTIONS,
+    SILENCE_OPTIONS,
+    RealtimeSTT,
+)
+
+
+from app.worker_loop import StateValue
+from app.preview_stream import PreviewPublisher
+DISPLAY_WIDTH = 960
+DISPLAY_HEIGHT = 540
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EMOTION_MODEL_PATH = PROJECT_ROOT / "models" / "epoch72_best_acc_0.8664.pth"
+EMOTIEFF_MODEL_PATH = PROJECT_ROOT / "models" / "enet_b2_8.pt"
+EMOTION_MODEL_OPTIONS = {
+    "EmotiEffNet B2": "emotieff_b2",
+    "MobileNetV3 (기존)": "mobilenet_v3",
+}
+EMOTION_INFERENCE_INTERVAL_MS = 150
+EMOTION_CPU_THREADS = 2
+EMOTION_NEUTRAL_CONFIDENCE_THRESHOLD = 0.50
+EMOTION_NEUTRAL_MARGIN_THRESHOLD = 0.15
+AIR_DRAWING_COLORS = {
+    "left": (0, 0, 255),
+    "right": (255, 0, 0),
+}
+
+
+LABEL_CAMERA = "\uce74\uba54\ub77c"
+LABEL_REFRESH = "\uce74\uba54\ub77c \uc0c8\ub85c\uace0\uce68"
+LABEL_START = "\uc2dc\uc791"
+LABEL_MODE = "\ubaa8\ub4dc"
+LABEL_RPS = "\uac00\uc704\ubc14\uc704\ubcf4"
+LABEL_CHAM = "\ucc38\ucc38\ucc38"
+LABEL_AIR = "\uc5d0\uc5b4\ub4dc\ub85c\uc789"
+LABEL_WAVE = "\uc190 \ud754\ub4e4\uae30"
+LABEL_HAND_GESTURE = "\uc5c4\uc9c0\ucc99/\ud558\ud2b8/OK"
+LABEL_HEAD_GESTURE = "\uace0\uac1c \ub044\ub355/\uc813\uae30"
+LABEL_ATTENTION = "\uc751\uc2dc/\uc790\ub9ac\ube44\uc6c0"
+LABEL_TOGGLES = "\ud1a0\uae00"
+LABEL_TRACKING = "\ud2b8\ub798\ud0b9 \ud45c\uc2dc"
+LABEL_MARKER_ONLY = "\uac80\uc740\ud654\uba74 \ub9c8\ucee4\ub9cc"
+LABEL_MIRROR = "\uc88c\uc6b0 \ubc18\uc804"
+LABEL_INFO_OVERLAY = "\uc88c\uce21 \uc0c1\ub2e8 \uc815\ubcf4"
+LABEL_EMOTION = "\uac10\uc815 \uc778\uc2dd"
+LABEL_STATUS = "\uc0c1\ud0dc"
+LABEL_ALWAYS_RECOGNITION = "\uc0c1\uc2dc \uc778\uc2dd"
+LABEL_STT = "STT"
+LABEL_MIC = "\ub9c8\uc774\ud06c"
+LABEL_STT_REFRESH = "\ub9c8\uc774\ud06c \uc0c8\ub85c\uace0\uce68"
+LABEL_STT_START = "STT \uc2dc\uc791"
+LABEL_STT_STOP = "STT \uc911\uc9c0"
+LABEL_STT_SAVE = "STT \uc800\uc7a5"
+LABEL_STT_CLEAR = "STT \uc9c0\uc6b0\uae30"
+LABEL_STT_RESULT = "STT Result"
+
+MODE_LABELS = {
+    "rps": LABEL_RPS,
+    "cham": LABEL_CHAM,
+    "air": LABEL_AIR,
+}
+
+
+class RecognitionEngine(SettingsBridge):
+    def __init__(self, scheduler, background_mode=False, command_stream=None):
+        self.scheduler = scheduler
+        self.background_mode = background_mode
+        self.command_stream = command_stream
+        self.control_commands = queue.Queue()
+        self.control_thread = None
+        self.is_shutting_down = False
+        self.device_settings = load_device_settings()
+
+        self.capture_settings = SimpleNamespace(
+            camera_backend="auto",
+            camera_width=1280,
+            camera_height=720,
+        )
+
+        self.cap = None
+        self.camera_stream = None
+        self.desktop_hands = None
+        self.camera_sequence = 0
+        self.capture_fps = 30.0
+        self.hand_overlay_enabled = False
+        self.current_photo = None
+        self.frame_index = 0
+        self.camera_candidates = []
+        self.active_camera_candidate = None
+        self.camera_discovery_queue = queue.Queue()
+        self.camera_discovery_thread = None
+        self.restart_camera_after_discovery = False
+        self.rps_session = None
+        self.rps_previous_mode = None
+        self.rps_sample = None
+        self.cham_session = None
+        self.cham_previous_mode = None
+        self.cham_sample = None
+        saved_recognition = self.device_settings.get("recognition", {})
+        saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
+        saved_mode = saved_recognition.get("mode", "rps")
+        self.active_mode = saved_mode if saved_mode in (*MODE_LABELS, None) else "rps"
+        self.air_paths = {"left": [], "right": []}
+        self.air_max_points = 180
+        self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
+        self.wave_started_at = None
+        self._wave_active = False
+        self.head_history = deque(maxlen=36)
+        self.away_frame_count = 0
+        self.emotion_result = None
+        self.last_emotion_inference_ms = -EMOTION_INFERENCE_INTERVAL_MS
+        self.always_results = {}
+        self.mode_result = {"active": None, "result": None}
+        self.latest_speech_text = ""
+        self.speech_sequence = 0
+        self.speech_recognized_at = None
+        self.speech_session = uuid.uuid4().hex
+        self.latest_speech_trace_id = None
+        self.last_sent_interaction_events = {}
+
+        self.camera_var = self.make_value('')
+        self.source_var = self.make_value("\uce74\uba54\ub77c\ub97c \uc120\ud0dd\ud55c \ub4a4 \uc2dc\uc791\ud558\uc138\uc694."
+        )
+        self.mode_var = self.make_value((
+                "\ud604\uc7ac \ubaa8\ub4dc: " + MODE_LABELS[self.active_mode]
+                if self.active_mode in MODE_LABELS
+                else "\ud604\uc7ac \ubaa8\ub4dc: \uc5c6\uc74c"
+            )
+        )
+        self.result_var = self.make_value((
+                "\uc778\uc2dd \uacb0\uacfc \ub300\uae30 \uc911"
+                if self.active_mode in MODE_LABELS
+                else "\ubaa8\ub4dc \uaebc\uc9d0"
+            )
+        )
+        self.status_var = self.make_value("\ub300\uae30 \uc911"
+        )
+        self.always_wave_status_var = self.make_value(f"{LABEL_WAVE}: -")
+        self.always_gesture_status_var = self.make_value(f"{LABEL_HAND_GESTURE}: -")
+        self.always_head_status_var = self.make_value(f"{LABEL_HEAD_GESTURE}: -")
+        self.always_attention_status_var = self.make_value(f"{LABEL_ATTENTION}: -")
+        self.stt_status_var = self.make_value("STT \ub300\uae30 \uc911")
+        self.stt_mic_var = self.make_value('')
+        saved_stt = self.device_settings.get("stt", {})
+        saved_stt = saved_stt if isinstance(saved_stt, dict) else {}
+        self.stt_provider_var = self.make_value(self.saved_option(saved_stt, "provider", PROVIDER_OPTIONS, "google")
+        )
+        self.stt_silence_var = self.make_value(self.saved_option(saved_stt, "silence", SILENCE_OPTIONS, "0.8 sec")
+        )
+        self.stt_sensitivity_var = self.make_value(self.saved_option(saved_stt, "sensitivity", SENSITIVITY_OPTIONS, "medium")
+        )
+        self.stt_language_var = self.make_value(self.saved_option(saved_stt, "language", LANGUAGE_OPTIONS, "ko-KR")
+        )
+        self.stt_timestamps_var = self.make_value(bool(saved_stt.get("timestamps", True))
+        )
+
+        self.tracking_var = self.make_value(self.saved_bool(saved_recognition, "tracking", True)
+        )
+        self.marker_only_var = self.make_value(self.saved_bool(saved_recognition, "marker_only", False)
+        )
+        self.mirror_var = self.make_value(self.saved_bool(saved_recognition, "mirror", False)
+        )
+        self.mirror_var.trace_add('write', lambda *_: self.sync_desktop_hands())
+        self.info_overlay_var = self.make_value(self.saved_bool(saved_recognition, "info_overlay", True)
+        )
+        self.emotion_var = self.make_value(self.saved_bool(saved_recognition, "emotion", background_mode)
+        )
+        saved_emotion_model = saved_recognition.get("emotion_model", "emotieff_b2")
+        self.emotion_model_var = self.make_value(next(
+            (label for label, key in EMOTION_MODEL_OPTIONS.items() if key == saved_emotion_model),
+            next(iter(EMOTION_MODEL_OPTIONS)),
+        ))
+        self.always_recognition_var = self.make_value(self.saved_bool(saved_recognition, "always_recognition", True)
+        )
+        self.stt = RealtimeSTT()
+        self.stt.speech_session = self.speech_session
+
+        # OpenCV's default pool competes with both MediaPipe graphs and PyTorch.
+        # Single-threaded image conversion avoids waking a pool for every frame.
+        cv2.setNumThreads(1)
+        holistic_options = holistic_configuration()
+        self.holistic = core.mp_holistic.Holistic(**holistic_options)
+        # Bound the lightweight trial to 10 FPS so cheaper inference buys CPU
+        # headroom instead of immediately running twice as often. The separate
+        # desktop hand worker continues consuming fresh camera frames normally.
+        self.recognition_interval_ms = 100 if holistic_options['model_complexity'] == 1 else 0
+        log_event('recognition.tracker.configured', '통합 인식 모델 설정',
+                  category='사용자 인식', **holistic_options,
+                  max_fps=10 if self.recognition_interval_ms else None)
+        self.emotion_recognizer = None
+        # This process runs camera tracking alongside CPU emotion inference.
+        # Extra intra-op threads cost more CPU than they save in latency here.
+        torch.set_num_threads(min(EMOTION_CPU_THREADS, torch.get_num_threads()))
+        log_event('recognition.cpu.configured', '감정 추론 CPU 스레드 설정',
+                  category='사용자 인식', torch_threads=torch.get_num_threads(),
+                  opencv_threads=cv2.getNumThreads())
+        self.load_emotion_model()
+        self.event_client = InteractionEventClient()
+        self.event_client.start()
+
+        self.preview_enabled = False
+        self.preview_publisher = PreviewPublisher()
+        self.prepare_presentation()
+        self.prepare_camera_choices()
+        self.refresh_stt_microphones(show_error=False)
+        if self.background_mode:
+            self.start_control_reader()
+            self.scheduler.after(0, self.poll_control_commands)
+            self.scheduler.after(0, self.start_selected_camera)
+            self.scheduler.after(200, lambda: self.start_stt(show_error=False))
+        self.scheduler.after(0, self.update_frame)
+        self.scheduler.after(100, self.poll_stt_events)
+        if not self.background_mode:
+            self.scheduler.after(100, self.poll_control_commands)
+        self.scheduler.after(200, self.poll_camera_discovery)
+        self.emit_settings_state()
+
+    @staticmethod
+    def saved_option(settings, key, choices, default):
+        value = settings.get(key, default)
+        if value not in choices:
+            log_event('device.settings.option_default', '저장된 선택이 유효하지 않아 기본값 사용',
+                      category='시스템', field=key, saved=value, default=default)
+        return value if value in choices else default
+
+
+    @staticmethod
+    def saved_bool(settings, key, default):
+        value = settings.get(key, default)
+        if not isinstance(value, bool):
+            log_event('device.settings.option_default', '저장된 토글 형식 오류로 기본값 사용',
+                      category='시스템', field=key, saved=value, default=default)
+        return value if isinstance(value, bool) else default
+
+
+    def start_control_reader(self):
+        """부모 명령을 읽고 인식 스케줄러에 전달한다."""
+        if self.command_stream is None:
+            return
+        self.control_thread = threading.Thread(
+            target=self.read_control_commands,
+            name="recognition-control",
+            daemon=True,
+        )
+        self.control_thread.start()
+
+
+    def read_control_commands(self):
+        try:
+            for line in self.command_stream:
+                command = line.strip()
+                if command:
+                    self.control_commands.put(command)
+        except (OSError, ValueError) as exc:
+            log_event('recognition.control.failed', '인식 제어 명령 읽기 실패',
+                      category='오류', level='ERROR', error=str(exc))
+        finally:
+            log_event('recognition.control.closed', '부모 제어 스트림 종료', category='사용자 인식')
+            # 부모 프로세스가 비정상 종료되어 파이프가 닫히면 자식도 남지 않게 한다.
+            self.control_commands.put("shutdown")
+
+
+    def poll_control_commands(self):
+        if self.is_shutting_down:
+            return
+        while True:
+            try:
+                command = self.control_commands.get_nowait()
+            except queue.Empty:
+                break
+            log_event('recognition.control.received', '인식 제어 명령 수신', category='사용자 인식', command=command)
+            if command == "show":
+                self.show_console()
+            elif command == "hide":
+                self.hide_console()
+            elif command in ('preview 1', 'preview 0'):
+                self.set_preview_enabled(command.endswith('1'))
+            elif command.startswith("rps_begin "):
+                self.begin_rps_game(command.split(" ", 1)[1])
+            elif command.startswith("rps_end "):
+                self.end_rps_game(command.split(" ", 1)[1])
+            elif command.startswith("cham_begin "):
+                self.begin_cham_game(command.split(" ", 1)[1])
+            elif command.startswith("cham_end "):
+                self.end_cham_game(command.split(" ", 1)[1])
+            elif command.startswith('settings '):
+                self.handle_settings_command(command[len('settings '):])
+            elif command in ('tts_speaking 1', 'tts_speaking 0'):
+                self.stt.set_character_speaking(command.endswith('1'))
+            elif command in ('hand_overlay 1', 'hand_overlay 0'):
+                self.set_hand_overlay_enabled(command.endswith('1'))
+            elif command == "shutdown":
+                self.on_close()
+                return
+            else:
+                log_event('recognition.control.ignored', '지원하지 않는 인식 명령',
+                          category='오류', level='WARNING', command=command)
+        self.scheduler.after(100, self.poll_control_commands)
+
+
+    def begin_rps_game(self, session):
+        if getattr(self, 'cham_session', None):
+            self.end_cham_game(self.cham_session)
+        # 임시 게임 모드는 저장된 사용자 모드를 덮어쓰지 않는다.
+        if self.rps_session is None:
+            self.rps_previous_mode = self.active_mode
+        self.rps_session = session
+        self.rps_sample = None
+        self.active_mode = "rps"
+        self.update_mode_status()
+        log_event('recognition.game.started', '게임 인식 시작', category='사용자 인식',
+                  trace_id=session, mode='rps', previous_mode=self.rps_previous_mode)
+        if self.cap is None:
+            self.start_selected_camera()
+        print("[가위바위보] 게임 인식 시작")
+
+
+    def end_rps_game(self, session):
+        if session != self.rps_session:
+            log_event('recognition.game.ignored', '이전 게임 종료 명령 생략', category='사용자 인식',
+                      trace_id=session, active_session=self.rps_session)
+            return
+        self.active_mode = self.rps_previous_mode
+        self.rps_session = None
+        self.rps_sample = None
+        self.update_mode_status()
+        log_event('recognition.game.finished', '게임 인식 종료 및 모드 복원',
+                  category='사용자 인식', trace_id=session, restored_mode=self.active_mode)
+        print("[가위바위보] 이전 인식 모드 복원")
+
+
+    def begin_cham_game(self, session):
+        if self.rps_session:
+            self.end_rps_game(self.rps_session)
+        if self.cham_session is None:
+            self.cham_previous_mode = self.active_mode
+        self.cham_session, self.cham_sample = session, None
+        self.active_mode = "cham"
+        self.update_mode_status()
+        if self.cap is None:
+            self.start_selected_camera()
+        log_event('recognition.game.started', '참참참 인식 시작', category='사용자 인식',
+                  trace_id=session, mode='cham', previous_mode=self.cham_previous_mode)
+
+
+    def end_cham_game(self, session):
+        if session != self.cham_session:
+            return
+        self.active_mode = self.cham_previous_mode
+        self.cham_session, self.cham_sample = None, None
+        self.update_mode_status()
+        log_event('recognition.game.finished', '참참참 종료 및 모드 복원',
+                  category='사용자 인식', trace_id=session, restored_mode=self.active_mode)
+
+
+    def refresh_cameras(self, stop_after_first=False):
+        log_event('device.camera.discovery.started', '카메라 검색 시작', category='사용자 인식', stop_after_first=stop_after_first)
+        saved_camera = self.device_settings.get("camera", {})
+        saved_camera = saved_camera if isinstance(saved_camera, dict) else {}
+        self.camera_candidates = core.discover_webcams(
+            self.capture_settings,
+            stop_after_first=stop_after_first,
+            preferred_index=saved_camera.get("index"),
+            preferred_backend_label=saved_camera.get("backend_label"),
+        )
+        self.apply_camera_candidates(self.camera_candidates)
+        log_event('device.camera.discovery.completed', '카메라 검색 완료', category='사용자 인식', candidates=self.camera_candidates, count=len(self.camera_candidates))
+        print(f"[카메라 검색] 시작 전 전체 목록: {len(self.camera_candidates)}개")
+
+
+    def apply_camera_candidates(self, candidates, preserve_current=False):
+        saved_camera = self.device_settings.get("camera", {})
+        saved_camera = saved_camera if isinstance(saved_camera, dict) else {}
+        self.camera_candidates = list(candidates)
+        self.camera_choices_changed()
+
+        if not self.camera_candidates:
+            label = "\uc0ac\uc6a9 \uac00\ub2a5\ud55c \uc6f9\ucea0 \uc5c6\uc74c"
+            log_event('device.camera.discovery.empty', '사용 가능한 카메라 없음', category='사용자 인식', level='WARNING')
+            self.camera_var.set(label)
+            self.status_var.set("\uc6f9\ucea0\uc744 \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
+            return
+
+
+        current_label = self.camera_var.get()
+        available_labels = {
+            f"index {candidate['index']} / {candidate['backend_label']}"
+            for candidate in self.camera_candidates
+        }
+        if preserve_current and current_label in available_labels:
+            log_event('device.camera.selection', '현재 카메라 선택 유지', category='사용자 인식', reason='preserve_current', selected=current_label)
+            self.camera_var.set(current_label)
+            self.status_var.set(f"\uc6f9\ucea0 {len(self.camera_candidates)}\uac1c \uac10\uc9c0")
+            return
+
+        selected = select_saved_camera(self.camera_candidates, saved_camera)
+        selected_label = f"index {selected['index']} / {selected['backend_label']}"
+        self.camera_var.set(selected_label)
+        self.status_var.set(f"\uc6f9\ucea0 {len(self.camera_candidates)}\uac1c \uac10\uc9c0")
+
+
+    def start_full_camera_discovery(self):
+        if self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive():
+            self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
+            return
+        # Windows 카메라 백엔드는 실행 중인 장치를 다시 열지 못할 수 있으므로
+        log_event('device.camera.discovery.started', '카메라 전체 재검색 시작', category='사용자 인식', active_camera=getattr(self, 'active_camera_candidate', None), restarting=self.cap is not None)
+        # 새로고침 동안만 해제하고 검색 후 같은 선택으로 자동 재시작한다.
+        self.restart_camera_after_discovery = self.cap is not None
+        if self.restart_camera_after_discovery:
+            if not self.release_camera():
+                self.status_var.set('이전 카메라가 종료 중입니다. 잠시 후 다시 검색하세요.')
+                self.restart_camera_after_discovery = False
+                return
+        self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
+        self.camera_discovery_thread = threading.Thread(
+            target=self.discover_all_cameras,
+            name="camera-device-discovery",
+            daemon=True,
+        )
+        self.camera_discovery_thread.start()
+
+
+    def discover_all_cameras(self):
+        try:
+            candidates = core.discover_webcams(self.capture_settings)
+        except Exception as exc:
+            self.camera_discovery_queue.put(("error", str(exc)))
+            return
+        self.camera_discovery_queue.put(("result", candidates))
+
+
+    def poll_camera_discovery(self):
+        if self.is_shutting_down:
+            return
+        while True:
+            try:
+                kind, value = self.camera_discovery_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "error":
+                log_event('device.camera.discovery.failed', '카메라 검색 실패', category='오류', level='ERROR', error=value)
+                self.status_var.set(f"\uce74\uba54\ub77c \uac80\uc0c9 \uc2e4\ud328: {value}")
+                print(f"[카메라 검색 오류] {value}")
+                if self.restart_camera_after_discovery:
+                    self.restart_camera_after_discovery = False
+                    self.start_selected_camera()
+                if getattr(self, 'settings_refresh_pending', False):
+                    self.settings_refresh_pending = False
+                    self.emit_settings_state()
+                continue
+            candidates = merge_camera_candidates(value, self.active_camera_candidate)
+            self.apply_camera_candidates(candidates, preserve_current=True)
+            log_event('device.camera.discovery.completed', '카메라 전체 검색 완료', category='사용자 인식', candidates=candidates, count=len(candidates))
+            print(f"[카메라 검색] 전체 목록 갱신: {len(candidates)}개")
+            if self.restart_camera_after_discovery:
+                self.restart_camera_after_discovery = False
+                self.start_selected_camera()
+            if getattr(self, 'settings_refresh_pending', False):
+                self.settings_refresh_pending = False
+                self.emit_settings_state()
+        self.scheduler.after(200, self.poll_camera_discovery)
+
+
+    def refresh_stt_microphones(self, show_error=True):
+        log_event('device.microphone.discovery.started', '마이크 검색 시작', category='사용자 인식')
+
+        try:
+            labels = self.stt.refresh_microphones()
+        except Exception as exc:
+            log_event('device.microphone.discovery.failed', '마이크 검색 실패', category='오류', level='ERROR', error=str(exc))
+            self.microphone_choices_changed([])
+            label = "\ub9c8\uc774\ud06c \uc0ac\uc6a9 \ubd88\uac00"
+            self.stt_mic_var.set(label)
+            self.stt_status_var.set(f"STT \uc900\ube44 \uc2e4\ud328: {exc}")
+            if show_error:
+                self.report_error("STT", str(exc))
+            return
+
+        if not labels:
+            log_event('device.microphone.discovery.empty', '사용 가능한 마이크 없음', category='사용자 인식', level='WARNING')
+            self.microphone_choices_changed([])
+            label = "\uc0ac\uc6a9 \uac00\ub2a5\ud55c \ub9c8\uc774\ud06c \uc5c6\uc74c"
+            self.stt_mic_var.set(label)
+            self.stt_status_var.set("STT: \ub9c8\uc774\ud06c\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
+            return
+
+        self.microphone_choices_changed(labels)
+        saved_microphone = self.device_settings.get("microphone", {})
+        log_event('device.microphone.discovery.completed', '마이크 검색 완료', category='사용자 인식', labels=labels)
+        selected_label = select_saved_microphone(labels, saved_microphone)
+        self.stt_mic_var.set(selected_label)
+        self.stt_status_var.set(f"STT: \ub9c8\uc774\ud06c {len(labels)}\uac1c \uac10\uc9c0")
+
+
+    def select_stt_microphone(self, label):
+        self.stt_mic_var.set(label)
+        self.save_stt_device_settings()
+
+
+    def start_stt(self, show_error=True):
+        try:
+            if not self.stt.audio_devices:
+                raise RuntimeError("사용 가능한 마이크를 찾지 못했습니다.")
+            self.stt.start(
+                self.stt_mic_var.get(),
+                self.stt_provider_var.get(),
+                self.stt_silence_var.get(),
+                self.stt_sensitivity_var.get(),
+                self.stt_language_var.get(),
+                self.stt_timestamps_var.get(),
+            )
+        except Exception as exc:
+            log_event('stt.start.failed', '음성 인식 시작 실패', category='오류', level='ERROR', microphone=self.stt_mic_var.get(), error=str(exc))
+            self.stt_status_var.set(f"STT \uc2dc\uc791 \uc2e4\ud328: {exc}")
+            print(f"[STT 오류] 시작 실패: {exc}")
+            if show_error:
+                self.report_error("STT", str(exc))
+            return
+
+        self.stt_running_changed(True)
+        self.stt_status_var.set("STT: Google Web Speech \uc900\ube44 \uc911")
+        self.save_stt_device_settings()
+        self.emit_settings_state()
+        print(f"[STT] 음성 인식 시작: {self.stt_mic_var.get()}")
+
+
+    def stop_stt(self):
+        self.stt.stop()
+        self.stt_running_changed(False)
+        self.stt_status_var.set("STT: \uc911\uc9c0 \uc911")
+
+
+    def poll_stt_events(self):
+        for kind, value in self.stt.drain_events():
+            if kind == "text":
+                self.append_stt_text(value)
+            elif kind == "speech":
+                speech_meta = value if isinstance(value, dict) else {}
+                if isinstance(value, dict):
+                    if not self.stt.accepts_speech_event(value):
+                        log_event('stt.result.discarded', '대기 중 음성 인식 결과 폐기', category='사용자 인식', trace_id=value.get('trace_id'), reason='suppression_or_generation', metadata=value)
+                        continue
+                    value = value.get('text', '')
+                if not isinstance(value, str) or not value.strip():
+                    log_event('stt.result.discarded', '비어 있는 음성 인식 결과 폐기', category='사용자 인식', reason='empty')
+                    continue
+                self.latest_speech_text = value
+                # 같은 문장을 다시 말해도 별개의 발화로 전송되도록 순번을 증가시킨다.
+                self.speech_sequence += 1
+                self.speech_recognized_at = speech_meta.get('recognized_at') or time.time()
+                self.latest_speech_trace_id = speech_meta.get('trace_id') or new_trace_id('speech')
+                log_event('stt.result.forwarded', '음성 입력 전달 준비', category='사용자 인식', trace_id=self.latest_speech_trace_id, text=value, speech_session=getattr(self, 'speech_session', None), speech_sequence=self.speech_sequence, recognized_at=self.speech_recognized_at)
+                # 카메라 프레임 처리 여부와 관계없이 완성된 음성을 즉시 전달한다.
+                self.send_recognition_state()
+            elif kind == "status":
+                log_throttled('stt.status', '음성 인식 상태', category='사용자 인식', key=f'stt-status:{value}', status=value)
+                self.stt_status_var.set(value)
+            elif kind == "error":
+                log_event('stt.error', '음성 인식 오류', category='오류', level='ERROR', error=value)
+                self.append_stt_text(f"\n[STT error] {value}\n")
+                self.stt_status_var.set(f"STT error: {value}")
+                print(f"[STT 오류] {value}")
+                if not self.background_mode:
+                    self.report_error("STT", value)
+            elif kind == "running" and value == "false":
+                self.stt_running_changed(False)
+        self.scheduler.after(100, self.poll_stt_events)
+
+
+    def load_emotion_model(self):
+        model_key = EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()]
+        started = time.monotonic()
+        log_event('recognition.model.loading', '감정 모델 불러오기 시작', category='사용자 인식', model=model_key)
+        try:
+            if model_key == "emotieff_b2":
+                recognizer = EmotiEffNetB2Recognizer(EMOTIEFF_MODEL_PATH)
+            else:
+                recognizer = EmotionRecognizer(EMOTION_MODEL_PATH)
+        except Exception as exc:
+            previous_label = getattr(self, "loaded_emotion_model_label", None)
+            if previous_label is not None:
+                self.emotion_model_var.set(previous_label)
+            log_event('recognition.model.failed', '감정 모델 로드 실패', category='오류', level='ERROR', model=model_key, error=str(exc), previous_model=previous_label, restored=previous_label is not None, elapsed=time.monotonic() - started)
+            self.status_var.set(f"\uac10\uc815 \ubaa8\ub378 \ub85c\ub4dc \uc2e4\ud328: {exc}")
+            return
+        self.emotion_recognizer = recognizer
+        self.loaded_emotion_model_label = self.emotion_model_var.get()
+        self.loaded_emotion_model_key = model_key
+        log_event('recognition.model.ready', '감정 모델 준비 완료', category='사용자 인식', model=model_key, path=str(EMOTIEFF_MODEL_PATH if model_key == 'emotieff_b2' else EMOTION_MODEL_PATH), elapsed=time.monotonic() - started)
+
+
+    def change_emotion_model(self, _selection):
+        self.load_emotion_model()
+        self.emotion_result = None
+        self.save_recognition_settings()
+
+
+    def start_selected_camera(self):
+        if not self.camera_candidates:
+            self.refresh_cameras()
+            if not self.camera_candidates:
+                return
+
+        selected_label = self.camera_var.get()
+        selected_candidate = self.camera_candidates[0]
+        for candidate in self.camera_candidates:
+            candidate_label = f"index {candidate['index']} / {candidate['backend_label']}"
+            if candidate_label == selected_label:
+                selected_candidate = candidate
+                break
+
+        log_event('device.camera.starting', '선택한 카메라 열기', category='사용자 인식', requested=selected_label, selected=selected_candidate,
+                  reason='label_match' if selected_label == f"index {selected_candidate['index']} / {selected_candidate['backend_label']}" else 'first_available',
+                  requested_width=self.capture_settings.camera_width, requested_height=self.capture_settings.camera_height)
+        if not self.release_camera():
+            self.status_var.set('이전 카메라가 종료 중입니다. 잠시 후 다시 시작하세요.')
+            return
+        result = core.try_open_webcam(
+            selected_candidate["index"],
+            selected_candidate["backend"],
+            selected_candidate["backend_label"],
+            self.capture_settings.camera_width,
+            self.capture_settings.camera_height,
+        )
+
+        if result is None:
+            log_event('device.camera.failed', '카메라 열기 실패', category='오류', level='ERROR', selected=selected_candidate)
+            self.status_var.set("\uc120\ud0dd\ud55c \uce74\uba54\ub77c\ub97c \uc5f4\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
+            return
+
+        self.cap = result["cap"]
+        self.active_camera_candidate = dict(selected_candidate)
+        self.capture_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
+        if self.capture_fps <= 0:
+            self.capture_fps = 30.0
+        self.frame_index = 0
+        self.recognition_performance = RecognitionPerformance()
+        self.clear_air_paths()
+        self.reset_motion_states()
+        self.source_var.set(
+            f"\uc18c\uc2a4: webcam index {selected_candidate['index']} via {selected_candidate['backend_label']}"
+        )
+        self.status_var.set("\uce74\uba54\ub77c \uc2e4\ud589 \uc911")
+        log_event('device.camera.started', '카메라 캡처 시작', category='사용자 인식', requested=selected_label, selected=selected_candidate, requested_width=self.capture_settings.camera_width, requested_height=self.capture_settings.camera_height, fps=self.capture_fps, actual_width=self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), actual_height=self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.save_camera_device_settings(selected_candidate)
+        # The stream now owns capture.read/release. Both consumers see only its
+        # newest image; slow Holistic/emotion inference cannot block desktop hands.
+        self.camera_sequence = 0
+        self.camera_stream = LatestCameraStream(self.cap, result['frame'])
+        self.desktop_hands = DesktopHandTracker(self.camera_stream, self.event_client.send_hand_frame)
+        self.sync_desktop_hands()
+        self.camera_stream.start()
+        self.desktop_hands.start()
+        self.emit_settings_state()
+
+
+    def save_camera_device_settings(self, candidate):
+        self.device_settings["camera"] = {
+            "index": candidate["index"],
+            "backend_label": candidate["backend_label"],
+        }
+        outcome = self.save_device_settings_safely()
+        if outcome == 'saved':
+            print("[장치 설정] 카메라 저장: " f"index {candidate['index']} / {candidate['backend_label']}")
+        return outcome
+
+
+    def save_stt_device_settings(self):
+        mic_label = self.stt_mic_var.get()
+        selected_device = next(
+            (
+                device
+                for device in getattr(self.stt, "audio_devices", [])
+                if device.label == mic_label
+            ),
+            None,
+        )
+        self.device_settings["microphone"] = {
+            "label": mic_label,
+            "name": microphone_name(mic_label),
+            "index": selected_device.index if selected_device is not None else None,
+        }
+        self.device_settings["stt"] = {
+            "provider": self.stt_provider_var.get(),
+            "language": self.stt_language_var.get(),
+            "silence": self.stt_silence_var.get(),
+            "sensitivity": self.stt_sensitivity_var.get(),
+            "timestamps": bool(self.stt_timestamps_var.get()),
+        }
+        outcome = self.save_device_settings_safely()
+        if outcome == 'saved':
+            print(f"[설정 저장] STT/마이크: {mic_label}")
+        return outcome
+
+
+    def save_recognition_settings(self):
+        """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
+        self.device_settings["recognition"] = {
+            "mode": (self.rps_previous_mode if self.rps_session else
+                     self.cham_previous_mode if getattr(self, 'cham_session', None) else self.active_mode),
+            "tracking": bool(self.tracking_var.get()),
+            "marker_only": bool(self.marker_only_var.get()),
+            "mirror": bool(self.mirror_var.get()),
+            "info_overlay": bool(self.info_overlay_var.get()),
+            "emotion": bool(self.emotion_var.get()),
+            "emotion_model": EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()],
+            "always_recognition": bool(self.always_recognition_var.get()),
+        }
+        outcome = self.save_device_settings_safely()
+        if outcome == 'saved':
+            print(f"[설정 저장] 사용자 인식 모드/도구: {self.active_mode or '없음'}")
+        return outcome
+
+
+    def save_device_settings_safely(self):
+        if getattr(self, 'settings_collecting', False):
+            log_event('device.settings.deferred', '설정 일괄 저장 대기', category='시스템', trace_id=getattr(self, '_settings_request_id', None), outcome='deferred')
+            return 'deferred'
+        try:
+            save_device_settings(self.device_settings)
+        except OSError as exc:
+            log_event('device.settings.failed', '장치 설정 저장 실패', category='오류', level='ERROR', trace_id=getattr(self, '_settings_request_id', None), error=str(exc), outcome='failed')
+            print(f"[장치 설정 오류] 저장 실패: {exc}")
+            return 'failed'
+        return 'saved'
+
+
+    def set_mode(self, mode_key):
+        if self.rps_session is not None or getattr(self, 'cham_session', None) is not None:
+            self.status_var.set("게임을 닫으면 모드를 변경할 수 있습니다.")
+            return
+        if self.active_mode == mode_key:
+            self.active_mode = None
+        else:
+            self.active_mode = mode_key
+
+        self.update_mode_status()
+        self.save_recognition_settings()
+
+
+    def update_mode_status(self):
+        previous = getattr(self, '_logged_active_mode', None)
+        if previous != self.active_mode:
+            log_event('recognition.mode.changed', '인식 모드 변경', category='사용자 인식', previous=previous, current=self.active_mode)
+        self._logged_active_mode = self.active_mode
+        self.clear_air_paths()
+        self.reset_motion_states()
+        self.update_mode_buttons()
+        if self.active_mode in MODE_LABELS:
+            self.mode_var.set("\ud604\uc7ac \ubaa8\ub4dc: " + MODE_LABELS[self.active_mode])
+            self.result_var.set("\uc778\uc2dd \uacb0\uacfc \ub300\uae30 \uc911")
+        else:
+            self.mode_var.set("\ud604\uc7ac \ubaa8\ub4dc: \uc5c6\uc74c")
+            self.result_var.set("\ubaa8\ub4dc \uaebc\uc9d0")
+
+
+    def clear_air_paths(self):
+        self.air_paths = {"left": [], "right": []}
+
+
+    def reset_motion_states(self):
+        self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
+        self.wave_started_at = None
+        self._wave_active = False
+        self.head_history = deque(maxlen=36)
+        self.away_frame_count = 0
+
+
+    def release_camera(self):
+        tracker = getattr(self, 'desktop_hands', None)
+        stream = getattr(self, 'camera_stream', None)
+        if tracker is not None:
+            tracker.stop()
+        if stream is not None:
+            stream.stop()
+        if tracker is not None:
+            if not tracker.join():
+                log_event('hand_overlay.tracking.stopping', '손 추적 종료 대기 중',
+                          category='사용자 인식')
+                return False
+            self.desktop_hands = None
+        if stream is not None:
+            if not stream.join():
+                log_event('device.camera.stopping', '카메라 읽기 종료 대기 중',
+                          category='사용자 인식')
+                return False
+            self.camera_stream = None
+        if self.cap is not None:
+            if stream is None:
+                self.cap.release()
+            self.cap = None
+            log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
+        return True
+
+
+    def set_hand_overlay_enabled(self, enabled):
+        self.hand_overlay_enabled = bool(enabled)
+        self.sync_desktop_hands()
+
+
+    def sync_desktop_hands(self):
+        tracker = getattr(self, 'desktop_hands', None)
+        if tracker is not None:
+            tracker.configure(self.hand_overlay_enabled, bool(self.mirror_var.get()))
+
+
+    def update_frame(self):
+        if self.cap is None:
+            self.scheduler.after(30, self.update_frame)
+            return
+
+        if self.camera_stream.error:
+            log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
+            self.status_var.set("\ud504\ub808\uc784\uc744 \uc77d\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
+            self.release_camera()
+            self.scheduler.after(30, self.update_frame)
+            return
+
+        frame = self.camera_stream.latest(self.camera_sequence)
+        if frame is None:
+            self.scheduler.after(5, self.update_frame)
+            return
+        self.camera_sequence = frame.sequence
+        frame_started = time.perf_counter()
+        # Inference only reads the shared camera image. Copy only for drawing,
+        # so the independent hand tracker always sees the unannotated frame.
+        frame_bgr = frame.image
+        if self.mirror_var.get():
+            frame_bgr = cv2.flip(frame_bgr, 1)
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_rgb.flags.writeable = False
+        inference_started = time.perf_counter()
+        results = self.holistic.process(frame_rgb)
+        inference_finished = time.perf_counter()
+        frame_rgb.flags.writeable = True
+
+        height, width = frame_bgr.shape[:2]
+        timestamp_ms = int((self.frame_index / self.capture_fps) * 1000)
+        tracking_enabled = self.tracking_var.get()
+        rps_enabled = self.active_mode == "rps"
+
+        frame_record = core.build_frame_record(
+            self.frame_index,
+            timestamp_ms,
+            width,
+            height,
+            results,
+            tracking_enabled,
+            rps_enabled,
+        )
+        emotion_started = time.perf_counter()
+        self.update_emotion_result(frame_bgr, frame_record, timestamp_ms)
+        emotion_finished = time.perf_counter()
+        self.update_always_recognition(frame_record, width)
+
+        # Withdrawing/iconifying the console must only skip visualization;
+        # emotion, gestures, games and event delivery continue unchanged.
+        annotated = None
+        preview_visible = self.preview_visible()
+        if preview_visible:
+            base_frame = (np.zeros_like(frame_bgr) if self.marker_only_var.get()
+                          else frame_bgr.copy())
+            annotated = core.annotate_frame(
+                base_frame,
+                frame_record,
+                results,
+                tracking_enabled,
+                rps_enabled,
+                draw_labels=False,
+                show_info_overlay=self.info_overlay_var.get(),
+                hand_label_side_map=self.get_hand_label_side_map(),
+            )
+            self.apply_always_recognition_overlay(annotated)
+        self.apply_mode_overlay(annotated, frame_record)
+        if self.rps_session is not None:
+            # 프레임 시각을 별도로 넣어 같은 손을 유지해도 전송하고,
+            # STT 이벤트 재전송이나 카메라 중단 시 과거 손으로 판정하지 않게 한다.
+            self.rps_sample = {
+                "session": self.rps_session,
+                "captured_at": time.time(),
+                "hands": dict(self.mode_result.get("result") or {}),
+            }
+        if annotated is not None:
+            self.apply_emotion_overlay(annotated)
+        if self.cham_session is not None:
+            self.cham_sample = self.build_cham_sample(frame_record, frame.captured_at)
+        self.send_recognition_state()
+        if annotated is not None:
+            self.render_frame(annotated)
+
+        performance = getattr(self, 'recognition_performance', None)
+        if performance is not None:
+            performance.record(
+                (inference_finished - inference_started) * 1000,
+                (emotion_finished - emotion_started) * 1000,
+                (time.perf_counter() - emotion_finished) * 1000,
+                preview_visible=preview_visible, camera=self.camera_stream,
+                hands=self.desktop_hands)
+
+        self.frame_index += 1
+        elapsed_ms = (time.perf_counter() - frame_started) * 1000
+        delay_ms = max(15, math.ceil(getattr(self, 'recognition_interval_ms', 0) - elapsed_ms))
+        self.scheduler.after(delay_ms, self.update_frame)
+
+
+    def apply_mode_overlay(self, frame_bgr, frame_record):
+        self.mode_result = {"active": self.active_mode, "result": None}
+        if self.active_mode == "rps":
+            self.apply_rps_overlay(frame_bgr, frame_record)
+        elif self.active_mode == "cham":
+            self.apply_cham_overlay(frame_bgr, frame_record)
+        elif self.active_mode == "air":
+            self.apply_air_overlay(frame_bgr, frame_record)
+        elif self.active_mode == "wave":
+            self.apply_wave_overlay(frame_bgr, frame_record)
+        elif self.active_mode == "gesture":
+            self.apply_gesture_overlay(frame_bgr, frame_record)
+        elif self.active_mode == "head":
+            self.apply_head_overlay(frame_bgr, frame_record)
+        elif self.active_mode == "attention":
+            self.apply_attention_overlay(frame_bgr, frame_record)
+        else:
+            self.mode_result = {"active": None, "result": None}
+            self.result_var.set("\ubaa8\ub4dc \uaebc\uc9d0")
+
+
+    def update_always_recognition(self, frame_record, frame_width):
+        self.always_results = {}
+
+        wave_states = self.update_wave_state(frame_record, frame_width)
+        left_state, right_state = self.get_display_side_values(wave_states)
+        self.always_results["wave"] = {
+            "states": wave_states,
+            "left_state": left_state,
+            "right_state": right_state,
+        }
+
+        gesture_states = self.update_gesture_state(frame_record)
+        left_state, right_state = self.get_display_side_values(gesture_states)
+        self.always_results["gesture"] = {
+            "states": gesture_states,
+            "left_state": left_state,
+            "right_state": right_state,
+        }
+
+        head_state, result_state, overlay_state = self.update_head_state(frame_record)
+        self.always_results["head"] = {
+            "state": head_state,
+            "result_state": result_state,
+            "overlay_state": overlay_state,
+        }
+
+        attention_state, result_state, overlay_state = self.update_attention_state(frame_record)
+        self.always_results["attention"] = {
+            "state": attention_state,
+            "result_state": result_state,
+            "overlay_state": overlay_state,
+        }
+        self.update_always_status_labels()
+
+
+    def update_always_status_labels(self):
+        if not self.always_recognition_var.get():
+            self.always_wave_status_var.set(f"{LABEL_WAVE}: \uc228\uae40")
+            self.always_gesture_status_var.set(f"{LABEL_HAND_GESTURE}: \uc228\uae40")
+            self.always_head_status_var.set(f"{LABEL_HEAD_GESTURE}: \uc228\uae40")
+            self.always_attention_status_var.set(f"{LABEL_ATTENTION}: \uc228\uae40")
+            return
+
+        wave = self.always_results.get("wave", {})
+        gesture = self.always_results.get("gesture", {})
+        head = self.always_results.get("head", {})
+        attention = self.always_results.get("attention", {})
+        self.always_wave_status_var.set(
+            f"{LABEL_WAVE}: L={wave.get('left_state', '-')} R={wave.get('right_state', '-')}"
+        )
+        self.always_gesture_status_var.set(
+            f"{LABEL_HAND_GESTURE}: L={gesture.get('left_state', '-')} R={gesture.get('right_state', '-')}"
+        )
+        self.always_head_status_var.set(f"{LABEL_HEAD_GESTURE}: {head.get('result_state', '-')}")
+        self.always_attention_status_var.set(
+            f"{LABEL_ATTENTION}: {attention.get('result_state', '-')}"
+        )
+
+
+    def send_interaction_event_if_changed(self, key, event):
+        # IDs are attached after semantic deduplication, preserving its behavior.
+        semantic = {field: value for field, value in event.items() if field not in ('trace_id', 'event_id')}
+        if isinstance(semantic.get('speech'), dict):
+            semantic['speech'] = {field: value for field, value in semantic['speech'].items() if field != 'trace_id'}
+        signature = json.dumps(semantic, ensure_ascii=False, sort_keys=True)
+        if self.last_sent_interaction_events.get(key) == signature:
+            return
+        self.last_sent_interaction_events[key] = signature
+        self.send_interaction_event(key, event)
+
+
+    def send_interaction_event(self, key, event):
+        payload = dict(event)
+        payload.setdefault('event_id', new_trace_id('recognition'))
+        payload.setdefault('trace_id', payload['event_id'])
+        self.event_client.send(payload)
+
+
+    def send_recognition_state(self):
+        event = self.build_recognition_state_event()
+        self.send_interaction_event_if_changed("recognition_state", event)
+
+
+    def build_recognition_state_event(self):
+        wave = self.always_results.get("wave", {})
+        gesture = self.always_results.get("gesture", {})
+        head = self.always_results.get("head", {})
+        attention = self.always_results.get("attention", {})
+        # 수신 측이 메시지 출처와 호환 스키마 버전을 구분할 수 있도록 메타데이터를 포함한다.
+        return {
+            "type": "recognition_state",
+            "version": 1,
+            "source": "mediapipe_capstone",
+            "always": {
+                "wave": {
+                    "left": wave.get("left_state"),
+                    "right": wave.get("right_state"),
+                    "raw": wave.get("states", {}),
+                    "started_at": getattr(self, 'wave_started_at', None),
+                },
+                "hand_gesture": {
+                    "left": gesture.get("left_state"),
+                    "right": gesture.get("right_state"),
+                    "raw": gesture.get("states", {}),
+                },
+                "head": {
+                    "value": head.get("state"),
+                    "label": head.get("result_state"),
+                    "overlay": head.get("overlay_state"),
+                },
+                "attention": {
+                    "value": attention.get("state"),
+                    "label": attention.get("result_state"),
+                    "overlay": attention.get("overlay_state"),
+                },
+                "emotion": self.build_emotion_state(),
+            },
+            "mode": self.mode_result,
+            "rps_game": self.rps_sample,
+            "cham_game": getattr(self, 'cham_sample', None),
+            "speech": {
+                "latest_text": self.latest_speech_text,
+                "sequence": self.speech_sequence,
+                "recognized_at": getattr(self, 'speech_recognized_at', None),
+                "session": getattr(self, 'speech_session', None),
+                "trace_id": getattr(self, 'latest_speech_trace_id', None),
+                "final": True,
+            },
+        }
+
+
+    def build_emotion_state(self):
+        if self.emotion_result is None:
+            return {
+                "label": None,
+                "scores": {},
+            }
+        return {
+            "label": self.emotion_result["label"],
+            "confidence": self.emotion_result.get("confidence", 0.0),
+            "scores": self.emotion_result["scores"],
+        }
+
+
+    def apply_always_recognition_overlay(self, frame_bgr):
+        if not self.always_recognition_var.get() or not self.always_results:
+            return
+
+        wave = self.always_results.get("wave", {})
+        gesture = self.always_results.get("gesture", {})
+        head = self.always_results.get("head", {})
+        attention = self.always_results.get("attention", {})
+        lines = [
+            "Always Recognition",
+            f"Wave: L={wave.get('left_state', '-')} R={wave.get('right_state', '-')}",
+            f"Gesture: L={gesture.get('left_state', '-')} R={gesture.get('right_state', '-')}",
+            f"Head: {head.get('overlay_state', '-')}",
+            f"Attention: {attention.get('overlay_state', '-')}",
+        ]
+
+        box_width = 430
+        line_height = 28
+        box_height = 24 + (len(lines) * line_height)
+        x1 = 20
+        y1 = max(20, frame_bgr.shape[0] - box_height - 72)
+        x2 = x1 + box_width
+        y2 = y1 + box_height
+
+        overlay = frame_bgr.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (15, 20, 26), -1)
+        cv2.addWeighted(overlay, 0.72, frame_bgr, 0.28, 0, frame_bgr)
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (127, 209, 185), 2)
+
+        for index, line in enumerate(lines):
+            color = (127, 209, 185) if index == 0 else (240, 245, 250)
+            scale = 0.68 if index == 0 else 0.58
+            thickness = 2 if index == 0 else 1
+            cv2.putText(
+                frame_bgr,
+                line,
+                (x1 + 14, y1 + 30 + (index * line_height)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                scale,
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
+
+
+    def update_emotion_result(self, frame_bgr, frame_record, timestamp_ms):
+        if self.emotion_recognizer is None:
+            self.emotion_result = None
+            return
+
+        if timestamp_ms - self.last_emotion_inference_ms < EMOTION_INFERENCE_INTERVAL_MS:
+            return
+
+        self.last_emotion_inference_ms = timestamp_ms
+
+        face_crop = self.extract_face_crop(frame_bgr, frame_record)
+        if face_crop is None:
+            self.emotion_result = None
+            return
+
+        try:
+            prediction = self.emotion_recognizer.predict(face_crop)
+        except Exception as exc:
+            log_throttled('recognition.inference.failed', '감정 추론 실패', category='오류', level='ERROR', key=f'emotion-inference:{id(self)}', error=str(exc), model=getattr(self, 'loaded_emotion_model_key', None))
+            self._emotion_inference_failed = True
+            self.emotion_result = None
+            return
+
+        if getattr(self, '_emotion_inference_failed', False):
+            log_event('recognition.inference.recovered', '감정 추론 복구', category='사용자 인식', model=getattr(self, 'loaded_emotion_model_key', None))
+            self._emotion_inference_failed = False
+
+        scores = prediction["scores"]
+        label = self.get_emotion_display_label(scores)
+        self.emotion_result = {
+            "label": label,
+            "confidence": scores.get(label, 0.0),
+            "scores": scores,
+        }
+
+
+    def get_emotion_display_label(self, scores):
+        ranked_scores = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        if not ranked_scores:
+            return "Neutral"
+
+        top_label, top_score = ranked_scores[0]
+        if getattr(self, "loaded_emotion_model_key", None) == "emotieff_b2":
+            return top_label
+
+        second_score = ranked_scores[1][1] if len(ranked_scores) > 1 else 0.0
+        if top_score < EMOTION_NEUTRAL_CONFIDENCE_THRESHOLD:
+            return "Neutral"
+        if top_score - second_score < EMOTION_NEUTRAL_MARGIN_THRESHOLD:
+            return "Neutral"
+        return top_label
+
+
+    def extract_face_crop(self, frame_bgr, frame_record):
+        face_landmarks = frame_record["face_landmarks"]
+        if not face_landmarks:
+            return None
+
+        height, width = frame_bgr.shape[:2]
+        xs = [point["pixel_x"] for point in face_landmarks]
+        ys = [point["pixel_y"] for point in face_landmarks]
+        if not xs or not ys:
+            return None
+
+        x1, x2 = max(0, min(xs)), min(width, max(xs))
+        y1, y2 = max(0, min(ys)), min(height, max(ys))
+
+        box_width = x2 - x1
+        box_height = y2 - y1
+        if box_width <= 0 or box_height <= 0:
+            return None
+
+        pad_x = int(box_width * 0.18)
+        pad_y = int(box_height * 0.22)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(width, x2 + pad_x)
+        y2 = min(height, y2 + pad_y)
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        return frame_bgr[y1:y2, x1:x2]
+
+
+    def apply_emotion_overlay(self, frame_bgr):
+        if not self.emotion_var.get():
+            return
+
+        if self.emotion_recognizer is None:
+            text = "Emotion: MODEL ERROR"
+            score_lines = []
+        elif self.emotion_result is None:
+            text = "Emotion: NONE"
+            score_lines = []
+        else:
+            label = self.emotion_result["label"]
+            text = f"Emotion: {label}"
+            score_lines = [
+                f"{score_label}: {score * 100.0:.1f}%"
+                for score_label, score in sorted(
+                    self.emotion_result["scores"].items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            ]
+
+        box_width = 340
+        box_height = 58 + (len(score_lines) * 28)
+        x1 = frame_bgr.shape[1] - box_width - 20
+        y1 = 20
+        x2 = frame_bgr.shape[1] - 20
+        y2 = y1 + box_height
+
+        overlay = frame_bgr.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (15, 20, 26), -1)
+        cv2.addWeighted(overlay, 0.72, frame_bgr, 0.28, 0, frame_bgr)
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (127, 209, 185), 2)
+        cv2.putText(
+            frame_bgr,
+            text,
+            (x1 + 14, y1 + 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        for index, line in enumerate(score_lines):
+            cv2.putText(
+                frame_bgr,
+                line,
+                (x1 + 14, y1 + 58 + (index * 28)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (210, 226, 235),
+                2,
+                cv2.LINE_AA,
+            )
+
+
+    def apply_rps_overlay(self, frame_bgr, frame_record):
+        left_state, right_state = self.get_display_hand_states(frame_record)
+        self.result_var.set(f"{LABEL_RPS}: L={left_state}, R={right_state}")
+        self.mode_result = {
+            "active": "rps",
+            "result": {
+                "left": left_state,
+                "right": right_state,
+            },
+        }
+        text = f"RPS  L:{left_state}  R:{right_state}"
+        self._log_mode_result()
+
+        if frame_bgr is None:
+            return
+        cv2.putText(
+            frame_bgr,
+            text,
+            (40, frame_bgr.shape[0] - 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+
+    def apply_cham_overlay(self, frame_bgr, frame_record):
+        direction = self.detect_face_direction(frame_record["upper_body_landmarks"])
+        self.result_var.set(f"{LABEL_CHAM}: {direction}")
+        self.mode_result = {
+            "active": "cham",
+            "result": {
+                "direction": direction,
+            },
+        }
+        self._log_mode_result()
+        if frame_bgr is None:
+            return
+        cv2.putText(
+            frame_bgr,
+            f"Cham Cham Cham: {direction}",
+            (40, frame_bgr.shape[0] - 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+
+    def build_cham_sample(self, frame_record, captured_at):
+        upper = frame_record["upper_body_landmarks"]
+        visible = (bool(frame_record["face_landmarks"])
+                   and all(upper.get(name) is not None and
+                           upper[name].get("visibility", 0) >= 0.5
+                           for name in ("NOSE", "LEFT_EYE", "RIGHT_EYE")))
+        direction = self.detect_face_direction(upper) if visible else "NONE"
+        # The game always uses mirror coordinates, matching physical user movement.
+        if not self.mirror_var.get():
+            direction = {"LEFT": "RIGHT", "RIGHT": "LEFT"}.get(direction, direction)
+        return {"session": self.cham_session, "captured_at": captured_at,
+                "direction": direction}
+
+
+    def apply_air_overlay(self, frame_bgr, frame_record):
+        self.update_air_paths(frame_record)
+        self.draw_air_paths(frame_bgr)
+        self.result_var.set("\uc5d0\uc5b4\ub4dc\ub85c\uc789: \uc190\uac00\ub77d \uacbd\ub85c \ud45c\uc2dc \uc911")
+        self.mode_result = {
+            "active": "air",
+            "result": {
+                "active": True,
+                "left_points": len([point for point in self.air_paths["left"] if point is not None]),
+                "right_points": len([point for point in self.air_paths["right"] if point is not None]),
+            },
+        }
+        self.draw_mode_text(frame_bgr, "Air Drawing Active")
+        self._log_mode_result()
+
+
+    def _log_mode_result(self):
+        mode = self.mode_result.get('active')
+        result = self.mode_result.get('result')
+        if mode == 'air' and isinstance(result, dict):
+            signature_data = {'active': result.get('active'),
+                              'left_drawing': bool(result.get('left_points')),
+                              'right_drawing': bool(result.get('right_points'))}
+        else:
+            signature_data = result
+        signature = json.dumps([mode, signature_data], ensure_ascii=False, sort_keys=True)
+        if getattr(self, '_last_logged_mode_result', None) == signature:
+            return
+        self._last_logged_mode_result = signature
+        log_event('recognition.mode.result', '게임/그리기 인식 상태 변경', category='사용자 인식',
+                  trace_id=getattr(self, 'rps_session', None), mode=mode, result=result)
+
+
+    def apply_wave_overlay(self, frame_bgr, frame_record):
+        cached = self.always_results.get("wave")
+        if cached is None:
+            cached = {}
+            wave_states = self.update_wave_state(frame_record, frame_record["image_size"]["width"])
+            cached["states"] = wave_states
+            cached["left_state"], cached["right_state"] = self.get_display_side_values(wave_states)
+
+        wave_states = cached["states"]
+        left_state = cached["left_state"]
+        right_state = cached["right_state"]
+        result_text = f"{LABEL_WAVE}: L={left_state}, R={right_state}"
+        self.result_var.set(result_text)
+        self.draw_hand_state_labels(frame_bgr, frame_record, wave_states)
+        self.draw_mode_text(frame_bgr, f"Wave  L:{left_state}  R:{right_state}")
+
+
+    def update_wave_state(self, frame_record, frame_width):
+        self.update_wave_histories(frame_record)
+        states = {
+            side: self.detect_wave(side, frame_width)
+            for side in ("left", "right")
+        }
+        active = 'HELLO' in states.values()
+        if active and not getattr(self, '_wave_active', False):
+            self.wave_started_at = time.time()
+        self._wave_active = active
+        return states
+
+
+    def apply_gesture_overlay(self, frame_bgr, frame_record):
+        cached = self.always_results.get("gesture")
+        if cached is None:
+            cached = {}
+            gesture_states = self.update_gesture_state(frame_record)
+            cached["states"] = gesture_states
+            cached["left_state"], cached["right_state"] = self.get_display_side_values(gesture_states)
+
+        gesture_states = cached["states"]
+        left_state = cached["left_state"]
+        right_state = cached["right_state"]
+        self.result_var.set(f"{LABEL_HAND_GESTURE}: L={left_state}, R={right_state}")
+        self.draw_hand_state_labels(frame_bgr, frame_record, gesture_states)
+        self.draw_mode_text(frame_bgr, f"Gesture  L:{left_state}  R:{right_state}")
+
+
+    def update_gesture_state(self, frame_record):
+        gesture_states = {
+            "left": self.detect_static_hand_gesture(frame_record["left_hand_landmarks"]),
+            "right": self.detect_static_hand_gesture(frame_record["right_hand_landmarks"]),
+        }
+        if self.detect_two_hand_heart(frame_record):
+            gesture_states["left"] = "HEART"
+            gesture_states["right"] = "HEART"
+
+        return gesture_states
+
+
+    def apply_head_overlay(self, frame_bgr, frame_record):
+        cached = self.always_results.get("head")
+        if cached is None:
+            head_state, result_state, overlay_state = self.update_head_state(frame_record)
+        else:
+            head_state = cached["state"]
+            result_state = cached["result_state"]
+            overlay_state = cached["overlay_state"]
+
+        self.result_var.set(f"{LABEL_HEAD_GESTURE}: {result_state}")
+        self.draw_mode_text(frame_bgr, f"Head Motion: {overlay_state}")
+
+
+    def update_head_state(self, frame_record):
+        self.update_head_history(frame_record)
+        head_state = self.detect_head_motion()
+        if head_state == "AGREE":
+            result_state = "\ub3d9\uc758"
+            overlay_state = "AGREE"
+        elif head_state == "NEGATIVE":
+            result_state = "\ubd80\uc815"
+            overlay_state = "NEGATIVE"
+        else:
+            result_state = "\uc778\uc2dd \ub300\uae30"
+            overlay_state = "WAITING"
+
+        return head_state, result_state, overlay_state
+
+
+    def apply_attention_overlay(self, frame_bgr, frame_record):
+        cached = self.always_results.get("attention")
+        if cached is None:
+            attention_state, result_state, overlay_state = self.update_attention_state(frame_record)
+        else:
+            attention_state = cached["state"]
+            result_state = cached["result_state"]
+            overlay_state = cached["overlay_state"]
+
+        self.result_var.set(f"{LABEL_ATTENTION}: {result_state}")
+        self.draw_mode_text(frame_bgr, f"Attention: {overlay_state}")
+
+
+    def update_attention_state(self, frame_record):
+        attention_state = self.detect_attention_state(frame_record)
+        if attention_state == "SCREEN":
+            result_state = "\ud654\uba74 \uc751\uc2dc"
+            overlay_state = "LOOKING AT SCREEN"
+        elif attention_state == "LOOKING_AWAY":
+            result_state = "\ud654\uba74 \ubc16 \uc751\uc2dc"
+            overlay_state = "LOOKING AWAY"
+        elif attention_state == "AWAY":
+            result_state = "\uc790\ub9ac \ube44\uc6c0"
+            overlay_state = "AWAY"
+        else:
+            result_state = "\uc5bc\uad74 \ucc3e\ub294 \uc911"
+            overlay_state = "SEARCHING FACE"
+
+        return attention_state, result_state, overlay_state
+
+
+    def draw_mode_text(self, frame_bgr, text, color=(255, 255, 255)):
+        if frame_bgr is None:
+            return
+        cv2.putText(
+            frame_bgr,
+            text,
+            (40, frame_bgr.shape[0] - 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+
+    def draw_hand_state_labels(self, frame_bgr, frame_record, side_states):
+        if frame_bgr is None:
+            return
+        for side, state in side_states.items():
+            records = frame_record[f"{side}_hand_landmarks"]
+            anchor = core.hand_anchor_point(records)
+            if anchor is None:
+                continue
+            display_side = self.get_display_side_name(side)
+            cv2.putText(
+                frame_bgr,
+                f"{display_side.title()}: {state}",
+                (anchor[0] + 10, max(30, anchor[1] - 12)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (127, 209, 185),
+                2,
+                cv2.LINE_AA,
+            )
+
+
+    def get_display_side_values(self, side_values):
+        if self.mirror_var.get():
+            return side_values["right"], side_values["left"]
+        return side_values["left"], side_values["right"]
+
+
+    def get_display_side_name(self, side):
+        if not self.mirror_var.get():
+            return side
+        return "right" if side == "left" else "left"
+
+
+    def update_wave_histories(self, frame_record):
+        for side in ("left", "right"):
+            hand_records = frame_record[f"{side}_hand_landmarks"]
+            hand_map = core.records_by_name(hand_records)
+            # The wrist can stay almost still while an open palm waves.
+            # Follow the knuckles instead; partial landmark inputs use the wrist.
+            anchor = core.average_point(*(core.point_from_record(hand_map.get(name))
+                                          for name in ('INDEX_FINGER_MCP', 'MIDDLE_FINGER_MCP', 'PINKY_MCP')))
+            if anchor is None:
+                anchor = core.hand_anchor_point(hand_records)
+            self.wave_histories[side].append(anchor)
+
+
+    def detect_wave(self, side, frame_width):
+        # Missing hands break the motion history, so old movement cannot be
+        # reclassified as a new wave when the hand reappears.
+        points = []
+        for point in reversed(self.wave_histories[side]):
+            if point is None:
+                break
+            points.append(point)
+        points.reverse()
+        if len(points) < 12:
+            return "WAIT"
+
+        xs = [point[0] for point in points]
+        amplitude = max(xs) - min(xs)
+        min_amplitude = max(16, frame_width * 0.025)
+        direction_changes = self.count_wave_direction_changes(xs, min_delta=max(4, min_amplitude * 0.2))
+        if amplitude >= min_amplitude and direction_changes >= 2:
+            return "HELLO"
+        return "NONE"
+
+
+    @staticmethod
+    def count_wave_direction_changes(values, min_delta):
+        """Count reversals from extrema, including gradual subpixel-frame motion."""
+        if not values:
+            return 0
+        extreme = values[0]
+        direction = changes = 0
+        for value in values[1:]:
+            if direction == 0:
+                delta = value - extreme
+                if abs(delta) >= min_delta:
+                    direction = 1 if delta > 0 else -1
+                    extreme = value
+            elif direction > 0:
+                if value > extreme:
+                    extreme = value
+                elif extreme - value >= min_delta:
+                    direction, extreme = -1, value
+                    changes += 1
+            else:
+                if value < extreme:
+                    extreme = value
+                elif value - extreme >= min_delta:
+                    direction, extreme = 1, value
+                    changes += 1
+        return changes
+
+
+    def detect_static_hand_gesture(self, hand_records):
+        pose = self.analyze_hand_pose(hand_records)
+        if pose is None:
+            return "NONE"
+
+        extended = pose["extended"]
+        folded_fingers = not any(
+            extended[finger] for finger in ("index", "middle", "ring", "pinky")
+        )
+        if pose["thumb_up"] and folded_fingers:
+            return "THUMBS_UP"
+        if pose["pinch"] and extended["middle"] and extended["ring"] and extended["pinky"]:
+            return "OK"
+        if pose["pinch"] and not extended["middle"] and not extended["ring"] and not extended["pinky"]:
+            return "HEART"
+        return "NONE"
+
+
+    def detect_two_hand_heart(self, frame_record):
+        left_map = core.records_by_name(frame_record["left_hand_landmarks"])
+        right_map = core.records_by_name(frame_record["right_hand_landmarks"])
+        if not left_map or not right_map:
+            return False
+
+        left_scale = self.hand_scale(left_map)
+        right_scale = self.hand_scale(right_map)
+        scale = max(40, (left_scale + right_scale) / 2)
+        threshold = scale * 0.75
+
+        left_thumb = core.point_from_record(left_map.get("THUMB_TIP"))
+        right_thumb = core.point_from_record(right_map.get("THUMB_TIP"))
+        left_index = core.point_from_record(left_map.get("INDEX_FINGER_TIP"))
+        right_index = core.point_from_record(right_map.get("INDEX_FINGER_TIP"))
+        left_wrist = core.point_from_record(left_map.get("WRIST"))
+        right_wrist = core.point_from_record(right_map.get("WRIST"))
+
+        thumb_distance = core.distance_between_points(left_thumb, right_thumb)
+        index_distance = core.distance_between_points(left_index, right_index)
+        wrist_distance = core.distance_between_points(left_wrist, right_wrist)
+        if thumb_distance is None or index_distance is None or wrist_distance is None:
+            return False
+        return thumb_distance < threshold and index_distance < threshold and wrist_distance > scale
+
+
+    def analyze_hand_pose(self, hand_records):
+        if not hand_records:
+            return None
+
+        hand_map = core.records_by_name(hand_records)
+        scale = self.hand_scale(hand_map)
+        thumb_tip = core.point_from_record(hand_map.get("THUMB_TIP"))
+        thumb_ip = core.point_from_record(hand_map.get("THUMB_IP"))
+        thumb_mcp = core.point_from_record(hand_map.get("THUMB_MCP"))
+        wrist = core.point_from_record(hand_map.get("WRIST"))
+        index_tip = core.point_from_record(hand_map.get("INDEX_FINGER_TIP"))
+
+        thumb_angle = core.angle_between_points(thumb_mcp, thumb_ip, thumb_tip)
+        thumb_up = (
+            thumb_tip is not None
+            and thumb_ip is not None
+            and thumb_mcp is not None
+            and wrist is not None
+            and thumb_angle is not None
+            and thumb_angle >= 145
+            and thumb_tip[1] < thumb_ip[1] < thumb_mcp[1]
+            and wrist[1] - thumb_tip[1] > scale * 0.28
+        )
+
+        pinch_distance = core.distance_between_points(thumb_tip, index_tip)
+        pinch = pinch_distance is not None and pinch_distance <= scale * 0.42
+
+        extended = {
+            "thumb": thumb_up,
+            "index": core.finger_is_extended(
+                hand_map,
+                "INDEX_FINGER_MCP",
+                "INDEX_FINGER_PIP",
+                "INDEX_FINGER_TIP",
+            ),
+            "middle": core.finger_is_extended(
+                hand_map,
+                "MIDDLE_FINGER_MCP",
+                "MIDDLE_FINGER_PIP",
+                "MIDDLE_FINGER_TIP",
+            ),
+            "ring": core.finger_is_extended(
+                hand_map,
+                "RING_FINGER_MCP",
+                "RING_FINGER_PIP",
+                "RING_FINGER_TIP",
+            ),
+            "pinky": core.finger_is_extended(
+                hand_map,
+                "PINKY_MCP",
+                "PINKY_PIP",
+                "PINKY_TIP",
+            ),
+        }
+
+        return {
+            "extended": extended,
+            "pinch": pinch,
+            "thumb_up": thumb_up,
+        }
+
+
+    def hand_scale(self, hand_map):
+        wrist = core.point_from_record(hand_map.get("WRIST"))
+        middle_mcp = core.point_from_record(hand_map.get("MIDDLE_FINGER_MCP"))
+        index_mcp = core.point_from_record(hand_map.get("INDEX_FINGER_MCP"))
+        pinky_mcp = core.point_from_record(hand_map.get("PINKY_MCP"))
+
+        scale = core.distance_between_points(wrist, middle_mcp)
+        if scale is None or scale <= 0:
+            scale = core.distance_between_points(index_mcp, pinky_mcp)
+        if scale is None or scale <= 0:
+            scale = 80
+        return scale
+
+
+    def update_head_history(self, frame_record):
+        offset = self.get_head_offset(frame_record)
+        self.head_history.append(offset)
+
+
+    def get_head_offset(self, frame_record):
+        upper_body = frame_record["upper_body_landmarks"]
+        nose = upper_body.get("NOSE")
+        left_eye = upper_body.get("LEFT_EYE")
+        right_eye = upper_body.get("RIGHT_EYE")
+        if nose is None or left_eye is None or right_eye is None:
+            return None
+
+        left_eye_point = core.point_from_record(left_eye)
+        right_eye_point = core.point_from_record(right_eye)
+        nose_point = core.point_from_record(nose)
+        eye_distance = core.distance_between_points(left_eye_point, right_eye_point)
+        if eye_distance is None or eye_distance <= 0:
+            return None
+
+        center_x = (left_eye_point[0] + right_eye_point[0]) / 2
+        center_y = (left_eye_point[1] + right_eye_point[1]) / 2
+        return (
+            (nose_point[0] - center_x) / eye_distance,
+            (nose_point[1] - center_y) / eye_distance,
+        )
+
+
+    def detect_head_motion(self):
+        offsets = [offset for offset in self.head_history if offset is not None]
+        if len(offsets) < 12:
+            return "WAIT"
+
+        xs = [offset[0] for offset in offsets]
+        ys = [offset[1] for offset in offsets]
+        x_amplitude = max(xs) - min(xs)
+        y_amplitude = max(ys) - min(ys)
+        x_changes = self.count_direction_changes(xs, min_delta=0.035)
+        y_changes = self.count_direction_changes(ys, min_delta=0.035)
+
+        if y_amplitude >= 0.23 and y_changes >= 2 and y_amplitude > x_amplitude * 1.12:
+            return "AGREE"
+        if x_amplitude >= 0.2 and x_changes >= 2 and x_amplitude > y_amplitude * 1.12:
+            return "NEGATIVE"
+        return "WAIT"
+
+
+    def detect_attention_state(self, frame_record):
+        has_face = bool(frame_record["face_landmarks"])
+        has_nose = frame_record["upper_body_landmarks"].get("NOSE") is not None
+        if not has_face and not has_nose:
+            self.away_frame_count += 1
+        else:
+            self.away_frame_count = 0
+
+        if self.away_frame_count >= 12:
+            return "AWAY"
+        if not has_face:
+            return "SEARCHING"
+
+        direction = self.detect_face_direction(frame_record["upper_body_landmarks"])
+        if direction == "CENTER":
+            return "SCREEN"
+        if direction in ("LEFT", "RIGHT"):
+            return "LOOKING_AWAY"
+        return "SEARCHING"
+
+
+    def count_direction_changes(self, values, min_delta):
+        signs = []
+        for previous, current in zip(values, values[1:]):
+            delta = current - previous
+            if abs(delta) < min_delta:
+                continue
+            signs.append(1 if delta > 0 else -1)
+
+        changes = 0
+        previous_sign = None
+        for sign in signs:
+            if previous_sign is not None and sign != previous_sign:
+                changes += 1
+            previous_sign = sign
+        return changes
+
+
+    def get_display_hand_states(self, frame_record):
+        left_state = frame_record["hand_gestures"]["left"]["state"]
+        right_state = frame_record["hand_gestures"]["right"]["state"]
+        if self.mirror_var.get():
+            return right_state, left_state
+        return left_state, right_state
+
+
+    def get_hand_label_side_map(self):
+        if self.mirror_var.get():
+            return {"left": "right", "right": "left"}
+        return None
+
+
+    def detect_face_direction(self, upper_body_landmarks):
+        nose = upper_body_landmarks.get("NOSE")
+        left_eye = upper_body_landmarks.get("LEFT_EYE")
+        right_eye = upper_body_landmarks.get("RIGHT_EYE")
+
+        if nose is None or left_eye is None or right_eye is None:
+            return "NONE"
+
+        center_x = (left_eye["pixel_x"] + right_eye["pixel_x"]) / 2
+        eye_distance = abs(right_eye["pixel_x"] - left_eye["pixel_x"])
+        if eye_distance <= 0:
+            return "CENTER"
+
+        delta = nose["pixel_x"] - center_x
+        threshold = eye_distance * 0.16
+        if delta <= -threshold:
+            return "LEFT"
+        if delta >= threshold:
+            return "RIGHT"
+        return "CENTER"
+
+
+    def update_air_paths(self, frame_record):
+        for side in ("left", "right"):
+            hand_records = frame_record[f"{side}_hand_landmarks"]
+            if not hand_records:
+                self.air_paths[side].append(None)
+                self.trim_air_path(side)
+                continue
+
+            hand_map = core.records_by_name(hand_records)
+            index_tip = hand_map.get("INDEX_FINGER_TIP")
+            if index_tip is None:
+                self.air_paths[side].append(None)
+            else:
+                self.air_paths[side].append((index_tip["pixel_x"], index_tip["pixel_y"]))
+            self.trim_air_path(side)
+
+
+    def trim_air_path(self, side):
+        if len(self.air_paths[side]) > self.air_max_points:
+            self.air_paths[side] = self.air_paths[side][-self.air_max_points :]
+
+
+    def draw_air_paths(self, frame_bgr):
+        if frame_bgr is None:
+            return
+        for side, points in self.air_paths.items():
+            previous = None
+            for point in points:
+                if point is None:
+                    previous = None
+                    continue
+                if previous is not None:
+                    cv2.line(frame_bgr, previous, point, AIR_DRAWING_COLORS[side], 3, cv2.LINE_AA)
+                previous = point
+
+
+    def on_close(self):
+        if self.is_shutting_down:
+            return
+        self.is_shutting_down = True
+        log_event('recognition.shutdown.started', '사용자 인식 종료 시작', category='사용자 인식')
+        self.stt.stop()
+        self.finish_shutdown()
+
+    def finish_shutdown(self):
+        if not self.release_camera():
+            self.scheduler.after(100, self.finish_shutdown)
+            return
+        self.event_client.stop()
+        self.holistic.close()
+        self.preview_publisher.close()
+        self.scheduler.destroy()
+        log_event('recognition.shutdown.completed', '사용자 인식 종료 완료', category='사용자 인식')
+
+
+    def make_value(self, value):
+        return StateValue(value)
+
+    def prepare_presentation(self):
+        pass
+
+    def prepare_camera_choices(self):
+        # Validate the saved device on its first open. A full rescan remains an
+        # explicit settings action rather than blocking every app start.
+        saved = self.device_settings.get('camera', {})
+        backends = dict(core.webcam_backends('auto'))
+        if (isinstance(saved, dict) and type(saved.get('index')) is int
+                and saved['index'] >= 0 and saved.get('backend_label') in backends):
+            self.apply_camera_candidates([{'index': saved['index'],
+                                           'backend': backends[saved['backend_label']],
+                                           'backend_label': saved['backend_label']}])
+        else:
+            self.refresh_cameras(stop_after_first=True)
+
+    def camera_choices_changed(self):
+        pass
+
+    def microphone_choices_changed(self, labels):
+        pass
+
+    def stt_running_changed(self, running):
+        pass
+
+    def report_error(self, title, message):
+        # Errors have already been recorded by the calling operation.
+        pass
+
+    def append_stt_text(self, text):
+        # Speech results remain available in recognition_state and the log UI.
+        pass
+
+    def update_mode_buttons(self):
+        pass
+
+    def preview_visible(self):
+        return self.preview_enabled and self.preview_publisher.ready()
+
+    def set_preview_enabled(self, enabled):
+        self.preview_enabled = bool(enabled)
+        self.preview_publisher.set_enabled(self.preview_enabled)
+
+    def show_console(self):
+        self.set_preview_enabled(True)
+
+    def hide_console(self):
+        self.set_preview_enabled(False)
+
+    def render_frame(self, frame_bgr):
+        self.preview_publisher.offer(frame_bgr, {
+            'result': self.result_var.get(), 'emotion': self.build_emotion_state(),
+            'speech': self.latest_speech_text, 'stt': self.stt_status_var.get()})

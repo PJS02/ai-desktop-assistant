@@ -1819,13 +1819,12 @@ class CharacterWidget(QLabel):
             self.cham_game.close()
 
     def show_perception_console(self):
-        """백그라운드에서 실행 중인 사용자 인식 창의 표시를 요청한다."""
+        """통합 설정의 사용자 인식 미리보기를 연다."""
         if self._show_perception_console_callback is None:
             print("[사용자 인식 콘솔] 실행 관리자가 연결되지 않았습니다.")
             return
         try:
-            if not self._show_perception_console_callback():
-                print("[사용자 인식 콘솔] 창을 표시하지 못했습니다.")
+            self._show_perception_console_callback()
         except Exception as exc:
             # 메뉴 콜백 오류가 캐릭터의 Qt 이벤트 루프까지 종료시키지 않게 한다.
             print(f"[사용자 인식 콘솔 오류] {exc}")
@@ -1845,8 +1844,6 @@ class CharacterWidget(QLabel):
         log_action.triggered.connect(self.show_log_window)
         settings_action = menu.addAction("설정")
         settings_action.triggered.connect(self.show_settings)
-        console_action = menu.addAction("사용자인식 콘솔")
-        console_action.triggered.connect(self.show_perception_console)
         show_action = menu.addAction("감정 판단 근거 보기")
         show_action.triggered.connect(self.show_russell_dialog)
         menu.addSeparator()
