@@ -446,10 +446,14 @@ class CharacterWidget(QLabel):
             # Diagnostics also paint in transparent host padding. Keep that
             # display in front of the taskbar without enlarging collision bounds.
             body = QRect(0, 0, self.width(), self.height())
-        return self._taskbar_visibility_guard.ensure_visible(
+        restored = self._taskbar_visibility_guard.ensure_visible(
             int(self.winId()),
             body_offset=(body.x(), body.y(), body.width(), body.height()),
             widget_size=(self.width(), self.height()))
+        overlay = getattr(self, 'hand_overlay', None)
+        if restored and overlay is not None:
+            overlay.raise_above_character()
+        return restored
     
     def _initialize_character_renderer(self):
         """Keep the host window and its events; replace only character drawing."""

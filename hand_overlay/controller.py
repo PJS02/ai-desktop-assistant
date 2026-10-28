@@ -5,7 +5,7 @@ import math
 import time
 
 from PyQt6.QtCore import QObject, QTimer, Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled
 from character.hand_overlay_options import normalize_hand_overlay_options
@@ -220,11 +220,26 @@ class HandOverlayController(QObject):
                 window = next((candidate for candidate in self._windows if candidate not in used), None)
                 if window is None:
                     window = self._factory()
-                    window.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
                     self._windows.append(window)
+                    window.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+                    if isinstance(self.parent(), QWidget):
+                        window.set_overlay_owner(self.parent())
                 self._bindings[hand.track_id] = window
             window.show_hand(hand, screen, self._aspect, self._options['size_percent'] / 100,
                              False, self._options['smooth'], self._options['range_percent'])
+
+    def raise_above_character(self):
+        """Restore hands only when the host explicitly restores its own Z order."""
+        if self._closed:
+            return
+        for window in self._windows:
+            if window.isVisible():
+                try:
+                    window.raise_above_owner()
+                except OSError as exc:
+                    log_throttled('hand_overlay.stacking.failed', '손 표시 순서 복구 실패',
+                                  key='hand-overlay-stacking', interval=10,
+                                  level='WARNING', error=str(exc))
 
     def stop(self):
         if self._closed:
