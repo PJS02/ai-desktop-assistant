@@ -596,6 +596,12 @@ class CharacterWidget(QLabel):
         if getattr(self, "rig_view", None) is not None:
             self.rig_view.setGeometry(self.rect())
 
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        dialogue = getattr(self, 'dialogue_system', None)
+        if dialogue is not None:
+            dialogue.update_dialogue_position()
+
     def _get_screen_dimensions(self):
         """Use logical Qt dimensions, refreshing resolution and scaling changes."""
         geometry = self._get_screen_geometry()

@@ -2,6 +2,22 @@
 from PyQt6.QtCore import QPoint, QRect, QSize
 
 
+def place_near_ankles(anchor: QRect, size: QSize, bounds: QRect,
+                      avoid: QRect | None = None) -> QPoint:
+    """Center user speech just above the ankles, clamped to the actual screen."""
+    x = anchor.center().x() - size.width() // 2
+    y = anchor.top() + round(anchor.height() * .88) - size.height() // 2
+    x = max(bounds.left(), min(x, bounds.right() - size.width() + 1))
+    y = max(bounds.top(), min(y, bounds.bottom() - size.height() + 1))
+    placed = QRect(QPoint(x, y), size)
+    if avoid is not None and placed.intersects(avoid):
+        for candidate in (avoid.left() - size.width() - 10, avoid.right() + 11):
+            alternative = QRect(candidate, y, size.width(), size.height())
+            if bounds.contains(alternative) and not alternative.intersects(avoid):
+                return alternative.topLeft()
+    return placed.topLeft()
+
+
 def place_above_character(anchor: QRect, size: QSize, bounds: QRect,
                           avoid: QRect | None = None, gap=10) -> QPoint:
     x = anchor.center().x() - size.width() // 2

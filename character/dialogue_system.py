@@ -1,6 +1,6 @@
 # 캐릭터 대화 시스템
 from PyQt6.QtCore import QTimer, pyqtSignal, pyqtSlot, QObject, Qt
-from .dialogue_widget import DialogueBubble, DialogueNarrationBox, DialogueInputWidget
+from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrationBox, DialogueInputWidget
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
 from .dialogue_styles import normalize_dialogue_style
@@ -34,6 +34,7 @@ class DialogueSystem(QObject):
         
         self.character_widget = character_widget
         self.current_dialogue: Optional[DialogueBubble] = None
+        self.current_user_dialogue: Optional[UserDialogueBubble] = None
         self.current_narration: Optional[DialogueNarrationBox] = None
         self.current_input_widget: Optional[DialogueInputWidget] = None
         self.tts = tts if tts is not None else SupertonicTTS()
@@ -120,31 +121,40 @@ class DialogueSystem(QObject):
         else:
             self._show_bubble(text, duration, log_context=context)
     
-    def _show_bubble(self, text: str, duration: int, *, log_context=None):
+    def show_user_dialogue(self, text: str, duration: int = 3000, *, log_context=None):
+        if not self._closed:
+            self._show_bubble(text, duration, log_context=log_context, user=True)
+
+    def _show_bubble(self, text: str, duration: int, *, log_context=None, user=False):
         """말풍선 대화 표시"""
+        slot = 'current_user_dialogue' if user else 'current_dialogue'
+        display_type = 'user_bubble' if user else 'bubble'
         # 이전 말풍선 종료
-        if self.current_dialogue:
-            previous, self.current_dialogue = self.current_dialogue, None
+        previous = getattr(self, slot)
+        if previous:
+            setattr(self, slot, None)
             log_event('dialogue.widget_replaced', '이전 말풍선 교체', category='대화·AI',
                       trace_id=getattr(previous, '_log_context', {}).get('trace_id'),
                       replacement_trace_id=(log_context or {}).get('trace_id'),
-                      previous_text=previous.text, text=text, display_type='bubble')
+                      previous_text=previous.text, text=text, display_type=display_type)
             previous._log_close_reason = 'replaced'
             previous.close()
         
         # 새 말풍선 생성
-        bubble = DialogueBubble(text, duration, style=self.bubble_style)
+        bubble = (UserDialogueBubble(text, duration) if user
+                  else DialogueBubble(text, duration, style=self.bubble_style))
         bubble._log_context = dict(log_context or {})
         bubble.dialogue_closed.connect(lambda: self._on_bubble_closed(bubble))
         
-        self.current_dialogue = bubble
+        setattr(self, slot, bubble)
         self.update_dialogue_position()
         bubble.show()
         log_event('dialogue.widget_shown', '말풍선 위젯 표시', category='대화·AI',
                   trace_id=bubble._log_context.get('trace_id'), text=text,
-                  display_type='bubble', visible=bubble.isVisible(), duration_ms=duration)
+                  display_type=display_type, visible=bubble.isVisible(), duration_ms=duration)
         
-        self.dialogue_started.emit(text)
+        if not user:
+            self.dialogue_started.emit(text)
 
     def set_bubble_style(self, style):
         self.bubble_style = normalize_dialogue_style(style, strict=True)
@@ -158,8 +168,10 @@ class DialogueSystem(QObject):
             log_event('dialogue.widget_closed', '말풍선 닫힘', category='대화·AI',
                       trace_id=getattr(bubble, '_log_context', {}).get('trace_id'),
                       reason=getattr(bubble, '_log_close_reason', 'closed'), text=bubble.text,
-                      display_type='bubble')
-        if self.current_dialogue is bubble:
+                      display_type='user_bubble' if isinstance(bubble, UserDialogueBubble) else 'bubble')
+        if self.current_user_dialogue is bubble:
+            self.current_user_dialogue = None
+        elif self.current_dialogue is bubble:
             self._on_dialogue_closed()
         bubble.deleteLater()
     
@@ -306,6 +318,9 @@ class DialogueSystem(QObject):
     
     def close_current_dialogue(self, reason='closed'):
         """현재 표시 중인 대화 종료"""
+        if self.current_user_dialogue:
+            self.current_user_dialogue._log_close_reason = reason
+            self.current_user_dialogue.close()
         if self.current_dialogue:
             self.current_dialogue._log_close_reason = reason
             self.current_dialogue.close()
@@ -315,7 +330,7 @@ class DialogueSystem(QObject):
     
     def update_dialogue_position(self):
         """캐릭터 위치 변화에 따라 현재 대화의 위치 업데이트"""
-        if self.current_dialogue:
+        if self.current_dialogue or self.current_user_dialogue:
             host = self.character_widget
             measure = getattr(host, '_physics_body_rect', None)
             body = measure() if measure else QRect(0, 0, host.width(), host.height())
@@ -324,12 +339,19 @@ class DialogueSystem(QObject):
             if cham is not None and cham.isVisible():
                 game = cham
             avoid = game.geometry() if game is not None and game.isVisible() else None
-            self.current_dialogue.update_position_with_character(
-                host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), avoid)
+            if self.current_dialogue:
+                self.current_dialogue.update_position_with_character(
+                    host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), avoid)
+            if self.current_user_dialogue:
+                user_avoid = avoid
+                if self.current_dialogue:
+                    user_avoid = self.current_dialogue.geometry().united(avoid) if avoid else self.current_dialogue.geometry()
+                self.current_user_dialogue.update_position_with_character(
+                    host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), user_avoid)
     
     def is_dialogue_active(self) -> bool:
         """현재 대화 표시 중인지 확인"""
-        return (self.current_dialogue is not None or 
+        return (self.current_dialogue is not None or self.current_user_dialogue is not None or
                 self.current_narration is not None or
                 len(self.dialogue_queue) > 0)
     # ===== AI 대화 시스템 ======
@@ -414,7 +436,7 @@ class DialogueSystem(QObject):
                   trace_id=turn['trace_id'], turn_id=turn['turn_id'], generation=generation,
                   queue_size=len(self.pending_inputs),
                   queued_seconds=round(now - turn['queued_at'], 3))
-        self.show_dialogue(f"[사용자]: {turn['text']}", duration=3000, log_context=context)
+        self.show_user_dialogue(turn['text'], duration=3000, log_context=context)
         try:
             if not self.gemini_config:
                 self._load_gemini_config()
