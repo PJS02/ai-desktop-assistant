@@ -22,6 +22,7 @@ class DialogueSystem(QObject):
     dialogue_ended = pyqtSignal()       # 대화 종료
     user_input_received = pyqtSignal(str, str)  # text, text/voice
     ai_response_ready = pyqtSignal(object)
+    ai_motion_changed = pyqtSignal(str)
     
     def __init__(self, character_widget, *, tts=None, response_provider=None,
                  time_provider=time.monotonic):
@@ -402,6 +403,7 @@ class DialogueSystem(QObject):
         self._active_input = turn
         turn['state'] = 'responding'
         self.is_ai_responding = True
+        self.ai_motion_changed.emit('waiting')
         self.last_request_time = now
         self._request_generation += 1
         generation = self._request_generation
@@ -579,6 +581,8 @@ class DialogueSystem(QObject):
         if pending is None or self._closed:
             return
         text, context, legacy = pending
+        if reason != 'ai_error':
+            self.ai_motion_changed.emit('idle')
         # Count the normal reading interval from display, including delayed audio.
         self._response_hold_until = max(self._response_hold_until, self._time_provider() + 5.0)
         if legacy and getattr(self.show_dialogue, '__func__', None) is not DialogueSystem.show_dialogue:
@@ -620,6 +624,7 @@ class DialogueSystem(QObject):
         # Preserve failure status through normalization: friendly error notices
         # belong in the bubble, but must not be synthesized as character speech.
         if failed or self._is_error_response(response_text):
+            self.ai_motion_changed.emit('error')
             self._flush_ai_response('ai_error')
             log_event('dialogue.tts_skipped', 'AI 오류 안내 음성 생략', category='대화·AI',
                       trace_id=context['trace_id'], reason='ai_error', text=response_text)
@@ -659,6 +664,7 @@ class DialogueSystem(QObject):
                       text=self._active_input.get('text'))
         self._active_input = None
         self.is_ai_responding = False
+        self.ai_motion_changed.emit('idle')
         self.clear_queue(reason='shutdown')
         self.close_current_dialogue(reason='shutdown')
         if self.current_input_widget:

@@ -298,6 +298,9 @@ class SandboxManager:
         self._cooldown_until = time.monotonic() + cooldown_seconds
         ball.interaction_enabled = False
         self.character_widget._ball_chasing = False
+        self.character_widget._ball_chase_action = None
+        self.character_widget._chase_last_time = None
+        self.character_widget.update_action(self.character_widget.mood_system.decide_emotion())
         log_event('sandbox.ball.cooldown', '공 상호작용을 잠시 쉽니다.', category='캐릭터 상태',
                   trace_id=ball.log_trace_id, cooldown_seconds=cooldown_seconds,
                   cooldown_until=self._cooldown_until)

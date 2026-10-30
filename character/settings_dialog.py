@@ -132,12 +132,13 @@ class SettingsDialog(QDialog):
         return combo
 
     def _character_page(self, local):
-        _, _, form = self._page('캐릭터', '크기와 이동 속도는 바로 적용되고, 이동 폭은 다음 랜덤 이동부터, 점프 높이는 다음 점프부터 반영됩니다. 활동 범위와 점프는 화면 안으로 제한됩니다.')
+        _, _, form = self._page('캐릭터', '크기·이동 속도·달리기 속도는 바로 적용되고, 이동 폭은 다음 랜덤 이동부터, 점프 높이는 다음 점프부터 반영됩니다. 활동 범위와 점프는 화면 안으로 제한됩니다.')
         self.character_sliders = {}
         self.character_inputs = {}
         for key, label, suffix in (
             ('size_percent', '캐릭터 크기', ' %'),
             ('movement_speed', '이동 속도', ' px/초'),
+            ('running_speed', '달리기 속도', ' px/초'),
             ('movement_range_extra_percent', '추가 이동 폭 비율', ' %'),
             ('jump_height', '점프 높이', ' px'),
         ):

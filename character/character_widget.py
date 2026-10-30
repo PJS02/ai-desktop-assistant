@@ -27,6 +27,7 @@ from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
+from .automatic_actions import AutomaticActions
 from .taskbar_visibility import TaskbarVisibilityGuard
 
 CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
@@ -136,6 +137,7 @@ class CharacterWidget(QLabel):
         options = normalize_character_options(character_options)
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
+        self.running_speed = options['running_speed']
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.show_debug = options['show_hitboxes']
@@ -395,6 +397,8 @@ class CharacterWidget(QLabel):
         self._greeting_retry_timer.setInterval(100)
         self._greeting_retry_timer.timeout.connect(self._try_user_greeting)
         self.manual_control = ManualControl(self, self)
+        self.automatic_actions = AutomaticActions(self, self)
+        self.dialogue_system.ai_motion_changed.connect(self.automatic_actions.set_ai_state)
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
             mood_system=self.mood_system,
@@ -729,6 +733,8 @@ class CharacterWidget(QLabel):
         self._automatic_request_active = False
         if hasattr(self, 'manual_control'):
             self.manual_control.shutdown()
+        if hasattr(self, 'automatic_actions'):
+            self.automatic_actions.shutdown()
         if hasattr(getattr(self, 'dialogue_system', None), 'shutdown'):
             self.dialogue_system.shutdown()
         self._pending_user_greeting_until = None
@@ -976,6 +982,7 @@ class CharacterWidget(QLabel):
         """Start ambient work only when the user conversation has released the UI."""
         reason = ('context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
                   else 'closing' if getattr(self, '_character_closing', False)
+                  else 'sleeping' if getattr(self, '_automatic_pose', None) == 'sleep'
                   else 'conversation_busy' if CharacterWidget._dialogue_is_busy(self)
                   else 'request_in_flight' if getattr(self, '_automatic_request_active', False) else None)
         if reason:
@@ -1132,6 +1139,8 @@ class CharacterWidget(QLabel):
         """캐릭터 상호작용 시 전용 방치 시간을 초기화한다."""
         self._last_character_interaction_time = time.monotonic()
         self.idle_counter = 0
+        if hasattr(self, 'automatic_actions'):
+            self.automatic_actions.wake()
 
     def update_mood(self):
         if self.is_dragging or self.is_moving:
@@ -1163,6 +1172,8 @@ class CharacterWidget(QLabel):
         if CharacterWidget._cham_game_active(self):
             return
         if self._manual_control_active():
+            return
+        if getattr(self, '_automatic_pose', None):
             return
         now = time.monotonic()
         if idle_seconds < 15.0:
@@ -1233,6 +1244,7 @@ class CharacterWidget(QLabel):
                     or getattr(self, "is_jumping", False)
                     or not getattr(self, "on_ground", True)
                     or self._rig_manual_action is not None
+                    or getattr(self, '_automatic_pose', None) is not None
                     or (self.sprite_animator.current_action == "land"
                         and self.sprite_animator.is_playing))
             if not busy:
@@ -1890,7 +1902,7 @@ class CharacterWidget(QLabel):
             self.set_pixmap_with_flip(self.current_pixmap)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, *, trace_id=None):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, *, running_speed=None, trace_id=None):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
         same_width = self.custom_screen_width == requested_width
@@ -1903,6 +1915,7 @@ class CharacterWidget(QLabel):
         options = normalize_character_options({
             'size_percent': self.size_percent if size_percent is None else size_percent,
             'movement_speed': self.movement_speed if movement_speed is None else movement_speed,
+            'running_speed': self.running_speed if running_speed is None else running_speed,
             'jump_height': self.jump_height if jump_height is None else jump_height,
             'show_hitboxes': self.show_debug if show_hitboxes is None else show_hitboxes,
             'movement_range_extra_percent': (self.movement_range_extra_percent
@@ -1915,6 +1928,7 @@ class CharacterWidget(QLabel):
         foot_y = self.y() + old_body.y() + old_body.height()
         self.size_percent = options['size_percent']
         self.movement_speed = options['movement_speed']
+        self.running_speed = options['running_speed']
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.set_show_hitboxes(options['show_hitboxes'])
@@ -1970,6 +1984,7 @@ class CharacterWidget(QLabel):
 
     def select_ball(self):
         """Select the sandbox ball for the next character click."""
+        self._mark_character_interaction()
         if CharacterWidget._cham_game_active(self):
             self.cham_game.close()
         message = self.sandbox_manager.select_ball()
@@ -2408,6 +2423,8 @@ class CharacterWidget(QLabel):
             return
         if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
             return
+        if getattr(self, '_automatic_pose', None):
+            return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or (self.sprite_animator.current_action == "land"
                     and self.sprite_animator.is_playing)):
@@ -2497,6 +2514,9 @@ class CharacterWidget(QLabel):
         if self._manual_control_active() or self.is_dragging or self.is_jumping:
             self._chase_last_time = None
             return
+        if getattr(self, '_automatic_pose', None):
+            self._chase_last_time = None
+            return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or not self.on_ground
                 or (self.sprite_animator.current_action == "land"
@@ -2519,8 +2539,15 @@ class CharacterWidget(QLabel):
                 log_event('character.ball_chase_arrived', '공 이동 목표 도착', category='캐릭터 상태', target_x=target_x, position=(self.x(), self.y()))
                 self._ball_arrival_logged = True
             self._chase_last_time = None
+            self._ball_chasing = False
+            self._ball_chase_action = None
+            self.update_action(self.mood_system.decide_emotion())
             return
         self._ball_arrival_logged = False
+        # Choose once per route: a run stays a run all the way to arrival.
+        if not was_chasing or not getattr(self, '_ball_chase_action', None):
+            self._ball_chase_action = ('run' if self.rig_view is not None
+                                       and abs(delta_x) >= max(120, body.width() * 2) else 'walk')
 
         emotion_info = self.mood_system.decide_emotion()
         emotion = emotion_info.get("emotion", "neutral")
@@ -2550,13 +2577,18 @@ class CharacterWidget(QLabel):
         if not was_chasing:
             self._movement_x = float(self.x())
         self.is_flipped = delta_x > 0
-        self._advance_horizontal(target_x, elapsed, speed_scale=speed_scale)
-        self.animation_controller.update_base_pos(self.pos())
-
         walk_animation = self._get_walk_animation(emotion)
-        if self.current_action != walk_animation:
-            self.current_action = walk_animation
-            self.sprite_animator.play(walk_animation, fps=24, loop=True)
+        action = 'run' if self._ball_chase_action == 'run' else walk_animation
+        if self.current_action != action:
+            self.current_action = action
+            self.sprite_animator.play(action, fps=24, loop=True)
+        reached = self._advance_horizontal(target_x, elapsed, speed_scale=speed_scale)
+        self.animation_controller.update_base_pos(self.pos())
+        if reached:
+            self._ball_chasing = False
+            self._ball_chase_action = None
+            self._chase_last_time = None
+            self.update_action(emotion_info)
     
     def _get_walk_animation(self, emotion):
         """
@@ -2629,8 +2661,8 @@ class CharacterWidget(QLabel):
         if round(current) != self.x():
             current = float(self.x())
         distance = target_x - current
-        step = (getattr(self, 'movement_speed', DEFAULT_CHARACTER_OPTIONS['movement_speed'])
-                * speed_scale * elapsed)
+        speed_key = 'running_speed' if self.current_action.startswith('run') else 'movement_speed'
+        step = getattr(self, speed_key, DEFAULT_CHARACTER_OPTIONS[speed_key]) * speed_scale * elapsed
         reached = abs(distance) <= step
         self._movement_x = float(target_x) if reached else current + math.copysign(step, distance)
         self.move(round(self._movement_x), self.y())
