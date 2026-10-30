@@ -5,6 +5,7 @@ from app_logging import log_event
 from .motion_options import normalize_character_options
 from .dialogue_styles import normalize_dialogue_style
 from .hand_overlay_options import normalize_hand_overlay_options
+from .personality_system import BigFivePersonality, PersonalitySystem
 
 
 CONFIG_FILE = Path.home() / ".ai_desktop_assistant" / "config.json"
@@ -51,6 +52,20 @@ def load_character_options():
         return normalize_character_options()
 
 
+def load_personality_traits():
+    """Load optional custom Big Five values; old preset-only configs still work."""
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+        if (not isinstance(data, dict) or data.get('personality_traits_version') != 2
+                or not isinstance(data.get('personality_traits'), dict)):
+            return None
+        return BigFivePersonality.from_dict(data['personality_traits']).to_dict()
+    except (OSError, ValueError, AttributeError) as exc:
+        log_event('settings.personality.fallback', '성격 값을 기본 프리셋으로 불러옵니다.',
+                  level='WARNING', path=str(CONFIG_FILE), error=str(exc))
+        return None
+
+
 def load_dialogue_style():
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
@@ -91,7 +106,7 @@ def save_hand_overlay_options(options, *, trace_id=None):
 
 
 def save_config(width, height, personality='Russell (기본)', character_options=None,
-                dialogue_style=None, *, trace_id=None):
+                dialogue_style=None, personality_traits=None, *, trace_id=None):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -99,6 +114,13 @@ def save_config(width, height, personality='Russell (기본)', character_options
         if not isinstance(config, dict):
             raise ValueError('설정 파일 형식이 올바르지 않습니다.')
         config.update(resolution={'width': width, 'height': height}, personality=personality)
+        if personality_traits is not None:
+            selected = personality if personality in PersonalitySystem.PERSONALITY_PRESETS else 'Russell (기본)'
+            defaults = PersonalitySystem.PERSONALITY_PRESETS[selected]
+            merged = {name: defaults[name] for name in BigFivePersonality.TRAIT_NAMES}
+            merged.update(BigFivePersonality.from_dict(personality_traits, strict=True).to_dict())
+            config['personality_traits'] = merged
+            config['personality_traits_version'] = 2
         if dialogue_style is not None:
             dialogue = config.get('dialogue', {})
             dialogue = dialogue.copy() if isinstance(dialogue, dict) else {}

@@ -38,9 +38,6 @@ class BallWidget(QWidget):
         self.x_velocity = 4.5 if character.x() < manager.screen_center_x else -4.5
         self.y_velocity = -8.0
         self.is_dragging = False
-        self._hand_dragging = False
-        self._hand_play = bool(getattr(getattr(character, 'hand_overlay', None),
-                                       'options', {}).get('enabled', False))
         self._drag_offset = QPoint()
         self._last_drag_pos = QPoint()
         self._last_collision_at = 0.0
@@ -81,10 +78,6 @@ class BallWidget(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            interactions = getattr(self.manager.character_widget, 'hand_interactions', None)
-            if interactions is not None:
-                interactions.cancel('ball_mouse_input')
-            self._hand_play = False
             self.is_dragging = True
             self._drag_offset = event.position().toPoint()
             self._last_drag_pos = event.globalPosition().toPoint()
@@ -93,32 +86,6 @@ class BallWidget(QWidget):
             log_event('sandbox.ball.drag_started', '공을 잡았습니다.', category='캐릭터 상태',
                       trace_id=self.log_trace_id, position=[self.x(), self.y()])
             event.accept()
-
-    def begin_hand_drag(self, point):
-        self._hand_play = True
-        self._hand_dragging = self.is_dragging = True
-        self._hand_offset = (point[0] - self.x(), point[1] - self.y())
-        self.x_velocity = self.y_velocity = 0.
-
-    def move_hand_drag(self, point):
-        if not self._hand_dragging:
-            return
-        x, y = point[0] - self._hand_offset[0], point[1] - self._hand_offset[1]
-        self.move(round(max(self.manager.screen_left, min(x, self.manager.screen_right - self.width()))),
-                  round(max(self.manager.screen_top, min(y, self.manager.screen_bottom - self.height()))))
-
-    def end_hand_drag(self, velocity, *, reason='released'):
-        if not self._hand_dragging:
-            return
-        self._hand_dragging = self.is_dragging = False
-        # Engine velocities are logical pixels/second; ball physics uses pixels
-        # per 16 ms tick. Tracking loss drops safely instead of replaying a throw.
-        self.x_velocity, self.y_velocity = tuple(
-            max(-24., min(24., value * .016)) if reason == 'released' else 0.
-            for value in velocity)
-        log_event('sandbox.ball.hand_released', '손으로 공 놓기', category='캐릭터 상태',
-                  trace_id=self.log_trace_id, reason=reason,
-                  velocity=[self.x_velocity, self.y_velocity], mood_applied=False)
 
     def mouseMoveEvent(self, event):
         if self.is_dragging:
@@ -192,13 +159,11 @@ class BallWidget(QWidget):
                   category='캐릭터 상태', trace_id=self.log_trace_id,
                   position=[self.x(), self.y()], kick_direction=kick_direction,
                   velocity=[self.x_velocity, self.y_velocity])
-        if not getattr(self, '_hand_play', False):
-            character.mood_system.on_ball_play()
+        character.mood_system.on_ball_play()
         character.update_action(character.mood_system.decide_emotion())
         self.manager.start_interaction_cooldown(self)
 
     def closeEvent(self, event):
-        self._hand_dragging = self.is_dragging = False
         log_event('sandbox.ball.ended', '공 놀이를 종료합니다.', category='캐릭터 상태',
                   trace_id=self.log_trace_id, position=[self.x(), self.y()])
         self.physics_timer.stop()
@@ -298,9 +263,6 @@ class SandboxManager:
         self._cooldown_until = time.monotonic() + cooldown_seconds
         ball.interaction_enabled = False
         self.character_widget._ball_chasing = False
-        self.character_widget._ball_chase_action = None
-        self.character_widget._chase_last_time = None
-        self.character_widget.update_action(self.character_widget.mood_system.decide_emotion())
         log_event('sandbox.ball.cooldown', '공 상호작용을 잠시 쉽니다.', category='캐릭터 상태',
                   trace_id=ball.log_trace_id, cooldown_seconds=cooldown_seconds,
                   cooldown_until=self._cooldown_until)

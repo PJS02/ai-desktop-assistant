@@ -1,6 +1,7 @@
 # Big Five 성격 모델 구현
 from dataclasses import dataclass
 from typing import Dict
+import math
 
 
 @dataclass
@@ -8,7 +9,7 @@ class BigFivePersonality:
     """Big Five 성격 모델 (각 특성 -1.0 ~ +1.0)
     
     범위 설명:
-    - openness: -1.0(보수적) ~ +1.0(개방적)
+    - openness: -1.0(익숙한 방식 선호) ~ +1.0(새로운 경험 선호)
     - conscientiousness: -1.0(충동적) ~ +1.0(성실함)
     - extraversion: -1.0(내향적) ~ +1.0(외향적)
     - agreeableness: -1.0(독립적) ~ +1.0(친화적)
@@ -19,6 +20,24 @@ class BigFivePersonality:
     extraversion: float = 0.0
     agreeableness: float = 0.0
     neuroticism: float = 0.0
+
+    TRAIT_NAMES = ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism")
+
+    @classmethod
+    def from_dict(cls, values, *, strict=False):
+        """Build a bounded trait vector from persisted or UI values."""
+        values = values if isinstance(values, dict) else {}
+        normalized = {}
+        for name in cls.TRAIT_NAMES:
+            value = values.get(name, 0.0)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                if strict:
+                    raise ValueError(f"{name} must be a finite number")
+                value = 0.0
+            if strict and not -1.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between -1.0 and 1.0")
+            normalized[name] = max(-1.0, min(1.0, float(value)))
+        return cls(**normalized)
     
     def clamp(self) -> None:
         """모든 값을 -1.0 ~ +1.0 범위로 정규화"""
@@ -54,45 +73,45 @@ class PersonalitySystem:
     
     # 성격 프리셋
     PERSONALITY_PRESETS = {
-        "Russell (기본)": {
-            "openness": 0.7,
-            "conscientiousness": 0.6,
-            "extraversion": 0.5,
-            "agreeableness": 0.8,
-            "neuroticism": -0.3,
-            "description": "호기심 많고 친절하며 안정적인 도우미"
+        "(Default)": {
+            "openness": 0.15,
+            "conscientiousness": 0.4,
+            "extraversion": 0.2,
+            "agreeableness": 0.65,
+            "neuroticism": -0.35,
+            "description": "익숙한 방식을 존중하면서 필요할 때 새 아이디어를 제안하는 균형 잡힌 도우미"
         },
         "밝고 활발": {
-            "openness": 0.8,
-            "conscientiousness": 0.5,
+            "openness": 0.65,
+            "conscientiousness": 0.15,
             "extraversion": 0.9,      # 매우 외향적
-            "agreeableness": 0.7,
-            "neuroticism": -0.5,
-            "description": "긍정적이고 사교적이며 에너지 넘침"
+            "agreeableness": 0.75,
+            "neuroticism": -0.45,
+            "description": "새로운 활동을 먼저 제안하고 생각을 활기차게 나누는 사교적인 성격"
         },
         "진중하고 신중": {
-            "openness": 0.5,
+            "openness": -0.65,
             "conscientiousness": 0.9, # 매우 성실함
-            "extraversion": -0.3,
-            "agreeableness": 0.6,
-            "neuroticism": -0.7,
-            "description": "신중하고 책임감 있으며 전문적"
+            "extraversion": -0.65,
+            "agreeableness": 0.2,
+            "neuroticism": -0.5,
+            "description": "검증된 방법과 정확한 절차를 선호하며 차분하고 책임감 있게 응답"
         },
         "친근하고 따뜻": {
-            "openness": 0.6,
-            "conscientiousness": 0.7,
-            "extraversion": 0.6,
+            "openness": 0.25,
+            "conscientiousness": 0.45,
+            "extraversion": 0.4,
             "agreeableness": 0.95,    # 매우 친화적
-            "neuroticism": -0.6,
-            "description": "공감 능력 뛰어나고 항상 도움을 줌"
+            "neuroticism": -0.55,
+            "description": "상대의 감정과 필요를 우선 살피고 따뜻하게 협력하는 성격"
         },
         "창의적이고 자유로움": {
-            "openness": 0.95,         # 매우 개방적
-            "conscientiousness": -0.2,
-            "extraversion": 0.4,
-            "agreeableness": 0.5,
-            "neuroticism": 0.1,
-            "description": "혁신적이고 독창적인 아이디어 제시"
+            "openness": 1.0,         # 새로운 경험과 관점을 강하게 선호
+            "conscientiousness": -0.45,
+            "extraversion": 0.45,
+            "agreeableness": 0.25,
+            "neuroticism": 0.15,
+            "description": "익숙한 답에 머물지 않고 대안과 독창적인 관점을 적극 제안"
         },
     }
     
@@ -123,6 +142,13 @@ class PersonalitySystem:
         )
         self.personality.clamp()
         self.preset_name = preset_name
+
+    def set_traits(self, values, *, preset_name=None) -> None:
+        """Replace the trait vector while preserving its selected preset label."""
+        self.personality = BigFivePersonality.from_dict(values)
+        self.personality.clamp()
+        if preset_name in self.PERSONALITY_PRESETS:
+            self.preset_name = preset_name
     
     def get_personality_traits(self) -> Dict[str, str]:
         """현재 성격 특성을 설명하는 문자열 딕셔너리 반환"""
@@ -131,12 +157,14 @@ class PersonalitySystem:
         # Openness 분석
         if self.personality.openness > 0.5:
             traits["openness"] = "호기심 많고 창의적"
-        elif self.personality.openness > 0.0:
+        elif self.personality.openness > 0.2:
             traits["openness"] = "새로운 것에 개방적"
-        elif self.personality.openness > -0.5:
-            traits["openness"] = "습관을 좋아함"
+        elif self.personality.openness > -0.2:
+            traits["openness"] = "새로움과 익숙함을 균형 있게 고려"
+        elif self.personality.openness > -0.6:
+            traits["openness"] = "익숙하고 검증된 방식을 선호"
         else:
-            traits["openness"] = "전통적이고 보수적"
+            traits["openness"] = "새로운 변화보다 안정된 절차를 강하게 선호"
         
         # Conscientiousness 분석
         if self.personality.conscientiousness > 0.5:
@@ -190,6 +218,7 @@ class PersonalitySystem:
         """AI 프롬프트에 포함할 성격 설명 반환"""
         traits = self.get_personality_traits()
         personality_text = (
+            f"수치(각 -1.0~+1.0): {self.personality.to_formatted_string()}\n"
             f"개방성: {traits['openness']}\n"
             f"성실성: {traits['conscientiousness']}\n"
             f"외향성: {traits['extraversion']}\n"
@@ -217,11 +246,31 @@ class PersonalitySystem:
             # 신경증 높으면 부정적 이벤트에 더 반응
             multiplier *= (1.0 + self.personality.neuroticism * 0.5)
         
-        elif event_type == "shame":
+        elif event_type in ("shame", "self_failure"):
             # 성실성 높으면 실수(shame)에 더 반응
             multiplier *= (1.0 + self.personality.conscientiousness * 0.4)
         
         return multiplier
+
+    def get_event_weight_multiplier(self, *, valence=0.0, self_attribution=0.0,
+                                    agent_benevolence=0.0, novelty=0.0):
+        """Return bounded, auditable Big Five effects for OCC appraisal dimensions."""
+        factors = []
+        if valence > 0:
+            factors.append(("외향성 긍정 반응", 1.0 + self.personality.extraversion * 0.3))
+        elif valence < 0:
+            factors.append(("신경증 부정 반응", 1.0 + self.personality.neuroticism * 0.5))
+            if self_attribution > 0.5:
+                factors.append(("성실성 자기귀속 반응", 1.0 + self.personality.conscientiousness * 0.4))
+        if agent_benevolence > 0:
+            factors.append(("친화성 호의 반응", 1.0 + self.personality.agreeableness * 0.2))
+        elif agent_benevolence < 0:
+            factors.append(("친화성 적대 반응", 1.0 - self.personality.agreeableness * 0.2))
+        if novelty > 0:
+            factors.append(("개방성 새로움 반응", 1.0 + self.personality.openness * 0.35))
+        multiplier = math.prod(value for _, value in factors)
+        multiplier = max(0.25, min(2.0, multiplier))
+        return multiplier, [f"{label} ×{value:.2f}" for label, value in factors]
     
     def get_dialogue_tone_hints(self) -> str:
         """현재 성격에 맞는 대화 톤 힌트 반환"""
@@ -231,14 +280,31 @@ class PersonalitySystem:
             hints.append("활발하고 친근한 톤")
         elif self.personality.extraversion < -0.5:
             hints.append("차분하고 신중한 톤")
+        elif self.personality.extraversion < 0:
+            hints.append("차분하게 말하는 톤")
         
-        if self.personality.openness > 0.5:
-            hints.append("호기심을 드러내기")
+        if self.personality.openness > 0.65:
+            hints.append("익숙한 답에 그치지 말고 새로운 관점과 대안을 적극 제안")
+        elif self.personality.openness > 0.2:
+            hints.append("호기심을 보이고 가능한 선택지를 함께 탐색")
+        elif self.personality.openness < -0.65:
+            hints.append("검증된 정보와 익숙한 해결 절차를 우선")
+        elif self.personality.openness < -0.2:
+            hints.append("새로운 방법은 장단점을 확인한 뒤 신중히 제안")
         
         if self.personality.agreeableness > 0.5:
             hints.append("상대방의 감정 공감하기")
+        elif self.personality.agreeableness < -0.5:
+            hints.append("예의를 지키며 근거를 바탕으로 솔직하게 답변")
         
         if self.personality.conscientiousness > 0.5:
             hints.append("책임감 있고 정확한 답변")
+        elif self.personality.conscientiousness < -0.5:
+            hints.append("유연하게 답변하고 불필요한 단정은 피하기")
+
+        if self.personality.neuroticism > 0.5:
+            hints.append("걱정이나 불확실성을 섬세하게 표현하되 과장하지 않기")
+        elif self.personality.neuroticism < -0.5:
+            hints.append("차분하고 안정적인 태도 유지")
         
         return " | ".join(hints) if hints else "자연스러운 톤"

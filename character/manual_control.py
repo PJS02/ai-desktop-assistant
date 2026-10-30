@@ -126,9 +126,6 @@ class ManualControl(QObject):
             host.set_pixmap_with_flip(host.current_pixmap)
 
     def execute(self, command):
-        interactions = getattr(self.host, 'hand_interactions', None)
-        if interactions is not None:
-            interactions.cancel('manual_command')
         host = self.host
         self.log_trace_id = new_trace_id('manual')
         log_event('character.manual.requested', '캐릭터 직접 조작을 요청했습니다.',
@@ -166,9 +163,6 @@ class ManualControl(QObject):
                           command=command, reason='missing_asset', assets_path=str(host.assets_path))
                 self._status('현재 PNG 캐릭터에는 이 동작 이미지가 없습니다.')
                 return
-        game = getattr(host, 'cham_game', None)
-        if game is not None and game.is_active:
-            game.close()
         if command == 'resume':
             self._stop_horizontal()
             self.active = False

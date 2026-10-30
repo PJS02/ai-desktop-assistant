@@ -28,25 +28,6 @@ audio playback, speaking/busy notifications and dialogue tracing stay in the
 existing application service. Switching voices or cancelling speech discards old
 results. App shutdown terminates the owned inference process.
 
-When voice output is enabled, startup prepares the selected model on the existing
-background worker, without generating or playing speech. The first utterance
-reuses that model; selecting another voice or enabling output prepares it again.
-Disabled voice output does not preload a model. Missing custom models still need
-to be installed from settings.
-
-Startup readiness appears as one bar above the character with a percentage beside
-it. Hover over the bar for each model/device's status. The percentage averages
-confirmed preparation steps across enabled features, rather than estimating time;
-tasks without intermediate progress advance when their ready event arrives.
-The bar hides three seconds after completion and returns for loading or errors.
-
-**설정 → 음성 → 말풍선과 음성 재생 동기화** controls when AI response text
-appears. It defaults to off (show text immediately). When on, the bubble waits
-for the audio device's actual playback-start signal, rather than synthesis
-completion. Disabled/unavailable audio and AI error notices still display text.
-Turning synchronization off while waiting releases the text immediately. The
-setting is applied and saved with the other voice settings.
-
 ## Release preparation
 
 The custom voice is published in the
