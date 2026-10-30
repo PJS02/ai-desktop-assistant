@@ -1,6 +1,8 @@
 """Small, shared readiness display driven by actual initialization events."""
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from html import escape
+
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from app_logging import subscribe
 
@@ -48,7 +50,7 @@ EVENTS = {
     'tts.model_loading': ('voice', 'loading', '음성 모델을 불러오는 중'),
     'tts.model_ready': ('voice', 'ready', '음성 모델 준비 완료'),
     'tts.model_failed': ('voice', 'error', '음성 모델을 준비하지 못했어요'),
-    'tts.model_unloaded': ('voice', 'idle', '다음 발화 때 모델을 준비해요'),
+    'tts.model_unloaded': ('voice', 'waiting', '음성 모델 준비를 기다리는 중'),
 }
 
 
@@ -60,7 +62,7 @@ class PreparationStatus(QObject):
         super().__init__(parent)
         self.states = {key: ('waiting', '앞 단계가 끝나면 준비해요') for key in LABELS}
         self.states['character'] = ('loading', '그림과 동작을 불러오는 중')
-        self.states['voice'] = ('idle', '첫 발화 때 모델을 준비해요')
+        self.states['voice'] = ('waiting', '선택한 음성 모델을 준비해요')
         self.states['hands'] = ('off', '손 표시를 켜면 준비해요')
         self.stage_progress = {key: None for key in LABELS}
         self.voice_enabled = True
@@ -104,9 +106,9 @@ class PreparationStatus(QObject):
             self.voice_enabled = data['enabled']
             voice = data['voice_id']
             self.voice_model = voice if voice in ('gpt_sovits', 'openvoice_v2') else 'supertonic-3'
-            state = ('ready' if self.voice_model in self.ready_voice_models else 'idle') if self.voice_enabled else 'off'
+            state = ('ready' if self.voice_model in self.ready_voice_models else 'waiting') if self.voice_enabled else 'off'
             self.set_state('voice', state, '음성 출력 꺼짐' if not self.voice_enabled else
-                           '음성 모델 준비 완료' if state == 'ready' else '첫 발화 때 모델을 준비해요')
+                           '음성 모델 준비 완료' if state == 'ready' else '선택한 음성 모델을 준비해요')
         elif name == 'hand_overlay.settings.applied':
             enabled = data['options']['enabled']
             if enabled != self.hands_enabled:
@@ -154,6 +156,21 @@ class PreparationStatus(QObject):
     @property
     def settled(self):
         return all(state in ('ready', 'idle', 'off') for state, _ in self.states.values())
+
+    @property
+    def percent(self):
+        active = [key for key, (state, _) in self.states.items() if state not in ('off', 'idle')]
+        if not active:
+            return 100
+        completed = 0.
+        for key in active:
+            state, _ = self.states[key]
+            progress = self.stage_progress[key]
+            if state == 'ready':
+                completed += 1
+            elif progress is not None:
+                completed += min(.99, progress[0] / progress[1])
+        return int(completed * 100 / len(active))
 
 class PreparationView(QWidget):
     """The popup and settings render the same state, with their own row subset."""
@@ -226,87 +243,101 @@ class PreparationView(QWidget):
             value.setAccessibleName(f'{LABELS[key]} {caption}')
 
 
-class PreparationPanel(QFrame):
-    settings_requested = pyqtSignal()
-
-    def __init__(self, status):
-        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                         | Qt.WindowType.WindowStaysOnTopHint)
-        self.status = status
-        self.dismissed = False
+class PreparationOverlay(QWidget):
+    """One non-activating bar attached to the character, with details on hover."""
+    def __init__(self, status, character):
+        super().__init__(character, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.status, self.character = status, character
+        self._completed = False
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setWindowTitle('프로그램 준비 상태')
-        self.setObjectName('preparationPanel')
-        self.setFixedWidth(344)
-        self.setStyleSheet('''
-            QFrame#preparationPanel { background: white; border: 1px solid #e5e7eb; border-radius: 8px; }
-            QLabel { color: #202936; background: transparent; }
-            QPushButton { background: #f1f3f5; color: #202936; border: none; border-radius: 4px;
-                          padding: 7px 12px; font-size: 12px; }
-            QPushButton:hover { background: #e5e7eb; }
-            QPushButton:focus { border: 2px solid #2463b6; }
-        ''')
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(16)
-        self.title = QLabel('프로그램 준비 중')
-        self.title.setStyleSheet('font-size: 20px; font-weight: 600;')
-        layout.addWidget(self.title)
-        layout.addWidget(PreparationView(status))
-        footer = QHBoxLayout()
-        self.settings_button = QPushButton('설정 열기')
-        self.settings_button.setEnabled(False)
-        self.settings_button.clicked.connect(self.settings_requested)
-        footer.addWidget(self.settings_button)
-        footer.addStretch()
-        hide_button = QPushButton('숨기기')
-        hide_button.clicked.connect(self.dismiss)
-        footer.addWidget(hide_button)
-        layout.addLayout(footer)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWindowTitle('캐릭터 준비 진행률')
+        self.setFixedSize(220, 28)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 4, 4, 4)
+        layout.setSpacing(8)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        self.bar.setAccessibleName('프로그램 준비 진행률')
+        self.percentage = QLabel()
+        self.percentage.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.percentage.setFixedWidth(44)
+        self.percentage.setStyleSheet('color: #202936; background: #f6f8fc; border-radius: 8px; '
+                                     'font-size: 12px; font-weight: 600;')
+        layout.addWidget(self.bar, 1)
+        layout.addWidget(self.percentage)
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.setInterval(3000)
-        self.hide_timer.timeout.connect(self.hide)
+        self.hide_timer.timeout.connect(self._finish)
+        # Visual body bounds change during rig loading/animation without a resize.
+        self.follow_timer = QTimer(self)
+        self.follow_timer.setInterval(100)
+        self.follow_timer.timeout.connect(self.reposition)
+        character.installEventFilter(self)
         status.changed.connect(self.refresh)
-        self.adjustSize()
-        self.reposition()
-        app = QApplication.instance()
-        app.primaryScreenChanged.connect(self.reposition)
-        if app.primaryScreen() is not None:
-            app.primaryScreen().availableGeometryChanged.connect(self.reposition)
-
-    def bind_character(self, character):
-        self.settings_button.setEnabled(True)
-        self.reposition()
-
-    def dismiss(self):
-        self.dismissed = True
-        self.hide_timer.stop()
-        self.hide()
+        self.refresh()
 
     def refresh(self):
-        states = [state for state, _ in self.status.states.values()]
-        error = 'error' in states
-        self.title.setText('준비 상태 확인' if error else
-                           '준비 완료' if self.status.settled else '프로그램 준비 중')
-        if error or not self.status.settled:
+        error = any(state == 'error' for state, _ in self.status.states.values())
+        percent = self.status.percent
+        self.bar.setValue(percent)
+        self.percentage.setText(f'{percent}%')
+        color = '#b42318' if error else '#2463b6'
+        self.bar.setStyleSheet('QProgressBar { background: #e3e8f0; border: 1px solid #cbd5e1; '
+                              'border-radius: 4px; } QProgressBar::chunk { background: '
+                              + color + '; border-radius: 3px; }')
+        details = ['<b>' + ('준비 상태 확인' if error else '준비 완료' if self.status.settled
+                            else '프로그램 준비 중') + '</b>']
+        for key, (state, text) in self.status.states.items():
+            progress = self.status.stage_progress[key]
+            stage = f' ({progress[0]}/{progress[1]} 단계)' if progress and state != 'ready' else ''
+            details.append(f'{LABELS[key]} · {STATE_TEXT[state]}{stage}<br>{escape(text)}')
+        details.append('전체 %는 확인된 준비 단계 기준이며, 남은 시간 비율이 아닙니다.')
+        tooltip = '<br><br>'.join(details)
+        for widget in (self, self.bar, self.percentage):
+            widget.setToolTip(tooltip)
+        self.bar.setAccessibleDescription(f'{percent}% 준비. ' + '; '.join(
+            f'{LABELS[key]} {STATE_TEXT[state]}: {text}' for key, (state, text) in self.status.states.items()))
+        if not self.status.settled:
+            self._completed = False
             self.hide_timer.stop()
-            if not self.dismissed:
-                if not self.isVisible():
-                    self.reposition()
-                self.show()
-        elif not self.hide_timer.isActive() and self.isVisible():
+        elif not self._completed and not self.hide_timer.isActive():
             self.hide_timer.start()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
         self.reposition()
 
+    def _finish(self):
+        self._completed = True
+        self.hide()
+        self.follow_timer.stop()
+
+    def eventFilter(self, watched, event):
+        if watched is self.character:
+            if event.type() in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Show):
+                self.reposition()
+            elif event.type() in (QEvent.Type.Hide, QEvent.Type.Close):
+                self.hide()
+                self.follow_timer.stop()
+        return super().eventFilter(watched, event)
+
     def reposition(self):
-        screen = QApplication.primaryScreen()
+        if self._completed or not self.character.isVisible():
+            self.hide()
+            self.follow_timer.stop()
+            return
+        from .overlay_geometry import place_above_character
+        anchor = self.character._physics_body_rect().translated(self.character.mapToGlobal(QPoint()))
+        screen = QApplication.screenAt(anchor.center()) or self.character.screen()
         if screen is None:
             return
-        area = screen.availableGeometry()
-        x, y = area.right() - self.width() - 20, area.bottom() - self.height() - 20
-        self.move(max(area.left() + 12, min(x, area.right() - self.width() - 12)),
-                  max(area.top() + 12, min(y, area.bottom() - self.height() - 12)))
+        dialogue = getattr(getattr(self.character, 'dialogue_system', None), 'current_dialogue', None)
+        avoid = dialogue.geometry() if dialogue is not None and dialogue.isVisible() else None
+        self.move(place_above_character(anchor, self.size(), screen.availableGeometry(), avoid, gap=8))
+        if not self.isVisible():
+            self.show()
+        if not self.follow_timer.isActive():
+            self.follow_timer.start()

@@ -116,7 +116,8 @@ class LocalVoiceBackend:
             raise RuntimeError('TTS 모델 준비 응답이 올바르지 않습니다.')
         log_event('tts.model_ready', '음성 모델 준비 완료', category='대화·AI', model=voice)
 
-    def synthesize(self, text, voice, cancelled):
+    def prepare(self, voice, cancelled):
+        """Load and retain the selected model without generating any speech."""
         try:
             self._start(voice, cancelled)
         except SynthesisCancelled:
@@ -126,6 +127,9 @@ class LocalVoiceBackend:
             log_event('tts.model_failed', '음성 모델 준비 실패', category='대화·AI',
                       level='ERROR', model=voice, error=str(exc))
             raise
+
+    def synthesize(self, text, voice, cancelled):
+        self.prepare(voice, cancelled)
         if cancelled():
             raise SynthesisCancelled()
         fd, name = tempfile.mkstemp(suffix='.wav', prefix='capstone-tts-')

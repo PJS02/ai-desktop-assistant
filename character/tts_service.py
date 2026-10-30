@@ -69,6 +69,7 @@ class SupertonicTTS(QObject):
         self._thread: threading.Thread | None = None
         self._generation = 0
         self._closed = False
+        self._preload_enabled = False
         self._custom_backend = LocalVoiceBackend()
         self._audio_sink: QAudioSink | None = None
         self._audio_buffer: QBuffer | None = None
@@ -101,6 +102,7 @@ class SupertonicTTS(QObject):
     def set_enabled(self, enabled: bool) -> None:
         if enabled and self._voice_id in ENGINE_NAMES:
             self._validate_custom_voice(self._voice_id)
+        was_enabled = self._enabled
         self._enabled = bool(enabled)
         self._settings.setValue("tts/enabled", self._enabled)
         self._log_configuration()
@@ -111,13 +113,16 @@ class SupertonicTTS(QObject):
             self._set_busy(False)
             if self._thread is not None:
                 self._enqueue("stop", self._generation, "", "")
+        elif not was_enabled and self._preload_enabled:
+            self.prepare()
 
     def set_voice(self, voice_id: str) -> None:
         if voice_id not in (*_VOICE_IDS, *ENGINE_NAMES):
             raise ValueError(f"Unknown TTS voice: {voice_id}")
         if self._enabled and voice_id in ENGINE_NAMES:
             self._validate_custom_voice(voice_id)
-        if voice_id != self._voice_id:
+        changed = voice_id != self._voice_id
+        if changed:
             self._cancel_request(self._generation, 'voice_changed')
             self._generation += 1
             self._stop_playback(reason='voice_changed')
@@ -125,6 +130,8 @@ class SupertonicTTS(QObject):
         self._voice_id = voice_id
         self._settings.setValue("tts/voice_id", voice_id)
         self._log_configuration()
+        if changed and self._preload_enabled:
+            self.prepare()
 
     @staticmethod
     def _validate_custom_voice(voice_id):
@@ -143,6 +150,19 @@ class SupertonicTTS(QObject):
 
     def speak(self, text: str) -> None:
         self.speak_with_context(text, {})
+
+    def prepare(self) -> None:
+        """Startup warmup shares the synthesis worker and never plays audio."""
+        self._preload_enabled = True
+        if self._closed or not self._enabled or self._busy:
+            return
+        self._start_worker()
+        self._enqueue('prepare', self._generation, '', self._voice_id)
+
+    def _start_worker(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._run, daemon=True, name="supertonic-tts")
+            self._thread.start()
 
     def speak_with_context(self, text: str, context=None) -> None:
         """Keep speak(text) compatible while correlating actual synthesis and playback."""
@@ -165,9 +185,7 @@ class SupertonicTTS(QObject):
                       language=_language_for(prepared))
         self._set_busy(True)
         self._stop_playback(reason='replaced')
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._run, daemon=True, name="supertonic-tts")
-            self._thread.start()
+        self._start_worker()
         self._enqueue("speak", self._generation, prepared, self._voice_id)
 
     def close(self) -> None:
@@ -212,7 +230,9 @@ class SupertonicTTS(QObject):
                 command, generation, text, voice_id = self._commands.get()
                 if command == "close":
                     return
-                if command == "stop" or generation != self._generation or self._closed:
+                if (command == "stop" or self._closed or not self._enabled
+                        or voice_id != self._voice_id
+                        or (command == 'speak' and generation != self._generation)):
                     if command == 'speak':
                         self._log_tts('tts.synthesis_discarded', '만료된 합성 요청 생략',
                                       generation=generation, reason='shutdown' if self._closed else 'generation_mismatch')
@@ -221,8 +241,15 @@ class SupertonicTTS(QObject):
                 context = dict(self._request_contexts.get(generation, {}))
                 synthesis_started = time.monotonic()
                 try:
-                    self._log_tts('tts.synthesis_started', '음성 합성 시작', generation=generation,
-                                  context=context, text=text, voice_id=voice_id, language=_language_for(text))
+                    # A same-voice utterance arriving during warmup reuses that
+                    # load instead of cancelling and restarting the model.
+                    cancelled = lambda: self._closed or not self._enabled or voice_id != self._voice_id
+                    if command == 'prepare' and voice_id in ENGINE_NAMES:
+                        self._custom_backend.prepare(voice_id, cancelled)
+                        continue
+                    if command == 'speak':
+                        self._log_tts('tts.synthesis_started', '음성 합성 시작', generation=generation,
+                                      context=context, text=text, voice_id=voice_id, language=_language_for(text))
                     if voice_id in ENGINE_NAMES:
                         pcm, sample_rate = self._custom_backend.synthesize(text, voice_id,
                             lambda: generation != self._generation or self._closed or not self._enabled)
@@ -232,12 +259,23 @@ class SupertonicTTS(QObject):
                         if model is None:
                             started = time.monotonic()
                             self._log_tts('tts.model_loading', 'Supertonic 3 모델 로딩 시작', model='supertonic-3')
-                            model = self._model_factory()
+                            try:
+                                model = self._model_factory()
+                                styles[voice_id] = model.get_voice_style(voice_id)
+                            except Exception as exc:
+                                model = None
+                                self._log_tts('tts.model_failed', '음성 모델 준비 실패',
+                                              level='ERROR', model='supertonic-3', error=str(exc))
+                                raise
                             self._log_tts('tts.model_ready', 'Supertonic 3 모델 준비 완료', model='supertonic-3',
                                           elapsed_ms=round((time.monotonic() - started) * 1000, 2),
                                           sample_rate=model.sample_rate)
                         if voice_id not in styles:
                             styles[voice_id] = model.get_voice_style(voice_id)
+                        if cancelled():
+                            continue
+                        if command == 'prepare':
+                            continue
                         wav, _ = model.synthesize(text, voice_style=styles[voice_id], lang=_language_for(text))
                         import numpy as np
                         samples = np.asarray(wav).reshape(-1)
@@ -255,12 +293,14 @@ class SupertonicTTS(QObject):
                                   audio_seconds=len(pcm) / 2 / sample_rate)
                     self.audio_ready.emit(generation, pcm, sample_rate)
                 except SynthesisCancelled:
-                    self._request_contexts.pop(generation, None)
+                    if command == 'speak':
+                        self._request_contexts.pop(generation, None)
                 except Exception as exc:
-                    self._log_tts('tts.synthesis_failed', '음성 합성 실패', generation=generation,
-                                  context=context, level='ERROR', error=str(exc),
-                                  elapsed_ms=round((time.monotonic() - synthesis_started) * 1000, 2))
-                    self.request_finished.emit(generation)
+                    if command == 'speak':
+                        self._log_tts('tts.synthesis_failed', '음성 합성 실패', generation=generation,
+                                      context=context, level='ERROR', error=str(exc),
+                                      elapsed_ms=round((time.monotonic() - synthesis_started) * 1000, 2))
+                        self.request_finished.emit(generation)
         except Exception as exc:
             self._log_tts('tts.worker_failed', '음성 작업 처리 실패', level='ERROR', error=str(exc))
             self.request_finished.emit(self._generation)

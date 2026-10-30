@@ -329,12 +329,9 @@ def main():
     app = QApplication(sys.argv)
     if _startup_capture is not None:
         _startup_capture.handoff_python()
-    # Paint the lightweight panel before importing/constructing the character.
-    from character.preparation_status import PreparationPanel, PreparationStatus
+    # Subscribe before character initialization so its early readiness is retained.
+    from character.preparation_status import PreparationOverlay, PreparationStatus
     preparation = PreparationStatus(app)
-    preparation_panel = PreparationPanel(preparation)
-    preparation_panel.show()
-    app.processEvents()
 
     from character.character_widget import CharacterWidget
     from character.config_manager import load_config, load_character_options, load_hand_overlay_options
@@ -374,16 +371,16 @@ def main():
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
     character._show_perception_console_callback = settings_controller.show_recognition
-    preparation_panel.settings_requested.connect(settings_controller.show)
-    preparation_panel.bind_character(character)
+    character.preparation_overlay = PreparationOverlay(preparation, character)
     character.show()
+    QTimer.singleShot(0, character.dialogue_system.tts.prepare)
 
     # 캐릭터의 인식 수신기가 준비된 다음 창 없는 인식 작업을 실행한다.
     mediapipe_manager.start()
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
     app.aboutToQuit.connect(hand_overlay.stop)
     app.aboutToQuit.connect(mediapipe_manager.stop)
-    app.aboutToQuit.connect(preparation_panel.hide)
+    app.aboutToQuit.connect(character.preparation_overlay.hide)
     app.aboutToQuit.connect(preparation.close)
 
     exit_code = None
