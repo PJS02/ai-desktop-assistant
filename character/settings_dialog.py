@@ -35,6 +35,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
+        local['voice'].setdefault('sync_bubble', False)
         self.setWindowTitle('설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
         self.resize(700, 640)
@@ -343,6 +344,11 @@ class SettingsDialog(QDialog):
         self.tts_enabled.toggled.connect(self.voice.setEnabled)
         form.addRow(self.tts_enabled)
         form.addRow('목소리', self.voice)
+        self.sync_bubble = QCheckBox('말풍선과 음성 재생 동기화')
+        self.sync_bubble.setChecked(local['voice']['sync_bubble'])
+        self.sync_bubble.setToolTip('켜면 음성이 실제로 시작될 때 말풍선을 표시합니다.\n'
+                                   '끄면 답변을 먼저 표시합니다. 음성을 재생하지 못하면 텍스트만 표시합니다.')
+        form.addRow(self.sync_bubble)
         self.voice_runtime_status = QLabel()
         self.voice_runtime_status.setWordWrap(True)
         form.addRow(self.voice_runtime_status)
@@ -643,7 +649,8 @@ class SettingsDialog(QDialog):
 
     def changes(self):
         local = {'character': {'width': self.width.value(), 'height': self.height.value(), 'personality': self.personality.currentData()},
-                 'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData()},
+                 'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData(),
+                           'sync_bubble': self.sync_bubble.isChecked()},
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()

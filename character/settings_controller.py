@@ -50,7 +50,8 @@ class SettingsController(QObject):
             ai = self.character.gemini_config
             ai_error = 'AI 설정 파일을 읽을 수 없습니다. 파일을 확인한 뒤 다시 열어 주세요.'
         local = {'character': {'width': width, 'height': height, 'personality': personality},
-                 'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id},
+                 'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
+                           'sync_bubble': tts.sync_bubble},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style()}
@@ -161,6 +162,7 @@ class SettingsController(QObject):
                     tts.set_voice(value['voice_id'])
                     if value['enabled']:
                         tts.set_enabled(True)
+                    tts.set_sync_bubble(value.get('sync_bubble', False))
                     tts.sync_settings()
                 elif section == 'dialogue':
                     width, height, personality = load_config()

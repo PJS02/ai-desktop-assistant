@@ -56,12 +56,14 @@ class SupertonicTTS(QObject):
     audio_ready = pyqtSignal(int, bytes, int)  # 요청 번호, 16비트 PCM, 샘플레이트
     speaking_changed = pyqtSignal(bool)  # 실제 오디오 재생 상태 (합성 대기 제외)
     busy_changed = pyqtSignal(bool)  # synthesis or playback; ordered dialogue waits for both
+    sync_bubble_changed = pyqtSignal(bool)
     request_finished = pyqtSignal(int)
 
     def __init__(self, settings=None, model_factory=None):
         super().__init__()
         self._settings = settings if settings is not None else QSettings("PJS02", "AIDesktopAssistant")
         self._enabled = self._settings.value("tts/enabled", True, type=bool)
+        self._sync_bubble = self._settings.value('tts/sync_bubble', False, type=bool)
         saved_voice = self._settings.value("tts/voice_id", "F1", type=str)
         self._voice_id = saved_voice if saved_voice in (*_VOICE_IDS, *ENGINE_NAMES) else "F1"
         self._model_factory = model_factory or self._create_model
@@ -98,6 +100,17 @@ class SupertonicTTS(QObject):
     @property
     def busy(self) -> bool:
         return self._busy
+
+    @property
+    def sync_bubble(self) -> bool:
+        return self._sync_bubble
+
+    def set_sync_bubble(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self._settings.setValue('tts/sync_bubble', enabled)
+        if enabled != self._sync_bubble:
+            self._sync_bubble = enabled
+            self.sync_bubble_changed.emit(enabled)
 
     def set_enabled(self, enabled: bool) -> None:
         if enabled and self._voice_id in ENGINE_NAMES:
@@ -146,7 +159,7 @@ class SupertonicTTS(QObject):
                           status=str(self._settings.status()))
             raise OSError('음성 설정을 저장하지 못했습니다.')
         self._log_tts('tts.settings_saved', '음성 설정 저장 확인', enabled=self._enabled,
-                      voice_id=self._voice_id)
+                      voice_id=self._voice_id, sync_bubble=self._sync_bubble)
 
     def speak(self, text: str) -> None:
         self.speak_with_context(text, {})
@@ -391,7 +404,7 @@ class SupertonicTTS(QObject):
             and state == QAudio.State.ActiveState
             and sink.error() == QAudio.Error.NoError
         )
-        if state in (QAudio.State.IdleState, QAudio.State.StoppedState):
+        if error != QAudio.Error.NoError or state in (QAudio.State.IdleState, QAudio.State.StoppedState):
             self._set_busy(False)
 
     def _finish_request(self, generation):
