@@ -1862,6 +1862,9 @@ class CharacterWidget(QLabel):
         menu.addSeparator()
         ball_action = menu.addAction("공 꺼내기")
         ball_action.triggered.connect(self.select_ball)
+        if self.sandbox_manager.ball is not None:
+            remove_ball_action = menu.addAction("공 없애기")
+            remove_ball_action.triggered.connect(self.sandbox_manager.ball.close)
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)

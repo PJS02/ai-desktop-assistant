@@ -204,12 +204,17 @@ class BallWidget(QWidget):
         self.physics_timer.stop()
         self.manager.character_widget._ball_session_active = False
         self.manager.character_widget._ball_chasing = False
+        self.manager.character_widget._ball_chase_action = None
+        self.manager.character_widget._chase_last_time = None
         if not self.manager.character_widget.is_dragging:
             self.manager.character_widget.sprite_animator.stop()
             self.manager.character_widget.update_action(
                 self.manager.character_widget.mood_system.decide_emotion()
             )
         if self.manager.ball is self:
+            if self.manager._warmup_timer is not None:
+                self.manager._warmup_timer.stop()
+            self.manager._cooldown_until = 0.0
             self.manager.ball = None
         super().closeEvent(event)
 
