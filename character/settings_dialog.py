@@ -7,7 +7,7 @@ from app_logging import log_event
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -20,6 +20,18 @@ from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAME
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
+
+
+class _SettingsComboBox(QComboBox):
+    def wheelEvent(self, event):
+        # Let the settings page scroll without changing the selected option.
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                QApplication.sendEvent(parent.viewport(), event)
+                return
+            parent = parent.parentWidget()
+        event.ignore()
 
 
 class SettingsDialog(QDialog):
@@ -115,17 +127,9 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(scroll, name)
         return content, layout, form
 
-    def set_preparation_status(self, status):
-        from .preparation_status import PreparationView
-
-        for index, keys in ((0, ('character',)), (1, ('microphone', 'voice')),
-                            (2, ('tracker', 'emotion', 'camera', 'hands'))):
-            content = self.tabs.widget(index).widget()
-            content.layout().insertWidget(1, PreparationView(status, keys, content, compact=True))
-
     @staticmethod
     def _combo(choices, current):
-        combo = QComboBox()
+        combo = _SettingsComboBox()
         for label, value in choices:
             combo.addItem(label, value)
         combo.setCurrentIndex(max(0, combo.findData(current)))
