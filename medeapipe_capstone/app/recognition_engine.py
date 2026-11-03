@@ -415,7 +415,7 @@ class RecognitionEngine(SettingsBridge):
     def start_full_camera_discovery(self):
         if self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive():
             self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
-            return
+            return True
         # Windows 카메라 백엔드는 실행 중인 장치를 다시 열지 못할 수 있으므로
         log_event('device.camera.discovery.started', '카메라 전체 재검색 시작', category='사용자 인식', active_camera=getattr(self, 'active_camera_candidate', None), restarting=self.cap is not None)
         # 새로고침 동안만 해제하고 검색 후 같은 선택으로 자동 재시작한다.
@@ -424,7 +424,7 @@ class RecognitionEngine(SettingsBridge):
             if not self.release_camera():
                 self.status_var.set('이전 카메라가 종료 중입니다. 잠시 후 다시 검색하세요.')
                 self.restart_camera_after_discovery = False
-                return
+                return False
         self.status_var.set("\uc804\uccb4 \uce74\uba54\ub77c \uac80\uc0c9 \uc911")
         self.camera_discovery_thread = threading.Thread(
             target=self.discover_all_cameras,
@@ -432,6 +432,7 @@ class RecognitionEngine(SettingsBridge):
             daemon=True,
         )
         self.camera_discovery_thread.start()
+        return True
 
 
     def discover_all_cameras(self):
@@ -458,9 +459,7 @@ class RecognitionEngine(SettingsBridge):
                 if self.restart_camera_after_discovery:
                     self.restart_camera_after_discovery = False
                     self.start_selected_camera()
-                if getattr(self, 'settings_refresh_pending', False):
-                    self.settings_refresh_pending = False
-                    self.emit_settings_state()
+                self.finish_camera_refresh(False, '카메라 검색에 실패했습니다. 연결 상태를 확인해 주세요.')
                 continue
             candidates = merge_camera_candidates(value, self.active_camera_candidate)
             self.apply_camera_candidates(candidates, preserve_current=True)
@@ -469,10 +468,18 @@ class RecognitionEngine(SettingsBridge):
             if self.restart_camera_after_discovery:
                 self.restart_camera_after_discovery = False
                 self.start_selected_camera()
-            if getattr(self, 'settings_refresh_pending', False):
-                self.settings_refresh_pending = False
-                self.emit_settings_state()
+            message = '카메라 목록을 갱신했습니다.' if candidates else '사용 가능한 카메라가 없습니다.'
+            self.finish_camera_refresh(True, message)
         self.scheduler.after(200, self.poll_camera_discovery)
+
+    def finish_camera_refresh(self, ok, message):
+        if hasattr(self, 'camera_refresh_request'):
+            request_id = self.camera_refresh_request
+            del self.camera_refresh_request
+            self.device_result('camera_refresh', ok, message, request_id)
+        if getattr(self, 'settings_refresh_pending', False):
+            self.settings_refresh_pending = False
+            self.emit_settings_state()
 
 
     def refresh_stt_microphones(self, show_error=True):
@@ -482,13 +489,10 @@ class RecognitionEngine(SettingsBridge):
             labels = self.stt.refresh_microphones()
         except Exception as exc:
             log_event('device.microphone.discovery.failed', '마이크 검색 실패', category='오류', level='ERROR', error=str(exc))
-            self.microphone_choices_changed([])
-            label = "\ub9c8\uc774\ud06c \uc0ac\uc6a9 \ubd88\uac00"
-            self.stt_mic_var.set(label)
             self.stt_status_var.set(f"STT \uc900\ube44 \uc2e4\ud328: {exc}")
             if show_error:
                 self.report_error("STT", str(exc))
-            return
+            return False
 
         if not labels:
             log_event('device.microphone.discovery.empty', '사용 가능한 마이크 없음', category='사용자 인식', level='WARNING')
@@ -496,7 +500,7 @@ class RecognitionEngine(SettingsBridge):
             label = "\uc0ac\uc6a9 \uac00\ub2a5\ud55c \ub9c8\uc774\ud06c \uc5c6\uc74c"
             self.stt_mic_var.set(label)
             self.stt_status_var.set("STT: \ub9c8\uc774\ud06c\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
-            return
+            return True
 
         self.microphone_choices_changed(labels)
         saved_microphone = self.device_settings.get("microphone", {})
@@ -504,6 +508,7 @@ class RecognitionEngine(SettingsBridge):
         selected_label = select_saved_microphone(labels, saved_microphone)
         self.stt_mic_var.set(selected_label)
         self.stt_status_var.set(f"STT: \ub9c8\uc774\ud06c {len(labels)}\uac1c \uac10\uc9c0")
+        return True
 
 
     def select_stt_microphone(self, label):

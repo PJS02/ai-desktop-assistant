@@ -66,7 +66,6 @@ class _PreviewImage(QLabel):
 class SettingsDialog(QDialog):
     apply_requested = pyqtSignal(dict)
     apply_timeout = pyqtSignal(str)
-    refresh_requested = pyqtSignal(bool)
     character_command_requested = pyqtSignal(str)
     dialogue_generation_requested = pyqtSignal()
     manual_dialogue_requested = pyqtSignal(str, str)
@@ -107,6 +106,7 @@ class SettingsDialog(QDialog):
         self._recognition_page(local)
         self._ai_page(local)
         self._manual_page()
+        self._device_page()
         self._preview_active = False
         self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
@@ -601,13 +601,10 @@ class SettingsDialog(QDialog):
         self.model_rows[engine][1].setText(message)
 
     def _recognition_page(self, local):
-        _, layout, self.remote_form = self._page('사용자 인식', '카메라·감정 인식은 실행 중에 적용됩니다. 마이크·STT 옵션을 바꾸면 실행 중인 음성 인식을 자동으로 다시 시작합니다.')
+        _, layout, self.remote_form = self._page('사용자 인식', '카메라 화면과 인식 옵션을 확인하세요. 장치 선택과 시작·중지는 장치 설정 탭에서 할 수 있습니다.')
         self.remote_status = QLabel('인식 기능에 연결하는 중…')
         self.remote_status.setWordWrap(True)
         layout.insertWidget(1, self.remote_status)
-        self.refresh_button = QPushButton('장치 새로고침')
-        self.refresh_button.clicked.connect(lambda: self.refresh_requested.emit(True))
-        layout.insertWidget(2, self.refresh_button)
         self._hand_overlay_fields(local)
         heading = QLabel('카메라·음성 인식')
         heading.setStyleSheet('font-weight: 600; padding-top: 12px;')
@@ -639,17 +636,77 @@ class SettingsDialog(QDialog):
         self.preview_status = QLabel('')
         self.preview_status.setWordWrap(True)
         self.remote_form.insertRow(2, self.preview_status)
+
+    def _device_page(self):
+        _, layout, form = self._page('장치 설정', '새로고침으로 장치를 찾고, 장치를 바꾼 뒤 적용을 누르세요.')
+        layout.setContentsMargins(22, 16, 22, 16)
+        form.setVerticalSpacing(8)
+        self.device_controls = {}
         self.device_buttons = {}
-        device_row = QHBoxLayout()
-        for operation, label in [('camera_start', '카메라 시작'), ('camera_stop', '카메라 중지'),
-                                 ('stt_start', '음성 인식 시작'), ('stt_stop', '음성 인식 중지')]:
-            button = QPushButton(label)
-            button.clicked.connect(lambda _checked=False, op=operation: self.device_requested.emit(op))
-            device_row.addWidget(button)
-            self.device_buttons[operation] = button
-        self.remote_form.insertRow(3, device_row)
-        for button in self.device_buttons.values():
-            button.setEnabled(False)
+        self.device_refresh_buttons = {}
+        self.device_refresh_status = {}
+        self.device_refresh_requests = {}
+        self.device_refresh_timers = {}
+        for key, label, prefix, action_label in (('camera', '카메라', 'camera', '카메라'),
+                                                   ('microphone', '마이크', 'stt', '음성 인식')):
+            row = QHBoxLayout()
+            combo = self._combo([('장치 목록을 불러오는 중…', None)], None)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setEnabled(False)
+            self.device_controls[key] = combo
+            form.addRow(label, row)
+            form.labelForField(row).setBuddy(combo)
+            row.addWidget(combo, 1)
+            operation = f'{key}_refresh'
+            refresh = QPushButton(f'{label} 새로고침')
+            refresh.setAutoDefault(False)
+            refresh.clicked.connect(lambda _checked=False, op=operation: self.device_requested.emit(op))
+            self.device_refresh_buttons[operation] = refresh
+            row.addWidget(refresh)
+            status = QLabel()
+            status.setWordWrap(True)
+            status.hide()
+            self.device_refresh_status[operation] = status
+            form.addRow(status)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda op=operation: self._device_refresh_timer_elapsed(op))
+            self.device_refresh_timers[operation] = timer
+            actions = QHBoxLayout()
+            for suffix, title in (('start', '시작'), ('stop', '중지')):
+                command = f'{prefix}_{suffix}'
+                button = QPushButton(f'{action_label} {title}')
+                button.setAutoDefault(False)
+                button.setEnabled(False)
+                button.clicked.connect(lambda _checked=False, op=command: self.device_requested.emit(op))
+                self.device_buttons[command] = button
+                actions.addWidget(button)
+            actions.addStretch()
+            form.addRow('', actions)
+
+    def start_device_refresh(self, operation, request_id):
+        self.device_refresh_requests[operation] = request_id
+        self.device_refresh_buttons[operation].setEnabled(False)
+        self.device_refresh_status[operation].setText('장치를 검색하는 중…')
+        self.device_refresh_status[operation].show()
+        self.device_refresh_timers[operation].start(45000)
+
+    def finish_device_refresh(self, operation, message, *, success=False):
+        self.device_refresh_requests.pop(operation, None)
+        timer = self.device_refresh_timers[operation]
+        timer.stop()
+        self.device_refresh_buttons[operation].setEnabled(True)
+        self.device_refresh_status[operation].setText(message)
+        self.device_refresh_status[operation].show()
+        if success:
+            timer.start(3000)
+
+    def _device_refresh_timer_elapsed(self, operation):
+        if operation in self.device_refresh_requests:
+            self.finish_device_refresh(operation, '검색 응답이 지연됩니다. 다시 시도해 주세요.')
+        else:
+            self.device_refresh_status[operation].hide()
+            self.device_refresh_status[operation].clear()
 
     def _sync_preview(self, *_args):
         if not hasattr(self, '_preview_active'):
@@ -788,8 +845,18 @@ class SettingsDialog(QDialog):
             self.fields_form.removeRow(0)
         self.controls = {}
         choices = state['choices']
-        labels = {'camera': '카메라', 'microphone': '마이크',
-                  'mode': '인식 도구', 'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
+        for key, combo in self.device_controls.items():
+            combo.clear()
+            for item in choices.get(key, ()):
+                combo.addItem(item['label'], item['value'])
+            has_devices = bool(combo.count())
+            combo.setEnabled(has_devices)
+            if has_devices:
+                combo.setCurrentIndex(max(0, combo.findData(state['values'].get(key))))
+            else:
+                combo.addItem('사용 가능한 장치 없음', None)
+            self.controls[key] = combo
+        labels = {'mode': '인식 도구', 'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
                   'language': '인식 언어', 'silence': '발화 종료 대기', 'sensitivity': '마이크 민감도'}
         for key, label in labels.items():
             if key not in choices:
@@ -825,7 +892,7 @@ class SettingsDialog(QDialog):
         self.remote_fields.setEnabled(True)
         self.remote_status.setText(state.get('status', '현재 설정을 불러왔습니다.'))
         if not state.get('camera_running', False) and self._preview_active:
-            self._preview_message('카메라가 중지되어 있습니다. 카메라 시작을 눌러 주세요.')
+            self._preview_message('카메라가 중지되어 있습니다. 장치 설정 탭에서 카메라를 시작해 주세요.')
         for operation, button in self.device_buttons.items():
             running = state.get('camera_running', False) if operation.startswith('camera_') else state.get('stt_running', False)
             button.setEnabled(bool(running) != operation.endswith('_start'))
@@ -834,8 +901,12 @@ class SettingsDialog(QDialog):
         self.remote_status.setText(message)
         self.remote_fields.setEnabled(False)
         self.remote_baseline = None
-        self._preview_message('인식 작업에 연결하지 못했습니다. 장치 새로고침으로 다시 연결하세요.')
+        self._preview_message('인식 작업에 연결하지 못했습니다. 장치 설정 탭에서 다시 검색하세요.')
         self.preview_status.clear()
+        for combo in self.device_controls.values():
+            combo.setEnabled(False)
+        for operation in tuple(self.device_refresh_requests):
+            self.finish_device_refresh(operation, message)
         for button in self.device_buttons.values():
             button.setEnabled(False)
 

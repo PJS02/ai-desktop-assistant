@@ -125,35 +125,56 @@ class SettingsBridge:
                 self.emit_settings_state()
             elif action == 'refresh':
                 self.refresh_stt_microphones(show_error=False)
-                self.settings_refresh_pending = True
-                self.start_full_camera_discovery()
+                self.settings_refresh_pending = self.start_full_camera_discovery()
+                if not self.settings_refresh_pending:
+                    self.emit_settings_state()
             elif action == 'apply':
                 if getattr(self, 'settings_apply_pending', False):
                     raise ValueError('이전 설정을 적용하는 중입니다. 잠시 후 다시 시도하세요.')
                 self.apply_unified_settings(request.get('request_id'), request.get('values'))
             elif action == 'device':
-                self.control_device(request.get('operation'))
+                self.control_device(request.get('operation'), request.get('request_id'))
             else:
                 raise ValueError('지원하지 않는 설정 요청입니다.')
         except (ValueError, OSError, RuntimeError) as exc:
             request_id = request.get('request_id') if isinstance(request, dict) else None
             log_event('settings.recognition.failed', '인식 설정 요청 실패', category='오류', level='ERROR',
                       trace_id=request_id, error=str(exc))
-            self.settings_result(request_id, False, f'사용자 인식 설정을 모두 적용하지 못했습니다: {exc}')
+            if isinstance(request, dict) and request.get('action') == 'device':
+                self.device_result(request.get('operation'), False, str(exc), request_id)
+            else:
+                self.settings_result(request_id, False, f'사용자 인식 설정을 모두 적용하지 못했습니다: {exc}')
 
-    def control_device(self, operation):
+    def device_result(self, operation, ok, message, request_id=None):
+        self.emit_settings({'kind': 'device_result', 'operation': operation, 'request_id': request_id,
+                            'ok': ok, 'state': self.settings_state(), 'message': message})
+
+    def control_device(self, operation, request_id=None):
+        if getattr(self, 'settings_apply_pending', False):
+            raise RuntimeError('설정 적용이 끝난 뒤 다시 시도하세요.')
+        if operation == 'camera_refresh':
+            if not self.start_full_camera_discovery():
+                raise RuntimeError('카메라를 정리하는 중입니다. 잠시 후 다시 검색하세요.')
+            self.camera_refresh_request = request_id
+            return
+        if operation == 'microphone_refresh':
+            ok = self.refresh_stt_microphones(show_error=False)
+            message = (f'마이크 {len(self.stt.audio_devices)}개를 찾았습니다.' if ok
+                       else '마이크 검색에 실패했습니다. 연결 상태를 확인해 주세요.')
+            self.device_result(operation, ok, message, request_id)
+            return
         operations = {'camera_start': self.start_selected_camera, 'camera_stop': self.release_camera,
                       'stt_start': lambda: self.start_stt(show_error=False), 'stt_stop': self.stop_stt}
         if operation not in operations:
             raise ValueError('지원하지 않는 장치 명령입니다.')
-        if (getattr(self, 'settings_apply_pending', False)
-                or self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive()):
-            raise RuntimeError('장치 설정이나 검색이 끝난 뒤 다시 시도하세요.')
+        if (operation.startswith('camera_') and self.camera_discovery_thread is not None
+                and self.camera_discovery_thread.is_alive()):
+            raise RuntimeError('카메라 검색이 끝난 뒤 다시 시도하세요.')
         operations[operation]()
         running = self.cap is not None if operation.startswith('camera_') else self.stt.is_running
         ok = bool(running) == operation.endswith('_start')
-        self.emit_settings({'kind': 'device_result', 'ok': ok, 'state': self.settings_state(),
-                            'message': '장치 명령을 적용했습니다.' if ok else '장치 상태와 로그를 확인하세요.'})
+        self.device_result(operation, ok, '장치 명령을 적용했습니다.' if ok else '장치 상태와 로그를 확인하세요.',
+                           request_id)
 
     def apply_unified_settings(self, request_id, patch):
         self._settings_request_id = request_id or new_trace_id('settings')
