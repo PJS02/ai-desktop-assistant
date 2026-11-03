@@ -77,6 +77,7 @@ class RpsGameOverlay(QWidget):
     REVEAL_SECONDS = 0.65
     RESULT_SECONDS = 4.0
     ERROR_SECONDS = 6.0
+    OVERLAY_WIDTH = 300
 
     def __init__(self, send_command, parent=None):
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
@@ -305,7 +306,7 @@ class RpsGameOverlay(QWidget):
         if screen is None:
             return
         bounds = screen.geometry()
-        self.setFixedWidth(max(1, min(300, bounds.width() - 16)))
+        self.setFixedWidth(max(1, min(self.OVERLAY_WIDTH, bounds.width() - 16)))
         self.adjustSize()
         self.move(place_above_character(anchor, self.size(), bounds, gap=12))
 

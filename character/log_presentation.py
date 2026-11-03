@@ -81,7 +81,7 @@ _LABELS = {
     'mood': '현재 감정', 'emotion': '감정', 'action': '동작', 'position': '위치',
     'start_position': '시작 위치', 'release_position': '놓은 위치', 'target_x': '목표 X',
     'velocity': '속도', 'velocity_x': '가로 속도', 'velocity_y': '세로 속도',
-    'move_range': '이동 범위', 'movement_speed': '이동 속도', 'command': '명령',
+    'move_range': '이동 범위', 'movement_speed': '이동 속도', 'running_speed': '달리기 속도', 'command': '명령',
     'player': '사용자 손', 'opponent': '캐릭터 손', 'hand': '손 후보',
     'previous_hand': '이전 손 후보', 'result': '결과', 'detail': '세부 내용',
     'last_hand': '마지막 손 후보', 'stable_samples': '안정 판정 표본 수',

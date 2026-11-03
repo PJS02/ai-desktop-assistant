@@ -5,6 +5,7 @@ from pathlib import Path
 import threading
 import json
 import atexit
+import time
 
 from app_logging import (SESSION_ID, configure_logging, ingest_event, log_event,
                          new_trace_id, register_environment_secrets, shutdown_logging)
@@ -24,14 +25,8 @@ if __name__ == '__main__':
     log_event('application.bootstrap', '앱 시작', executable=sys.executable)
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from dotenv import load_dotenv
-from character.character_widget import CharacterWidget
-from character.config_manager import load_config, load_character_options, load_personality_traits
-from character.settings_controller import SettingsController
-from character.config_manager import load_hand_overlay_options
-from hand_overlay.controller import HandOverlayController
-from character.log_console import AppLogManager, LogWindow
 
 
 load_dotenv()
@@ -42,10 +37,11 @@ MEDIAPIPE_MAIN = PROJECT_ROOT / "medeapipe_capstone" / "main.py"
 
 
 class MediaPipeProcessManager(QObject):
-    """숨겨진 MediaPipe GUI 프로세스의 실행, 표시, 종료를 관리한다."""
+    """인식 프로세스, 별도 콘솔과 설정 미리보기 연결을 관리한다."""
 
     settings_message = pyqtSignal(dict)
     process_started = pyqtSignal()
+    _process_exited = pyqtSignal(object, int)
 
     def __init__(self, script_path: Path = MEDIAPIPE_MAIN) -> None:
         super().__init__()
@@ -53,6 +49,17 @@ class MediaPipeProcessManager(QObject):
         self.process = None
         self._readers = []
         self._stopping = False
+        self._preview_lock = threading.Lock()
+        self._latest_preview = None
+        self._preview_enabled = False
+        self._speaking = False
+        self._restart_attempts = 0
+        self._healthy = False
+        self._started_at = 0.
+        self._restart_timer = QTimer(self)
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.timeout.connect(self._restart_recognition)
+        self._process_exited.connect(self._handle_exit)
 
     @property
     def is_running(self) -> bool:
@@ -67,13 +74,14 @@ class MediaPipeProcessManager(QObject):
             return False
 
         try:
-            # PyQt와 Tkinter는 이벤트 루프가 다르므로 MediaPipe를 별도 프로세스로 실행한다.
+            # Keep inference independent of the Qt UI; the child creates no window.
             child_env = os.environ.copy()
             child_env["PYTHONIOENCODING"] = "utf-8"
             child_env["PYTHONUNBUFFERED"] = "1"
             child_env['CAPSTONE_LOG_PROTOCOL'] = '1'
             child_env['CAPSTONE_LOG_SESSION'] = SESSION_ID
             self._stopping = False
+            self._healthy = False
             self.process = subprocess.Popen(
                 [sys.executable, str(self.script_path), "--background"],
                 cwd=str(PROJECT_ROOT),
@@ -85,6 +93,7 @@ class MediaPipeProcessManager(QObject):
                 errors="replace",
                 bufsize=1,
                 env=child_env,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
         except OSError as exc:
             self.process = None
@@ -94,9 +103,31 @@ class MediaPipeProcessManager(QObject):
 
         print(f"[MediaPipe 백그라운드 실행] PID={self.process.pid}")
         log_event('recognition.process_started', '인식 프로세스 실행', category='사용자 인식', pid=self.process.pid, script=str(self.script_path))
+        self._started_at = time.monotonic()
         self._start_output_reader()
         self.process_started.emit()
         return True
+
+    def _handle_exit(self, process, code):
+        if process is not self.process or self._stopping:
+            return
+        if self._healthy and time.monotonic() - self._started_at >= 10:
+            self._restart_attempts = 0
+        if self._restart_attempts >= 3:
+            log_event('recognition.recovery.exhausted', '인식 자동 재연결 중단',
+                      category='오류', level='ERROR', exit_code=code)
+            return
+        self._restart_attempts += 1
+        self._restart_timer.start(1000 * 2 ** (self._restart_attempts - 1))
+
+    def _restart_recognition(self):
+        if self._stopping:
+            return
+        if self.start():
+            self.request_settings()
+            self.set_character_speaking(self._speaking)
+            if self._preview_enabled:
+                self.set_preview_enabled(True)
 
     def _start_output_reader(self) -> None:
         if self.process is None or self.process.stdout is None:
@@ -127,6 +158,8 @@ class MediaPipeProcessManager(QObject):
             log_event('recognition.process_exited', '인식 프로세스 최종 종료 상태',
                       category='사용자 인식', level='ERROR' if isinstance(code, int) and code != 0 and not self._stopping else 'INFO',
                       pid=getattr(process, 'pid', None), exit_code=code, shutdown_requested=self._stopping)
+            if isinstance(code, int):
+                self._process_exited.emit(process, code)
         except (OSError, ValueError) as exc:
             log_event('recognition.process_wait_failed', '인식 프로세스 종료 확인 실패', category='오류', level='ERROR', error=str(exc))
 
@@ -146,9 +179,24 @@ class MediaPipeProcessManager(QObject):
         """자식 프로세스 출력을 메인 로그 수집기가 읽을 수 있도록 전달한다."""
         for line in process.stdout:
             message = line.rstrip("\r\n")
+            if message.startswith('APP_PREVIEW '):
+                # Camera packets must never fall through to the text log path.
+                if self._preview_enabled and len(message) <= 300_000:
+                    try:
+                        payload = json.loads(message[len('APP_PREVIEW '):])
+                        if isinstance(payload, dict) and isinstance(payload.get('jpeg'), str):
+                            with self._preview_lock:
+                                self._latest_preview = payload
+                    except (ValueError, TypeError):
+                        pass
+                continue
             if message.startswith('APP_LOG '):
                 try:
-                    ingest_event(json.loads(message[len('APP_LOG '):]))
+                    event = json.loads(message[len('APP_LOG '):])
+                    if self.process is process and event.get('event') in (
+                            'recognition.performance', 'recognition.tracker.configured'):
+                        self._healthy = True
+                    ingest_event(event)
                 except (ValueError, TypeError, KeyError) as exc:
                     log_event('recognition.invalid_log', '인식 로그 형식 오류', category='오류', level='WARNING', error=str(exc), raw=message)
                 continue
@@ -166,7 +214,8 @@ class MediaPipeProcessManager(QObject):
                 log_event('recognition.process_stdout', message, category='사용자 인식', pid=process.pid, stream='stdout')
         log_event('recognition.process_output_closed', '인식 프로세스 출력 종료', category='사용자 인식',
                   pid=getattr(process, 'pid', None), exit_code=process.poll() if callable(getattr(process, 'poll', None)) else None, shutdown_requested=self._stopping)
-        self.settings_message.emit({'kind': 'unavailable'})
+        if self.process is process or self.process is None:
+            self.settings_message.emit({'kind': 'unavailable'})
 
     def _send_command(self, command: str) -> bool:
         trace_id = None
@@ -194,14 +243,33 @@ class MediaPipeProcessManager(QObject):
             return False
         return self._send_command("show")
 
+    def set_preview_enabled(self, enabled):
+        self._preview_enabled = bool(enabled)
+        with self._preview_lock:
+            self._latest_preview = None
+        if enabled and not self.is_running and not self.start():
+            return False
+        return self._send_command('preview ' + ('1' if enabled else '0'))
+
+    def take_preview(self):
+        with self._preview_lock:
+            packet, self._latest_preview = self._latest_preview, None
+            return packet
+
+    def device_command(self, action):
+        if not self.is_running and not self.start():
+            return False
+        return self._send_command('settings ' + json.dumps({'action': 'device', 'operation': action}))
+
     def send_game_command(self, command: str) -> bool:
-        if command.startswith("rps_begin ") and not self.is_running:
+        if command.startswith(("rps_begin ", "cham_begin ")) and not self.is_running:
             if not self.start():
                 return False
         return self._send_command(command)
 
     def set_character_speaking(self, speaking: bool) -> bool:
         """Gate recognizer capture only while character audio actually plays."""
+        self._speaking = bool(speaking)
         return self._send_command('tts_speaking ' + ('1' if speaking else '0'))
 
     def set_hand_overlay_enabled(self, enabled: bool) -> bool:
@@ -216,19 +284,34 @@ class MediaPipeProcessManager(QObject):
         return self._send_command('settings ' + json.dumps({'action': 'apply', 'request_id': request_id, 'values': values}, ensure_ascii=False))
 
     def stop(self, wait_timeout: float = 3.0) -> None:
+        self._stopping = True
+        self._restart_timer.stop()
+        self._preview_enabled = False
+        with self._preview_lock:
+            self._latest_preview = None
         if not self.is_running:
             return
 
         process = self.process
-        self._stopping = True
         log_event('recognition.process_stopping', '인식 프로세스 종료 요청', category='사용자 인식', pid=process.pid)
         self._send_command("shutdown")
         try:
             process.wait(timeout=wait_timeout)
         except subprocess.TimeoutExpired:
-            # Tkinter가 정상 종료 명령에 응답하지 않을 때 단계적으로 프로세스를 정리한다.
+            # A driver/model can block shutdown; include the Windows venv child
+            # in cleanup rather than terminating only its launcher.
             log_event('recognition.process_terminate', '정상 종료 대기 초과', category='사용자 인식', level='WARNING', pid=process.pid, timeout=wait_timeout)
-            process.terminate()
+            if os.name == 'nt':
+                try:
+                    result = subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=5)
+                    if result.returncode != 0:
+                        process.terminate()
+                except (OSError, subprocess.TimeoutExpired):
+                    process.terminate()
+            else:
+                process.terminate()
             try:
                 process.wait(timeout=wait_timeout)
             except subprocess.TimeoutExpired:
@@ -248,6 +331,17 @@ def main():
     app = QApplication(sys.argv)
     if _startup_capture is not None:
         _startup_capture.handoff_python()
+    # Subscribe before character initialization so its early readiness is retained.
+    from character.preparation_status import PreparationOverlay, PreparationStatus
+    preparation = PreparationStatus(app)
+
+    from character.character_widget import CharacterWidget
+    from character.config_manager import (load_config, load_character_options,
+                                          load_hand_overlay_options, load_personality_traits)
+    from character.settings_controller import SettingsController
+    from hand_overlay.controller import HandOverlayController
+    from hand_overlay.interaction_host import HandInteractionController
+    from character.log_console import AppLogManager, LogWindow
     log_manager = AppLogManager()
     log_manager.install_capture()
     log_event('application.qt_ready', 'Qt 앱 준비 완료')
@@ -273,18 +367,25 @@ def main():
         on_rps_command=mediapipe_manager.send_game_command,
         character_options=load_character_options(),
     )
+    character.preparation_status = preparation
+    preparation.configure_hands(load_hand_overlay_options()['enabled'])
     hand_overlay = HandOverlayController(character.perception_receiver, mediapipe_manager,
                                          character, load_hand_overlay_options())
     character.hand_overlay = hand_overlay
+    character.hand_interactions = HandInteractionController(character, hand_overlay)
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
+    character.preparation_overlay = PreparationOverlay(preparation, character)
     character.show()
+    QTimer.singleShot(0, character.dialogue_system.tts.prepare)
 
-    # 캐릭터의 인식 수신기가 준비된 다음 MediaPipe GUI를 실행한다.
+    # 캐릭터의 인식 수신기가 준비된 다음 인식 작업을 실행한다.
     mediapipe_manager.start()
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
     app.aboutToQuit.connect(hand_overlay.stop)
     app.aboutToQuit.connect(mediapipe_manager.stop)
+    app.aboutToQuit.connect(character.preparation_overlay.hide)
+    app.aboutToQuit.connect(preparation.close)
 
     exit_code = None
     try:

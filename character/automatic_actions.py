@@ -50,6 +50,7 @@ class AutomaticActions(QObject):
             return
         blocked = (host.rig_view is None or host._manual_control_active()
                    or host._rig_manual_action is not None or host.is_dragging
+                   or getattr(host, '_autonomous_behavior_active', False)
                    or host.is_jumping or not host.on_ground
                    or (host.sprite_animator.current_action == 'land' and host.sprite_animator.is_playing)
                    or any(getattr(getattr(host, name, None), 'is_active', False)
