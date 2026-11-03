@@ -2,7 +2,7 @@
 from html import escape
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from app_logging import subscribe
 
@@ -244,7 +244,7 @@ class PreparationView(QWidget):
 
 
 class PreparationOverlay(QWidget):
-    """One non-activating bar attached to the character, with details on hover."""
+    """One bar attached to the character, with persistent click-open details."""
     def __init__(self, status, character):
         super().__init__(character, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
@@ -270,6 +270,24 @@ class PreparationOverlay(QWidget):
                                      'font-size: 12px; font-weight: 600;')
         layout.addWidget(self.bar, 1)
         layout.addWidget(self.percentage)
+        self.details_popup = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.details_popup.setObjectName('preparationDetails')
+        self.details_popup.setWindowTitle('프로그램 준비 상태')
+        self.details_popup.setStyleSheet(
+            'QFrame#preparationDetails { background: #f6f8fc; border: 1px solid #cbd5e1; '
+            'border-radius: 6px; } QLabel { color: #202936; background: transparent; '
+            'font-family: "맑은 고딕"; font-size: 12px; }')
+        details_layout = QVBoxLayout(self.details_popup)
+        details_layout.setContentsMargins(12, 12, 12, 12)
+        self.details_label = QLabel()
+        self.details_label.setTextFormat(Qt.TextFormat.RichText)
+        self.details_label.setWordWrap(True)
+        self.details_label.setFixedWidth(336)
+        details_layout.addWidget(self.details_label)
+        self.details_popup.installEventFilter(self)
+        for widget in (self, self.bar, self.percentage):
+            widget.installEventFilter(self)
+            widget.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.setInterval(3000)
@@ -297,32 +315,65 @@ class PreparationOverlay(QWidget):
             progress = self.status.stage_progress[key]
             stage = f' ({progress[0]}/{progress[1]} 단계)' if progress and state != 'ready' else ''
             details.append(f'{LABELS[key]} · {STATE_TEXT[state]}{stage}<br>{escape(text)}')
-        details.append('전체 %는 확인된 준비 단계 기준이며, 남은 시간 비율이 아닙니다.')
-        tooltip = '<br><br>'.join(details)
-        for widget in (self, self.bar, self.percentage):
-            widget.setToolTip(tooltip)
+        self.details_label.setText('<br><br>'.join(details))
         self.bar.setAccessibleDescription(f'{percent}% 준비. ' + '; '.join(
             f'{LABELS[key]} {STATE_TEXT[state]}: {text}' for key, (state, text) in self.status.states.items()))
         if not self.status.settled:
             self._completed = False
             self.hide_timer.stop()
-        elif not self._completed and not self.hide_timer.isActive():
+        elif (not self._completed and not self.hide_timer.isActive()
+              and not self.details_popup.isVisible()):
             self.hide_timer.start()
         self.reposition()
 
+    def _show_details(self):
+        self.hide_timer.stop()
+        self._position_details()
+        self.details_popup.show()
+
+    def _position_details(self):
+        screen = QApplication.screenAt(self.geometry().center()) or self.character.screen()
+        if screen is None:
+            return
+        bounds = screen.availableGeometry()
+        self.details_label.setFixedWidth(min(336, max(60, bounds.width() - 40)))
+        self.details_popup.adjustSize()
+        x = max(bounds.left(), min(self.x(), bounds.right() - self.details_popup.width() + 1))
+        y = self.y() - self.details_popup.height() - 8
+        if y < bounds.top():
+            y = self.y() + self.height() + 8
+        y = max(bounds.top(), min(y, bounds.bottom() - self.details_popup.height() + 1))
+        self.details_popup.move(x, y)
+
     def _finish(self):
+        if self.details_popup.isVisible():
+            return
         self._completed = True
         self.hide()
         self.follow_timer.stop()
 
     def eventFilter(self, watched, event):
-        if watched is self.character:
+        if watched in (self, self.bar, self.percentage):
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() in (
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+                self._show_details()
+                return True
+            if event.type() in (QEvent.Type.ToolTip, QEvent.Type.ContextMenu):
+                return True
+        elif watched is self.details_popup and event.type() == QEvent.Type.Hide:
+            if self.status.settled and not self._completed and self.isVisible():
+                self.hide_timer.start()
+        elif watched is self.character:
             if event.type() in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Show):
                 self.reposition()
             elif event.type() in (QEvent.Type.Hide, QEvent.Type.Close):
                 self.hide()
                 self.follow_timer.stop()
         return super().eventFilter(watched, event)
+
+    def hideEvent(self, event):
+        self.details_popup.hide()
+        super().hideEvent(event)
 
     def reposition(self):
         if self._completed or not self.character.isVisible():
@@ -341,3 +392,5 @@ class PreparationOverlay(QWidget):
             self.show()
         if not self.follow_timer.isActive():
             self.follow_timer.start()
+        if self.details_popup.isVisible():
+            self._position_details()

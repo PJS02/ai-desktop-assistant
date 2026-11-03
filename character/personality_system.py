@@ -72,8 +72,9 @@ class PersonalitySystem:
     """캐릭터의 Big Five 성격 체계 관리"""
     
     # 성격 프리셋
+    DEFAULT_PRESET = "(Default)"
     PERSONALITY_PRESETS = {
-        "(Default)": {
+        DEFAULT_PRESET: {
             "openness": 0.15,
             "conscientiousness": 0.4,
             "extraversion": 0.2,
@@ -115,7 +116,7 @@ class PersonalitySystem:
         },
     }
     
-    def __init__(self, preset_name: str = "Russell (기본)"):
+    def __init__(self, preset_name: str = DEFAULT_PRESET):
         """기본 성격 초기화
         
         Args:
@@ -130,7 +131,7 @@ class PersonalitySystem:
             preset_name: 프리셋 이름
         """
         if preset_name not in self.PERSONALITY_PRESETS:
-            preset_name = "Russell (기본)"
+            preset_name = self.DEFAULT_PRESET
         
         preset = self.PERSONALITY_PRESETS[preset_name]
         self.personality = BigFivePersonality(

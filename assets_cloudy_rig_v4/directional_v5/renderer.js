@@ -65,11 +65,16 @@ class Renderer{
      await new Promise(resolve=>setTimeout(resolve,150*(attempt+1)));
     }
    }
-   this.images[name]=im;const gl=this.gl,tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
+   this.images[name]=im;
+   if(part.dizzySkinSource)return;
+   const gl=this.gl,tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
    if(part.drawnTearFrame){gl.generateMipmap(gl.TEXTURE_2D);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);}
    this.textures[name]=tex;
   }));
-  const emotionSprites=root.CloudyEmotionFX?root.CloudyEmotionFX.createSprites(this.images,this.parts):{};
+  const emotionSprites={
+   ...(root.CloudyEmotionFX?root.CloudyEmotionFX.createSprites(this.images,this.parts):{}),
+   ...(root.CloudyDizzyFX?root.CloudyDizzyFX.createSprites(this.images,this.parts):{})
+  };
   for(const [name,im] of Object.entries(emotionSprites)){
    this.parts[name]={bbox:[0,0,im.width,im.height]};const gl=this.gl,tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);this.textures[name]=tex;
   }
@@ -412,6 +417,15 @@ class Renderer{
   const own=knots(cfg),target=cfg.headKnots||own;
   const mapping=p=>{let x=(p.x-px)*scale,y=(p.y-py)*scale;if(cfg.flow){let cx=remap(x,own.x,[0,90,160,239]),cy=remap(y,own.y,[0,210,260,279]);const f=flowAt(cfg.flow,cx,cy);x=remap(cx+f[0]*cfg.flowAmount,[0,90,160,239],target.x);y=remap(cy+f[1]*cfg.flowAmount,[0,210,260,279],target.y);}else{x=remap(x,own.x,target.x);y=remap(y,own.y,target.y);}return rotate({x:location.x+x,y:location.y+y},angle,location);};
   const draw=(texture,alpha)=>this.mesh(texture,mapping,alpha,24,28);
+  // Each view uses its own clean eye base and independent spirals, so the
+  // original painted pupils cannot show through when the direction changes.
+  const dizzy=root.CloudyDizzyFX;
+  const dizzyFace=dizzy&&dizzy.baseFaceFor(cfg);
+  if(dizzyFace&&pose.dizzy>.5&&!(pose.exprSleep>.5)&&this.textures[dizzyFace]){
+   draw(dizzyFace,opacity);
+   dizzy.draw(this,cfg,pose,time,mapping,opacity);
+   return;
+  }
   // Expressions have different eyelid contours. Choose one aligned face so
   // transitioning never leaves two sets of eyes visible on top of each other.
   let expression='',expressionWeight=.5;

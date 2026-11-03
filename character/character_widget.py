@@ -161,7 +161,7 @@ class CharacterWidget(QLabel):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # 기본 설정
-        self.personality_system = PersonalitySystem(personality_preset or "Russell (기본)")
+        self.personality_system = PersonalitySystem(personality_preset or PersonalitySystem.DEFAULT_PRESET)
         if personality_traits is not None:
             self.personality_system.set_traits(personality_traits, preset_name=personality_preset)
         self.mood_system = MoodSystem(self.personality_system)  # 성격을 mood_system에 전달
@@ -592,6 +592,12 @@ class CharacterWidget(QLabel):
         if getattr(self, "rig_view", None) is not None:
             self.rig_view.setGeometry(self.rect())
 
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        dialogue = getattr(self, 'dialogue_system', None)
+        if dialogue is not None:
+            dialogue.update_dialogue_position()
+
     def _get_screen_dimensions(self):
         """Use logical Qt dimensions, refreshing resolution and scaling changes."""
         geometry = self._get_screen_geometry()
@@ -967,18 +973,19 @@ class CharacterWidget(QLabel):
         except Exception as e:
             print(f"[오류] Gemini 설정 로드 실패: {e}")
     
-    def _on_activity_monitor(self):
+    def _on_activity_monitor(self, *, manual=False):
         """Start ambient work only when the user conversation has released the UI."""
         reason = ('context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
                   else 'closing' if getattr(self, '_character_closing', False)
-                  else 'conversation_busy' if CharacterWidget._dialogue_is_busy(self)
+                  else 'conversation_busy' if (self.dialogue_system.is_conversation_busy(include_hold=False)
+                                                if manual else CharacterWidget._dialogue_is_busy(self))
                   else 'request_in_flight' if getattr(self, '_automatic_request_active', False) else None)
         if reason:
             log_throttled('dialogue.automatic_skipped', '자동 대화 요청 대기', category='대화·AI', key=reason, reason=reason)
-            return
-        if time.time() - self.last_auto_dialogue_time < self.auto_dialogue_cooldown:
+            return False
+        if not manual and time.time() - self.last_auto_dialogue_time < self.auto_dialogue_cooldown:
             log_throttled('dialogue.automatic_skipped', '자동 대화 재요청 대기', category='대화·AI', key='cooldown', reason='cooldown', remaining=self.auto_dialogue_cooldown - (time.time() - self.last_auto_dialogue_time))
-            return
+            return False
 
         # Capture character/config state on the Qt thread. A new user input epoch
         # invalidates this result even if its conversation has already finished.
@@ -988,16 +995,27 @@ class CharacterWidget(QLabel):
         emotion = self.mood_system.get_emotion_description_for_prompt()
         tone = self.mood_system.get_emotion_tone_instructions()
         self._automatic_request_active = True
-        context = {'trace_id': new_trace_id('ambient'), 'source': 'activity', 'generation': generation, 'input_epoch': epoch}
+        context = {'trace_id': new_trace_id('ambient'), 'source': 'manual_generation' if manual else 'activity',
+                   'generation': generation, 'input_epoch': epoch}
         if not hasattr(self, '_automatic_log_contexts'):
             self._automatic_log_contexts = {}
         self._automatic_log_contexts[generation] = context
         log_event('dialogue.automatic_started', '자동 대화 관측 시작', category='대화·AI', trace_id=context['trace_id'], generation=generation, input_epoch=epoch)
-        thread = threading.Thread(
-            target=self._check_active_window_async,
-            args=(generation, epoch, dict(self.gemini_config), emotion, tone, context),
-            daemon=True, name=f'character-activity-{generation}')
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=self._check_active_window_async,
+                args=(generation, epoch, dict(self.gemini_config), emotion, tone, context),
+                daemon=True, name=f'character-activity-{generation}')
+            if manual:
+                self._mark_character_interaction()
+            thread.start()
+        except Exception as exc:
+            self._automatic_request_active = False
+            self._automatic_log_contexts.pop(generation, None)
+            log_event('dialogue.automatic_failed', '대사 생성 작업 시작 실패', category='오류',
+                      level='ERROR', trace_id=context['trace_id'], error=str(exc))
+            return False
+        return True
     
     def _check_active_window_async(self, generation, input_epoch, config,
                                    emotion_description, tone_instruction, log_context=None):
@@ -1005,12 +1023,15 @@ class CharacterWidget(QLabel):
         info = None
         dialogue_text = None
         request_time = None
+        failed = False
         context = log_context or {'trace_id': new_trace_id('ambient'), 'source': 'activity'}
         try:
             # 활성 창 정보 수집
             info = get_active_window_info()
             if not info:
                 log_event('dialogue.automatic_no_window', '활성 창 정보 없음', category='대화·AI', trace_id=context['trace_id'])
+                if context.get('source') == 'manual_generation':
+                    dialogue_text, failed = '활성 창 정보를 가져오지 못했어요. 다시 시도해 주세요.', True
                 return
             
             # 프로세스 이름으로 활동 분류
@@ -1046,14 +1067,17 @@ class CharacterWidget(QLabel):
             
             request_time = time.time()
             response = _with_log_context(call_gemini, prompt, config, log_context=context)
+            failed = DialogueSystem._is_error_response(response)
             log_event('dialogue.automatic_response', '활동 기반 응답 수신', category='대화·AI', trace_id=context['trace_id'], response=response,
-                      outcome='failed' if not response or DialogueSystem._is_error_response(response) else 'received')
+                      outcome='failed' if failed else 'received')
             
             if response:
                 # The same decoder handles plain, JSON and fenced JSON output.
                 dialogue_text = _with_log_context(self.dialogue_system._process_gemini_response, response, log_context=context)
         
         except Exception as e:
+            if context.get('source') == 'manual_generation':
+                dialogue_text, failed = '대사를 생성하지 못했어요. 잠시 후 다시 시도해 주세요.', True
             log_event('dialogue.automatic_failed', '활동 모니터링 실패', category='오류', level='ERROR', trace_id=context['trace_id'], error=str(e))
             print(f"[오류] 활동 모니터링 실패: {e}")
             import traceback
@@ -1061,13 +1085,13 @@ class CharacterWidget(QLabel):
         finally:
             if not getattr(self, '_character_closing', False):
                 self.automatic_response_ready.emit(
-                    (generation, input_epoch, dialogue_text, info, request_time))
+                    (generation, input_epoch, dialogue_text, info, request_time, failed))
             else:
                 log_event('dialogue.automatic_discarded', '종료 후 자동 응답 폐기', category='대화·AI', trace_id=context['trace_id'], reason='closing')
 
     @pyqtSlot(object)
     def _finish_automatic_response(self, result):
-        generation, epoch, text, info, request_time = result
+        generation, epoch, text, info, request_time, failed = result
         context = getattr(self, '_automatic_log_contexts', {}).pop(generation, {'trace_id': None, 'source': 'activity'})
         if (getattr(self, '_character_closing', False)
                 or generation != self._automatic_request_generation):
@@ -1079,7 +1103,9 @@ class CharacterWidget(QLabel):
         if info:
             self.last_detected_activity = info
         if text:
-            shown = _with_log_context(self.dialogue_system.show_automatic_response, text, expected_input_epoch=epoch, log_context=context)
+            options = {'allow_during_hold': True} if context.get('source') == 'manual_generation' else {}
+            shown = _with_log_context(self.dialogue_system.show_automatic_response, text, expected_input_epoch=epoch,
+                                     log_context=context, failed=failed, **options)
             log_event('dialogue.automatic_finished', '자동 대화 처리 완료', category='대화·AI', trace_id=context.get('trace_id'), shown=bool(shown), input_epoch=epoch, current_input_epoch=self.dialogue_system.user_input_epoch)
         else:
             log_event('dialogue.automatic_finished', '표시할 자동 대화 없음', category='대화·AI', trace_id=context.get('trace_id'), shown=False, reason='empty_response_or_no_window')
@@ -1855,6 +1881,9 @@ class CharacterWidget(QLabel):
         menu.addSeparator()
         ball_action = menu.addAction("공 꺼내기")
         ball_action.triggered.connect(self.select_ball)
+        if self.sandbox_manager.ball is not None:
+            remove_ball_action = menu.addAction("공 없애기")
+            remove_ball_action.triggered.connect(self.sandbox_manager.ball.close)
         if include_dialogue:
             talk_action = menu.addAction("대화하기")
             talk_action.triggered.connect(self.dialogue_system.open_input_dialog)

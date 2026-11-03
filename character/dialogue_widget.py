@@ -4,7 +4,7 @@ from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMet
 from PyQt6.QtCore import QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
 from pathlib import Path
 from .dialogue_styles import normalize_dialogue_style
-from .overlay_geometry import place_above_character
+from .overlay_geometry import place_above_character, place_near_ankles
 
 
 class DialogueBubble(QWidget):
@@ -83,9 +83,7 @@ class DialogueBubble(QWidget):
         self.text_view.setGeometry(5 + self.padding_x, 5 + self.padding_y,
                                    text_width, min(text_height, max_height))
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    def _bubble_path(self):
         path = QPainterPath()
         radius = 20 if self.style == 'rounded' else 5 if self.style == 'subtitle' else 10
         path.addRoundedRect(QRectF(5, 5, self.bubble_width, self.bubble_height), radius, radius)
@@ -96,6 +94,12 @@ class DialogueBubble(QWidget):
             path.lineTo(center + half, self.bubble_height + 5)
             path.lineTo(center, self.bubble_height + self.tail_height + 5)
             path.closeSubpath()
+        return path
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = self._bubble_path()
         painter.fillPath(path, self.bubble_color)
         if self.border_width:
             pen = painter.pen()
@@ -139,6 +143,45 @@ class DialogueBubble(QWidget):
 
     def update_position_with_character(self, *args, **kwargs):
         self.set_position_below_character(*args, **kwargs)
+
+
+class UserDialogueBubble(DialogueBubble):
+    """Independent user speech with a round body and a right-facing tail: 0>."""
+    TAIL_WIDTH = 14
+
+    def set_style(self, style):
+        super().set_style('rounded')
+        self.bubble_color = QColor('#edf7fa')
+
+    def _calculate_size(self, bounds=None):
+        self.tail_height = 0
+        super()._calculate_size(bounds)
+        height_limit = max(70, min(160, self._anchor[3] // 2)) if self._anchor else 160
+        self.bubble_height = min(self.bubble_height, height_limit - 10)
+        self.text_view.resize(self.text_view.width(), self.bubble_height - self.padding_y * 2)
+        self.setFixedSize(self.bubble_width + 10 + self.TAIL_WIDTH, self.bubble_height + 10)
+
+    def _bubble_path(self):
+        body = QRectF(5, 5, self.bubble_width, self.bubble_height)
+        radius = min(24, self.bubble_height / 2)
+        path = QPainterPath()
+        path.addRoundedRect(body, radius, radius)
+        tail = QPainterPath()
+        center = body.center().y()
+        tail.moveTo(body.right() - 2, center - 8)
+        tail.lineTo(body.right() + self.TAIL_WIDTH, center)
+        tail.lineTo(body.right() - 2, center + 8)
+        tail.closeSubpath()
+        return path.united(tail)
+
+    def set_position_below_character(self, character_x, character_y, character_width,
+                                     character_height=100, avoid=None):
+        self._anchor = (character_x, character_y, character_width, character_height, avoid)
+        anchor = QRect(character_x, character_y, character_width, character_height)
+        screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
+        bounds = screen.geometry() if screen else QRect(0, 0, 1280, 720)
+        self._calculate_size(bounds)
+        self.move(place_near_ankles(anchor, self.size(), bounds, avoid))
 
 
 class DialogueNarrationBox(QWidget):

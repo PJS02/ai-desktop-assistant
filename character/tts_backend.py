@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import wave
+from app_logging import log_event
 
 from .tts_models import ModelStore
 
@@ -57,6 +58,13 @@ class LocalVoiceBackend:
                 result = json.loads(line[len('CAPSTONE_TTS:'):])
                 if result.get('error'):
                     raise RuntimeError(result['error'])
+                if result.get('status') == 'loading':
+                    done, total = result.get('completed'), result.get('total')
+                    if type(done) is int and type(total) is int and 0 <= done < total:
+                        log_event('tts.model_progress', '음성 모델 준비 단계 완료', category='대화·AI',
+                                  model=self.voice, completed=done, total=total,
+                                  detail=str(result.get('detail', '음성 모델을 준비하는 중'))[:160])
+                    continue
                 return result
         self.stop()
         raise TimeoutError('TTS 응답 시간이 초과되었습니다. 다시 시도해 주세요.')

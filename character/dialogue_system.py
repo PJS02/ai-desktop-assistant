@@ -1,6 +1,6 @@
 # 캐릭터 대화 시스템
 from PyQt6.QtCore import QTimer, pyqtSignal, pyqtSlot, QObject, Qt
-from .dialogue_widget import DialogueBubble, DialogueNarrationBox, DialogueInputWidget
+from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrationBox, DialogueInputWidget
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
 from .dialogue_styles import normalize_dialogue_style
@@ -33,6 +33,7 @@ class DialogueSystem(QObject):
         
         self.character_widget = character_widget
         self.current_dialogue: Optional[DialogueBubble] = None
+        self.current_user_dialogue: Optional[UserDialogueBubble] = None
         self.current_narration: Optional[DialogueNarrationBox] = None
         self.current_input_widget: Optional[DialogueInputWidget] = None
         self.tts = tts if tts is not None else SupertonicTTS()
@@ -40,6 +41,7 @@ class DialogueSystem(QObject):
         self._response_provider = response_provider
         self._time_provider = time_provider
         self._closed = False
+        self.manual_dialogue_active = False
         self._request_generation = 0
         self._active_input = None
         self._last_failed_input = None
@@ -116,31 +118,74 @@ class DialogueSystem(QObject):
         else:
             self._show_bubble(text, duration, log_context=context)
     
-    def _show_bubble(self, text: str, duration: int, *, log_context=None):
+    def show_user_dialogue(self, text: str, duration: int = 3000, *, log_context=None):
+        if not self._closed:
+            self._show_bubble(text, duration, log_context=log_context, user=True)
+
+    def show_manual_dialogue(self, user_text='', character_text=''):
+        """Display authored bubbles without AI, speech or conversation history."""
+        user_text, character_text = user_text.strip(), character_text.strip()
+        if (not (user_text or character_text)
+                or self.is_conversation_busy(include_hold=False, include_manual=False)):
+            return False
+        self.clear_queue(reason='manual_display_priority')
+        self.manual_dialogue_active = True
+        context = {'trace_id': new_trace_id('manual-display'), 'source': 'manual_display'}
+        if character_text:
+            self.show_dialogue(character_text, duration=0, log_context=context)
+        if user_text:
+            self.show_user_dialogue(user_text, duration=0, log_context=context)
+        if self.current_user_dialogue is not None:
+            self.current_user_dialogue.raise_()
+        return True
+
+    def speak_manual_dialogue(self, user_text='', character_text=''):
+        """Read the authored character bubble using the existing voice/playback."""
+        character_text = character_text.strip()
+        if not character_text or not self.tts.enabled:
+            return False
+        if not self.show_manual_dialogue(user_text, character_text):
+            return False
+        context = dict(self.current_dialogue._log_context)
+        context['source'] = 'manual_speech'
+        log_event('dialogue.manual_speech_requested', '직접 입력한 캐릭터 대사 읽기',
+                  category='대화·AI', trace_id=context['trace_id'], text=character_text)
+        if callable(getattr(type(self.tts), 'speak_with_context', None)):
+            self.tts.speak_with_context(character_text, context)
+        else:
+            self.tts.speak(character_text)
+        return True
+
+    def _show_bubble(self, text: str, duration: int, *, log_context=None, user=False):
         """말풍선 대화 표시"""
+        slot = 'current_user_dialogue' if user else 'current_dialogue'
+        display_type = 'user_bubble' if user else 'bubble'
         # 이전 말풍선 종료
-        if self.current_dialogue:
-            previous, self.current_dialogue = self.current_dialogue, None
+        previous = getattr(self, slot)
+        if previous:
+            setattr(self, slot, None)
             log_event('dialogue.widget_replaced', '이전 말풍선 교체', category='대화·AI',
                       trace_id=getattr(previous, '_log_context', {}).get('trace_id'),
                       replacement_trace_id=(log_context or {}).get('trace_id'),
-                      previous_text=previous.text, text=text, display_type='bubble')
+                      previous_text=previous.text, text=text, display_type=display_type)
             previous._log_close_reason = 'replaced'
             previous.close()
         
         # 새 말풍선 생성
-        bubble = DialogueBubble(text, duration, style=self.bubble_style)
+        bubble = (UserDialogueBubble(text, duration) if user
+                  else DialogueBubble(text, duration, style=self.bubble_style))
         bubble._log_context = dict(log_context or {})
         bubble.dialogue_closed.connect(lambda: self._on_bubble_closed(bubble))
         
-        self.current_dialogue = bubble
+        setattr(self, slot, bubble)
         self.update_dialogue_position()
         bubble.show()
         log_event('dialogue.widget_shown', '말풍선 위젯 표시', category='대화·AI',
                   trace_id=bubble._log_context.get('trace_id'), text=text,
-                  display_type='bubble', visible=bubble.isVisible(), duration_ms=duration)
+                  display_type=display_type, visible=bubble.isVisible(), duration_ms=duration)
         
-        self.dialogue_started.emit(text)
+        if not user:
+            self.dialogue_started.emit(text)
 
     def set_bubble_style(self, style):
         self.bubble_style = normalize_dialogue_style(style, strict=True)
@@ -154,8 +199,10 @@ class DialogueSystem(QObject):
             log_event('dialogue.widget_closed', '말풍선 닫힘', category='대화·AI',
                       trace_id=getattr(bubble, '_log_context', {}).get('trace_id'),
                       reason=getattr(bubble, '_log_close_reason', 'closed'), text=bubble.text,
-                      display_type='bubble')
-        if self.current_dialogue is bubble:
+                      display_type='user_bubble' if isinstance(bubble, UserDialogueBubble) else 'bubble')
+        if self.current_user_dialogue is bubble:
+            self.current_user_dialogue = None
+        elif self.current_dialogue is bubble:
             self._on_dialogue_closed()
         bubble.deleteLater()
     
@@ -302,6 +349,10 @@ class DialogueSystem(QObject):
     
     def close_current_dialogue(self, reason='closed'):
         """현재 표시 중인 대화 종료"""
+        self.manual_dialogue_active = False
+        if self.current_user_dialogue:
+            self.current_user_dialogue._log_close_reason = reason
+            self.current_user_dialogue.close()
         if self.current_dialogue:
             self.current_dialogue._log_close_reason = reason
             self.current_dialogue.close()
@@ -311,18 +362,25 @@ class DialogueSystem(QObject):
     
     def update_dialogue_position(self):
         """캐릭터 위치 변화에 따라 현재 대화의 위치 업데이트"""
-        if self.current_dialogue:
+        if self.current_dialogue or self.current_user_dialogue:
             host = self.character_widget
             measure = getattr(host, '_physics_body_rect', None)
             body = measure() if measure else QRect(0, 0, host.width(), host.height())
             game = getattr(host, 'rps_game', None)
             avoid = game.geometry() if game is not None and game.isVisible() else None
-            self.current_dialogue.update_position_with_character(
-                host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), avoid)
+            if self.current_dialogue:
+                self.current_dialogue.update_position_with_character(
+                    host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), avoid)
+            if self.current_user_dialogue:
+                user_avoid = avoid
+                if self.current_dialogue:
+                    user_avoid = self.current_dialogue.geometry().united(avoid) if avoid else self.current_dialogue.geometry()
+                self.current_user_dialogue.update_position_with_character(
+                    host.x() + body.x(), host.y() + body.y(), body.width(), body.height(), user_avoid)
     
     def is_dialogue_active(self) -> bool:
         """현재 대화 표시 중인지 확인"""
-        return (self.current_dialogue is not None or 
+        return (self.current_dialogue is not None or self.current_user_dialogue is not None or
                 self.current_narration is not None or
                 len(self.dialogue_queue) > 0)
     # ===== AI 대화 시스템 ======
@@ -350,6 +408,7 @@ class DialogueSystem(QObject):
             return False
         raw_text = text
         text = text.strip()
+        self.manual_dialogue_active = False
         self.user_input_epoch += 1
         # A direct user turn takes priority over a delayed ambient script.
         self.clear_queue(reason='user_input_priority')
@@ -406,7 +465,9 @@ class DialogueSystem(QObject):
                   trace_id=turn['trace_id'], turn_id=turn['turn_id'], generation=generation,
                   queue_size=len(self.pending_inputs),
                   queued_seconds=round(now - turn['queued_at'], 3))
-        self.show_dialogue(f"[사용자]: {turn['text']}", duration=3000, log_context=context)
+        # Keep the question visible through network/TTS preparation, then allow
+        # the user to read it alongside the actual answer.
+        self.show_user_dialogue(turn['text'], duration=0, log_context=context)
         try:
             if not self.gemini_config:
                 self._load_gemini_config()
@@ -537,7 +598,12 @@ class DialogueSystem(QObject):
         self._active_input = None
         self.is_ai_responding = False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(response_text, log_context=turn['log_context'])
+        if self.current_user_dialogue is not None:
+            self.current_user_dialogue.duration = 5000
+            if not self._speaking and not self.current_user_dialogue.is_hovering:
+                self.current_user_dialogue.close_timer.start(5000)
+            self.current_user_dialogue.raise_()
+        self.show_ai_response(response_text, log_context=turn['log_context'], failed=failed)
         self._process_next_input()
 
     def retry_last_input(self):
@@ -553,6 +619,12 @@ class DialogueSystem(QObject):
 
     def _on_tts_speaking_changed(self, speaking):
         self._speaking = bool(speaking)
+        for bubble in (self.current_dialogue, self.current_user_dialogue):
+            if bubble is not None:
+                if self._speaking:
+                    bubble.close_timer.stop()
+                elif bubble.duration > 0 and not bubble.is_hovering:
+                    bubble.close_timer.start(bubble.duration)
         if not self._speaking:
             self._process_next_input()
 
@@ -561,15 +633,17 @@ class DialogueSystem(QObject):
         if not self._tts_busy:
             self._process_next_input()
 
-    def is_conversation_busy(self):
+    def is_conversation_busy(self, *, include_hold=True, include_manual=True):
         """Reserve the character for admitted user turns and their full output."""
         return bool(self._closed or self.is_ai_responding or self.pending_inputs
                     or self._speaking or self._tts_busy
-                    or self._time_provider() < self._response_hold_until)
+                    or (include_hold and self._time_provider() < self._response_hold_until)
+                    or (include_manual and self.manual_dialogue_active))
 
-    def show_automatic_response(self, text, expected_input_epoch=None, *, log_context=None):
+    def show_automatic_response(self, text, expected_input_epoch=None, *, log_context=None, failed=False,
+                                allow_during_hold=False):
         """Ambient responses never replace a conversation or a later user turn."""
-        if self.is_conversation_busy():
+        if self.is_conversation_busy(include_hold=not allow_during_hold):
             log_event('dialogue.automatic_discarded', '대화 우선으로 자동 대사 폐기', category='대화·AI',
                       trace_id=(log_context or {}).get('trace_id'), reason='conversation_busy', text=text)
             return False
@@ -580,10 +654,10 @@ class DialogueSystem(QObject):
                       text=text)
             return False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(text, log_context=log_context)
+        self.show_ai_response(text, log_context=log_context, failed=failed)
         return True
 
-    def show_ai_response(self, response_text: str, *, log_context=None):
+    def show_ai_response(self, response_text: str, *, log_context=None, failed=False):
         """Display on the Qt thread and use the existing voice/enabled settings."""
         if self._closed:
             return
@@ -593,6 +667,10 @@ class DialogueSystem(QObject):
             self.show_dialogue(response_text, duration=5000)
         else:
             self.show_dialogue(response_text, duration=5000, log_context=context)
+        if failed or self._is_error_response(response_text):
+            log_event('dialogue.tts_skipped', 'AI 오류 안내 음성 생략', category='대화·AI',
+                      trace_id=context['trace_id'], reason='ai_error', text=response_text)
+            return
         log_event('dialogue.tts_requested', '대화 음성 출력 요청', category='대화·AI',
                   trace_id=context['trace_id'], text=response_text)
         # Only opt into an explicitly implemented API; Mock/dynamic providers keep speak(text).

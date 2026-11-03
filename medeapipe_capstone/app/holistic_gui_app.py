@@ -119,6 +119,9 @@ class HolisticGuiApp(SettingsBridge):
         self.hand_overlay_sequence = 0
         self.hand_overlay_image_size = (1280, 720)
         self.current_photo = None
+        self.enlarged_preview = None
+        self.enlarged_video = None
+        self.last_preview_frame = None
         self.frame_index = 0
         self.camera_candidates = []
         self.active_camera_candidate = None
@@ -206,6 +209,9 @@ class HolisticGuiApp(SettingsBridge):
         )
         self.info_overlay_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "info_overlay", True)
+        )
+        self.cham_overlay_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "cham_overlay", True)
         )
         self.emotion_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "emotion", background_mode)
@@ -367,6 +373,7 @@ class HolisticGuiApp(SettingsBridge):
 
     def hide_console(self):
         """GUI만 숨기고 카메라와 인식 루프는 계속 실행한다."""
+        self.close_enlarged_preview()
         self.root.withdraw()
 
     def build_ui(self):
@@ -523,6 +530,7 @@ class HolisticGuiApp(SettingsBridge):
         self.make_toggle(toggle_frame, LABEL_MARKER_ONLY, self.marker_only_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_MIRROR, self.mirror_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_INFO_OVERLAY, self.info_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, '참참참 방향 표시', self.cham_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_EMOTION, self.emotion_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.emotion_model_menu = tk.OptionMenu(
             toggle_frame,
@@ -626,15 +634,18 @@ class HolisticGuiApp(SettingsBridge):
         self.make_info_label(control_panel, self.always_attention_status_var).pack(fill="x", padx=18, pady=(0, 10))
         self.make_info_label(control_panel, self.status_var).pack(fill="x", padx=18)
 
+        video_header = tk.Frame(video_panel, bg="#0b0f13")
+        video_header.pack(fill="x", pady=(0, 12))
         video_title = tk.Label(
-            video_panel,
+            video_header,
             text="Recognition Screen",
             bg="#0b0f13",
             fg="#f4f7fb",
             font=("Malgun Gothic", 18, "bold"),
             anchor="w",
         )
-        video_title.pack(fill="x", pady=(0, 12))
+        video_title.pack(side="left", fill="x", expand=True)
+        tk.Button(video_header, text="크게 보기", command=self.show_enlarged_preview).pack(side="right")
 
         self.video_label = tk.Label(
             video_panel,
@@ -1130,6 +1141,7 @@ class HolisticGuiApp(SettingsBridge):
             "marker_only": bool(self.marker_only_var.get()),
             "mirror": bool(self.mirror_var.get()),
             "info_overlay": bool(self.info_overlay_var.get()),
+            "cham_overlay": bool(self.cham_overlay_var.get()),
             "emotion": bool(self.emotion_var.get()),
             "emotion_model": EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()],
             "always_recognition": bool(self.always_recognition_var.get()),
@@ -1267,6 +1279,7 @@ class HolisticGuiApp(SettingsBridge):
 
         if not has_frame or frame_bgr is None:
             log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
+            self.show_placeholder("Camera unavailable")
             self.status_var.set("\ud504\ub808\uc784\uc744 \uc77d\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
             self.release_camera()
             self.root.after(30, self.update_frame)
@@ -1703,6 +1716,8 @@ class HolisticGuiApp(SettingsBridge):
             },
         }
         self._log_mode_result()
+        if frame_bgr is None or not self.cham_overlay_var.get():
+            return
         cv2.putText(
             frame_bgr,
             f"Cham Cham Cham: {direction}",
@@ -2214,12 +2229,41 @@ class HolisticGuiApp(SettingsBridge):
                     cv2.line(frame_bgr, previous, point, AIR_DRAWING_COLORS[side], 3, cv2.LINE_AA)
                 previous = point
 
+    def show_enlarged_preview(self):
+        if self.enlarged_preview is None:
+            self.enlarged_preview = tk.Toplevel(self.root)
+            self.enlarged_preview.title("카메라 미리보기 · 크게 보기")
+            self.enlarged_preview.geometry("1000x750")
+            self.enlarged_preview.minsize(480, 360)
+            self.enlarged_preview.pack_propagate(False)
+            self.enlarged_preview.protocol("WM_DELETE_WINDOW", self.close_enlarged_preview)
+            self.enlarged_video = tk.Label(self.enlarged_preview, bg="#05080c", fg="white",
+                                          text="카메라 화면을 기다리는 중…")
+            self.enlarged_video.pack(fill="both", expand=True)
+            self.enlarged_video.bind("<Configure>", self.render_enlarged_preview)
+        self.enlarged_preview.lift()
+
+    def close_enlarged_preview(self):
+        if self.enlarged_preview is not None:
+            window = self.enlarged_preview
+            self.enlarged_preview = self.enlarged_video = None
+            window.destroy()
+
+    def render_enlarged_preview(self, _event=None):
+        label, frame = self.enlarged_video, self.last_preview_frame
+        if label is not None and frame is not None:
+            resized = self.fit_frame(frame, max(1, label.winfo_width()), max(1, label.winfo_height()))
+            label.photo = ImageTk.PhotoImage(image=Image.fromarray(resized))
+            label.configure(image=label.photo)
+
     def render_frame(self, frame_bgr):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         resized = self.fit_frame(frame_rgb, DISPLAY_WIDTH, DISPLAY_HEIGHT)
         image = Image.fromarray(resized)
         self.current_photo = ImageTk.PhotoImage(image=image)
         self.video_label.configure(image=self.current_photo)
+        self.last_preview_frame = frame_rgb
+        self.render_enlarged_preview()
 
     def fit_frame(self, frame_rgb, max_width, max_height):
         height, width = frame_rgb.shape[:2]

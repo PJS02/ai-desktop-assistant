@@ -22,6 +22,9 @@ class SettingsController(QObject):
         self.applied_local = {}
         self.operation_id = None
         self._operations = {}
+        self.dialogue_timer = QTimer(self)
+        self.dialogue_timer.setInterval(100)
+        self.dialogue_timer.timeout.connect(self._refresh_dialogue_generation)
         manager.settings_message.connect(self.handle_message)
         self.load_timeout = QTimer(self)
         self.load_timeout.setSingleShot(True)
@@ -58,6 +61,11 @@ class SettingsController(QObject):
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character)
+        self.dialog.dialogue_generation_requested.connect(self._generate_dialogue)
+        self.dialog.manual_dialogue_requested.connect(self._show_manual_dialogue)
+        self.dialog.manual_speech_requested.connect(self._speak_manual_dialogue)
+        self.dialog.manual_dialogue_hide_requested.connect(self._hide_manual_dialogue)
+        self.dialog.finished.connect(self.dialogue_timer.stop)
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.apply_timeout.connect(self._apply_timed_out)
         self.dialog.refresh_requested.connect(self.refresh)
@@ -72,7 +80,54 @@ class SettingsController(QObject):
             self.dialog.api_key.setEnabled(False)
             self.dialog.model.setEnabled(False)
         self.dialog.show()
+        self._refresh_dialogue_generation()
+        self.dialogue_timer.start()
         self.refresh(False)
+
+    def _refresh_dialogue_generation(self):
+        if self.dialog is None:
+            return
+        dialogue = self.character.dialogue_system
+        generating = (getattr(self.character, '_automatic_request_active', False)
+                      or dialogue.is_ai_responding)
+        self.dialog.set_dialogue_generation_state(generating, not dialogue.is_conversation_busy(include_hold=False))
+        self.dialog.set_manual_dialogue_state(
+            not generating and not dialogue.is_conversation_busy(include_hold=False, include_manual=False),
+            dialogue.manual_dialogue_active, voice_enabled=dialogue.tts.enabled,
+            speaking=dialogue.manual_dialogue_active and (dialogue._tts_busy or dialogue._speaking))
+
+    def _show_manual_dialogue(self, user_text, character_text):
+        dialogue = self.character.dialogue_system
+        if (getattr(self.character, '_automatic_request_active', False)
+                or not dialogue.show_manual_dialogue(user_text, character_text)):
+            self.dialog.status.setText('진행 중인 대화·음성 출력이 끝난 뒤 다시 표시해 주세요.')
+        else:
+            self.dialog.status.setText('입력한 말풍선을 표시했습니다. 숨기기 전까지 유지됩니다.')
+        self._refresh_dialogue_generation()
+
+    def _hide_manual_dialogue(self):
+        dialogue = self.character.dialogue_system
+        if dialogue.manual_dialogue_active:
+            dialogue.close_current_dialogue(reason='manual_display_hidden')
+            self.dialog.status.setText('직접 입력한 말풍선을 숨겼습니다.')
+        self._refresh_dialogue_generation()
+
+    def _speak_manual_dialogue(self, user_text, character_text):
+        dialogue = self.character.dialogue_system
+        if not dialogue.tts.enabled:
+            self.dialog.status.setText('음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.')
+        elif (getattr(self.character, '_automatic_request_active', False)
+              or not dialogue.speak_manual_dialogue(user_text, character_text)):
+            self.dialog.status.setText('진행 중인 대화·음성 출력이 끝난 뒤 다시 말해 주세요.')
+        else:
+            self.dialog.status.setText('입력한 캐릭터 대사를 음성으로 읽습니다.')
+        self._refresh_dialogue_generation()
+
+    def _generate_dialogue(self):
+        accepted = self.character._on_activity_monitor(manual=True)
+        self._refresh_dialogue_generation()
+        if not accepted:
+            self.dialog.status.setText('대사 생성을 시작하지 못했습니다. AI 설정과 진행 중인 대화를 확인해 주세요.')
 
     def refresh(self, devices=False):
         if self.dialog.pending:

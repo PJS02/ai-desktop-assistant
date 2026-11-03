@@ -29,17 +29,19 @@ def load_config():
                     height = config.get('height', 1080)
                 
                 # 성격 불러오기
-                personality = config.get('personality', 'Russell (기본)')
+                personality = config.get('personality')
+                if not isinstance(personality, str) or personality not in PersonalitySystem.PERSONALITY_PRESETS:
+                    personality = PersonalitySystem.DEFAULT_PRESET
                 
                 return width, height, personality
         except Exception as e:
             log_event('settings.character.fallback', '캐릭터 설정 오류로 기본값을 사용합니다.',
                       category='오류', level='ERROR', path=str(CONFIG_FILE), error=str(e))
             print(f"[설정 읽기 오류] {e}, 기본값 사용")
-            return 1920, 1080, 'Russell (기본)'
+            return 1920, 1080, PersonalitySystem.DEFAULT_PRESET
     log_event('settings.character.fallback', '캐릭터 설정 파일이 없어 기본값을 사용합니다.',
               path=str(CONFIG_FILE), reason='missing_file')
-    return 1920, 1080, 'Russell (기본)'
+    return 1920, 1080, PersonalitySystem.DEFAULT_PRESET
 
 
 def load_character_options():
@@ -105,7 +107,7 @@ def save_hand_overlay_options(options, *, trace_id=None):
     return values
 
 
-def save_config(width, height, personality='Russell (기본)', character_options=None,
+def save_config(width, height, personality=PersonalitySystem.DEFAULT_PRESET, character_options=None,
                 dialogue_style=None, personality_traits=None, *, trace_id=None):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +117,7 @@ def save_config(width, height, personality='Russell (기본)', character_options
             raise ValueError('설정 파일 형식이 올바르지 않습니다.')
         config.update(resolution={'width': width, 'height': height}, personality=personality)
         if personality_traits is not None:
-            selected = personality if personality in PersonalitySystem.PERSONALITY_PRESETS else 'Russell (기본)'
+            selected = personality if personality in PersonalitySystem.PERSONALITY_PRESETS else PersonalitySystem.DEFAULT_PRESET
             defaults = PersonalitySystem.PERSONALITY_PRESETS[selected]
             merged = {name: defaults[name] for name in BigFivePersonality.TRAIT_NAMES}
             merged.update(BigFivePersonality.from_dict(personality_traits, strict=True).to_dict())

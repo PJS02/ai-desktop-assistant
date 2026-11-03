@@ -1,17 +1,27 @@
 ﻿'use strict';
 const $=s=>document.querySelector(s), M=CloudyMotion;
 const names={idle:'대기',walk:'걷기',run:'달리기',wave:'인사',thinking:'생각',sleep:'수면',hovering:'들기',jump:'점프',fall:'낙하',land:'착지',sequence:'연속 동작'};
-const emotions={auto:'자동',...Object.fromEntries(Object.entries(M.emotions).map(([id,entry])=>[id,entry.label]))};
+const emotions={auto:'자동',...Object.fromEntries(Object.entries(M.emotions).map(([id,entry])=>[id,entry.label])),dizzy:'어질어질 · 기존',dizzy_plain:'어질어질 · 소용돌이만'};
 let emotion='auto',speaking=false,speechTime=0;
 let state='idle',time=0,gaitTime=0,runGaitTime=0,last=0,paused=false,yaw=0,yawTarget=0,yawStart=0,turnElapsed=1,walk=0,walkTarget=0,run=0,runTarget=0,x=0,travelDir=-1,travelMode='move',travelGait='walk',travelSpeed=0,frameCount=0,fpsTime=0;
 let transition=new M.PoseTransition(M.pose(state,0)),renderer,draw=M.pose(state,0),trip=null,tripTime=0;
 let actionTime=0;
 const mix=(a,b,t)=>a+(b-a)*t;
-function updateEmotionControls(){document.querySelectorAll('#emotions button').forEach(b=>{const active=b.dataset.emotion===emotion;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));b.disabled=state==='sleep';});$('#speaking').checked=speaking;$('#speaking').disabled=state==='sleep';$('#speechNote').textContent=state==='sleep'?'자는 동안은 대화를 쉬고, 깨어나면 선택한 설정으로 이어갑니다.':'어떤 동작에서도 선택한 감정으로 말합니다.';updateGallerySelection();}
+function updateEmotionControls(){
+ document.querySelectorAll('#emotions button').forEach(b=>{const active=b.dataset.emotion===emotion;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));b.disabled=state==='sleep';});
+ $('#speaking').checked=speaking;$('#speaking').disabled=state==='sleep';
+ $('#speechNote').textContent=state==='sleep'?'자는 동안은 대화를 쉬고, 깨어나면 선택한 설정으로 이어갑니다.':'어떤 동작에서도 선택한 감정으로 말합니다.';
+ updateGallerySelection();
+}
 function chooseEmotion(value){emotion=value;updateEmotionControls();transition.retarget(sample());if(paused)draw=sample();paint();}
 function updateActionControls(){document.querySelectorAll('#states button').forEach(b=>{const active=b.dataset.state===state;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});document.querySelectorAll('#directions button').forEach(b=>b.disabled=state==='run'&&+b.dataset.yaw===0);$('#playSequence').classList.toggle('active',state==='sequence');$('#playSequence').setAttribute('aria-pressed',String(state==='sequence'));$('#travelLabel').textContent=state==='run'?'좌우 왕복 달리기':'좌우 왕복 걷기';}
 function choose(s){if(s!==state||s==='sequence')actionTime=0;state=s;walkTarget=s==='walk'?1:0;runTarget=s==='run'?1:0;if(s==='run'&&Math.abs(yawTarget)<1)setYaw(-65);transition.retarget(sample());updateActionControls();updateEmotionControls();if(s==='walk'&&Math.abs(yawTarget)<1)setYaw(-65);if(paused){walk=walkTarget;run=runTarget;draw=sample();paint();}}
-function setYaw(value){let direction=value<-21?-65:value>21?65:0;if(state==='run'&&direction===0)direction=yaw>0?65:-65;yaw=direction;yawTarget=yaw;yawStart=yaw;turnElapsed=1;document.querySelectorAll('#directions button').forEach(b=>b.classList.toggle('active',+b.dataset.yaw===yaw));updateGalleryDirection();paint();}
+function setYaw(value){
+ let direction=value<-21?-65:value>21?65:0;
+ if(state==='run'&&direction===0)direction=yaw>0?65:-65;
+ yaw=direction;yawTarget=yaw;yawStart=yaw;turnElapsed=1;
+ document.querySelectorAll('#directions button').forEach(b=>b.classList.toggle('active',+b.dataset.yaw===yaw));updateGalleryDirection();paint();
+}
 function sample(){
  const p=state==='sequence'?CloudySequence.sample(actionTime).pose:M.pose(state,actionTime,{walkAmount:0,runAmount:0});
  // Keep optional running channels present so leaving a run can fade them out.
@@ -30,7 +40,15 @@ function sample(){
  }
  // Apply the selected face AFTER locomotion blending, so a full walk cannot
  // erase emotion. Speech and the chin gesture remain independent channels.
- return M.applySpeech(M.applyEmotion(p,emotion),speaking,speechTime);
+ return selectedFace(p);
+}
+// Use the same face channels for playback and exported walk/run sheets.
+function selectedFace(p,speechClock=speechTime){
+ const dizzy=emotion==='dizzy'||emotion==='dizzy_plain';
+ const face=M.applySpeech(M.applyEmotion(p,dizzy?'neutral':emotion),speaking,speechClock);
+ face.dizzy=dizzy&&!(face.exprSleep>0)?1:0;
+ face.dizzyPlain=emotion==='dizzy_plain'&&!(face.exprSleep>0)?1:0;
+ return face;
 }
 function paint(){
  if(!renderer)return;
@@ -61,17 +79,18 @@ $('#elbow').oninput=e=>{$('#elbowLabel').textContent=+e.target.value<0?'자동':
 $('#angle').oninput=e=>{safelyStopTravel();setYaw(+e.target.value,true);};
 $('#scrub').oninput=e=>{paused=true;$('#pause').textContent='계속 재생';time=+e.target.value;actionTime=time;gaitTime=time;runGaitTime=time;speechTime=time;walk=walkTarget;run=runTarget;draw=sample();transition=new M.PoseTransition(draw);paint();};
 function exportCanvas(canvas,name){const url=canvas.toDataURL('image/png'),link=$('#downloadAsset');link.href=url;link.download=name;link.textContent=name+' 다운로드';$('#exportImage').src=url;$('#exportResult').hidden=false;$('#exportStatus').textContent='PNG 생성 완료';canvas.toBlob(async blob=>{try{const response=await fetch('export-png?name='+encodeURIComponent(name),{method:'POST',headers:{'Content-Type':'image/png'},body:blob});if(!response.ok)throw Error('export server unavailable');const result=await response.json();$('#exportStatus').textContent='저장 완료 · '+result.file;}catch{$('#exportStatus').textContent='PNG 생성 완료 · 다운로드 링크로 저장하세요';}},'image/png');}
-const emotionSuffix=()=>emotion==='auto'||state==='sleep'?'':'-'+emotion;
+const emotionSlug=()=>emotion.replaceAll('_','-');
+const emotionSuffix=()=>emotion==='auto'||state==='sleep'?'':'-'+emotionSlug();
 $('#export').onclick=()=>exportCanvas($('#canvas'),'cloudy-'+state+emotionSuffix()+(speaking&&state!=='sleep'?'-speaking':'')+'-'+Math.round(yaw)+'.png');
 $('#exportWalk').onclick=()=>{
  const sheet=document.createElement('canvas');sheet.width=4320;sheet.height=3240;const ctx=sheet.getContext('2d'),direction=yaw>0?65:-65;
- for(let i=0;i<72;i++){const t=i/60,p=M.pose('walk',t,{emotion,speaking,speechTime:t*2.8/1.2});p.blink=0;p.headAngle=.55*Math.sin(Math.PI*2*t/1.2-.4);renderer.render(p,direction,t,{companion:false});ctx.drawImage($('#canvas'),(i%12)*360,Math.floor(i/12)*540,360,540);}
- paint();exportCanvas(sheet,'cloudy-walk-'+(direction>0?'right':'left')+(emotion==='auto'?'':'-'+emotion)+(speaking?'-speaking':'')+'-60fps.png');
+ for(let i=0;i<72;i++){const t=i/60,p=selectedFace(M.pose('walk',t),t*2.8/1.2);p.blink=0;p.headAngle=.55*Math.sin(Math.PI*2*t/1.2-.4);renderer.render(p,direction,t,{companion:false});ctx.drawImage($('#canvas'),(i%12)*360,Math.floor(i/12)*540,360,540);}
+ paint();exportCanvas(sheet,'cloudy-walk-'+(direction>0?'right':'left')+(emotion==='auto'?'':'-'+emotionSlug())+(speaking?'-speaking':'')+'-60fps.png');
 };
 $('#exportRun').onclick=()=>{
  const sheet=document.createElement('canvas');sheet.width=4320;sheet.height=2160;const ctx=sheet.getContext('2d'),direction=yaw>0?65:-65,{duration,fps,frameCount}=M.runProfile;
- for(let i=0;i<frameCount;i++){const t=i/fps,p=M.pose('run',t,{runAmount:1,emotion,speaking,speechTime:t*2.8/duration});p.blink=0;renderer.render(p,direction,t,{companion:false,action:'run'});ctx.drawImage($('#canvas'),(i%12)*360,Math.floor(i/12)*540,360,540);}
- paint();exportCanvas(sheet,'cloudy-run-'+(direction<0?'left':'right')+(emotion==='auto'?'':'-'+emotion)+(speaking?'-speaking':'')+'-60fps.png');
+ for(let i=0;i<frameCount;i++){const t=i/fps,p=selectedFace(M.pose('run',t,{runAmount:1}),t*2.8/duration);p.blink=0;renderer.render(p,direction,t,{companion:false,action:'run'});ctx.drawImage($('#canvas'),(i%12)*360,Math.floor(i/12)*540,360,540);}
+ paint();exportCanvas(sheet,'cloudy-run-'+(direction<0?'left':'right')+(emotion==='auto'?'':'-'+emotionSlug())+(speaking?'-speaking':'')+'-60fps.png');
 };
 $('#background').onchange=e=>$('#stage').className='stage '+e.target.value;
 $('#size').onchange=e=>{let a=$('#actor');a.style.width=e.target.value==='actual'?'133.33px':'';a.style.height=e.target.value==='actual'?'200px':'';};
@@ -93,7 +112,7 @@ function updateGalleryDirection(){
  updateGallerySelection();
 }
 if($('#emotionGallery'))$('#emotionGallery').ontoggle=updateGalleryDirection;
-const previewPresets={happy:{action:'idle',emotion:'happy',speaking:true},sad:{action:'idle',emotion:'sad'},anxious:{action:'idle',emotion:'anxious'},tired:{action:'idle',emotion:'tired'},scared:{action:'idle',emotion:'scared'},wave:{action:'wave',emotion:'happy'},run:{action:'run',emotion:'happy'}};
+const previewPresets={dizzy:{action:'idle',emotion:'dizzy'},dizzy_plain:{action:'idle',emotion:'dizzy_plain'},happy:{action:'idle',emotion:'happy',speaking:true},sad:{action:'idle',emotion:'sad'},anxious:{action:'idle',emotion:'anxious'},tired:{action:'idle',emotion:'tired'},scared:{action:'idle',emotion:'scared'},wave:{action:'wave',emotion:'happy'},run:{action:'run',emotion:'happy'}};
 document.querySelectorAll('[data-preview]').forEach(b=>b.onclick=()=>{
  const preset=previewPresets[b.dataset.preview];if(!preset)return;
  safelyStopTravel();emotion=preset.emotion;speaking=Boolean(preset.speaking);
@@ -144,5 +163,7 @@ function tick(now){
  const params=new URLSearchParams(location.search),initial=params.get('action'),direction=params.get('direction'),directions={left:-65,front:0,right:65};
  choose(Object.prototype.hasOwnProperty.call(names,initial)?initial:'idle');
  if(Object.prototype.hasOwnProperty.call(directions,direction))setYaw(directions[direction]);
+ const initialEmotion=params.get('emotion');
+ if(Object.prototype.hasOwnProperty.call(emotions,initialEmotion))chooseEmotion(initialEmotion);
  requestAnimationFrame(tick);
 }catch(e){$('#badge').textContent='불러오기 실패: '+e.message;console.error(e);}})();
