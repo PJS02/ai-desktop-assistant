@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import unicodedata
+import wave
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, Qt, pyqtSignal
@@ -163,6 +164,31 @@ class SupertonicTTS(QObject):
 
     def speak(self, text: str) -> None:
         self.speak_with_context(text, {})
+
+    def play_clip(self, path, *, context=None) -> bool:
+        """Play an authored WAV through the same cancellation and mouth-sync signals."""
+        if self._closed or not self._enabled:
+            return False
+        try:
+            with wave.open(str(path), 'rb') as audio:
+                if audio.getnchannels() != 1 or audio.getsampwidth() != 2:
+                    raise ValueError('인사 음성은 16비트 모노 WAV여야 합니다.')
+                sample_rate = audio.getframerate()
+                pcm = audio.readframes(audio.getnframes())
+            if not pcm:
+                raise ValueError('인사 음성이 비어 있습니다.')
+        except (OSError, EOFError, ValueError, wave.Error) as exc:
+            self._log_tts('tts.clip_failed', '인사 음성을 읽지 못했습니다.',
+                          context=context, level='ERROR', path=str(path), error=str(exc))
+            return False
+        self._cancel_request(self._generation, 'replaced')
+        self._generation += 1
+        self._request_contexts[self._generation] = dict(context or {})
+        self._set_busy(True)
+        self._stop_playback(reason='replaced')
+        self._log_tts('tts.clip_requested', 'GPT-SoVITS 인사 음성 재생', path=str(path), voice_id='gpt_sovits')
+        self._play_audio(self._generation, pcm, sample_rate)
+        return True
 
     def prepare(self) -> None:
         """Startup warmup shares the synthesis worker and never plays audio."""

@@ -23,6 +23,7 @@ from .rig_state import RigAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
+from .greetings import choose_greeting
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
@@ -679,6 +680,18 @@ class CharacterWidget(QLabel):
                     or getattr(dialogue, '_speaking', False)
                     or time.monotonic() < getattr(dialogue, '_response_hold_until', 0))
 
+    def _show_greeting_dialogue(self):
+        if CharacterWidget._dialogue_is_busy(self):
+            return False
+        text, audio = choose_greeting(self.personality_system.preset_name)
+        context = dict(getattr(self, '_greeting_log_context', None) or {})
+        context.setdefault('trace_id', new_trace_id('greeting'))
+        context['source'] = 'greeting'
+        shown = _with_log_context(self._show_perception_dialogue, text, log_context=context)
+        if shown:
+            self.dialogue_system.tts.play_clip(audio, context=context)
+        return shown
+
     @pyqtSlot(str)
     def _show_automatic_ai_response(self, text):
         if not getattr(self, '_character_closing', False) and not CharacterWidget._dialogue_is_busy(self):
@@ -709,6 +722,7 @@ class CharacterWidget(QLabel):
                 log_event('perception.greeting_cancelled', '보류 시간 초과', category='사용자 인식', trace_id=getattr(self, '_greeting_log_context', {}).get('trace_id'))
             return False
         if (self.is_dragging or self.is_jumping or not self.on_ground
+                or CharacterWidget._dialogue_is_busy(self)
                 or getattr(self, '_ball_session_active', False)
                 or (self.rps_game is not None and self.rps_game.isVisible())
                 or CharacterWidget._cham_game_active(self)
@@ -729,7 +743,7 @@ class CharacterWidget(QLabel):
             if (self.assets_path / 'wave').is_dir():
                 self.current_action = 'wave'
                 self.sprite_animator.play('wave', fps=24, loop=False)
-        _with_log_context(self._show_perception_dialogue, '안녕! 👋', log_context=getattr(self, '_greeting_log_context', None))
+        self._show_greeting_dialogue()
         print('[사용자 인사] 캐릭터 인사 재생')
         return True
 

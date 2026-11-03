@@ -273,7 +273,7 @@ class ManualControl(QObject):
                 host.current_action = pose
                 host.sprite_animator.play(pose, fps=24, loop=pose != 'wave')
             if pose == 'wave':
-                host._show_perception_dialogue('안녕! 👋')
+                host._show_greeting_dialogue()
             self._status(f'직접 조작 중 · {COMMAND_LABELS[pose]}')
             return
         if self.motion == 'jump' and host.on_ground:
