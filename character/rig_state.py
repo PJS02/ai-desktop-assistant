@@ -15,6 +15,7 @@ HOST_EMOTIONS = {
     "fear": "scared", "anxiety": "anxious", "sadness": "sad",
     "melancholy": "depressed", "despair": "distressed", "distress": "distressed",
     "pride": "proud", "relief": "relieved", "pain": "hurt", "fatigue": "tired",
+    "bored": "tired",
 }
 RIG_ACTIONS = frozenset({
     "idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land",

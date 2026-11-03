@@ -16,6 +16,7 @@ from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
 from .emotion_assets import resolve_animation_asset
 from .mood_system import MoodSystem
+from .autonomous_needs import AutonomousNeeds
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .rig_state import RigAnimator
@@ -27,6 +28,8 @@ from .rps_game import RpsGameOverlay
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
+
+CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
 
 
 # Context 모듈 import
@@ -122,6 +125,7 @@ class CharacterWidget(QLabel):
         screen_width=None,
         screen_height=None,
         personality_preset=None,
+        personality_traits=None,
         on_show_perception_console=None,
         on_show_log_window=None,
         on_close_log_window=None,
@@ -158,6 +162,8 @@ class CharacterWidget(QLabel):
 
         # 기본 설정
         self.personality_system = PersonalitySystem(personality_preset or "Russell (기본)")
+        if personality_traits is not None:
+            self.personality_system.set_traits(personality_traits, preset_name=personality_preset)
         self.mood_system = MoodSystem(self.personality_system)  # 성격을 mood_system에 전달
         self.russell_dialog = None
         self.current_action = "idle"
@@ -189,9 +195,10 @@ class CharacterWidget(QLabel):
         self._remaining_items_to_release = []  # 반환 대기 중인 아이템
         
         # 캐릭터 아이템 폴더 생성
-        self.character_items_path = self.assets_path.parent / "character_items"
+        self.character_items_path = CHARACTER_ITEMS_DIRECTORY
         self.character_items_path.mkdir(parents=True, exist_ok=True)
         print(f"[캐릭터 아이템 폴더] {self.character_items_path}")
+        self._restore_held_items()
         
         # 이벤트 트래킹
         self.last_interaction_time = 0  # 마지막 상호작용 시간
@@ -199,6 +206,9 @@ class CharacterWidget(QLabel):
         self.idle_counter = 0  # idle 카운터 (neglected 감지용)
         self._last_autonomous_event_time = 0.0 #캐릭터 혼자 있을때 자동 이벤트 발생 시간
         self._autonomous_event_cooldown = random.uniform(10.0, 60.0)
+        self._autonomous_behavior_active = False
+        self._autonomous_behavior_generation = 0
+        self.autonomous_needs = AutonomousNeeds(options['boredom_minutes'])
         self.drag_speed = 0  # 드래그 속도
         self.last_window_count = 0  # 이전 창 개수 (급격한 변화 감지용)
         self.window_change_count = 0  # 창 변화 횟수
@@ -439,6 +449,10 @@ class CharacterWidget(QLabel):
                 or QApplication.activeModalWidget() is not None):
             return False
         body = self._physics_body_rect()
+        if getattr(self, 'show_debug', False):
+            # Diagnostics also paint in transparent host padding. Keep that
+            # display in front of the taskbar without enlarging collision bounds.
+            body = QRect(0, 0, self.width(), self.height())
         return self._taskbar_visibility_guard.ensure_visible(
             int(self.winId()),
             body_offset=(body.x(), body.y(), body.width(), body.height()),
@@ -461,6 +475,7 @@ class CharacterWidget(QLabel):
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
                 view.failed.connect(self._queue_sprite_fallback)
                 view.pose_bounds_changed.connect(self._align_grounded_pose, Qt.ConnectionType.DirectConnection)
+                view.pose_bounds_changed.connect(self._refresh_body_hover, Qt.ConnectionType.DirectConnection)
                 view.show()
                 return
             except Exception as exc:
@@ -514,7 +529,7 @@ class CharacterWidget(QLabel):
 
     def _refresh_rig_overlay(self):
         if self.rig_view is not None:
-            key = (tuple(self.held_items), self.is_flipped)
+            key = (tuple(self.held_items), self.is_flipped, self.show_debug)
             if key == self._rig_overlay_key:
                 return
             self._rig_overlay_key = key
@@ -537,7 +552,8 @@ class CharacterWidget(QLabel):
         self._rig_manual_action = None if action == "idle" else action
         self.current_action = action
         self.sprite_animator.set_yaw(self._idle_rig_yaw())
-        self.sprite_animator.set_emotion(self.mood_system.decide_emotion()["emotion"])
+        mood_emotion = self.mood_system.decide_emotion()["emotion"]
+        self.sprite_animator.set_emotion(self._get_sprite_display_emotion(mood_emotion))
         self.sprite_animator.play(action, loop=action != "wave")
         if action == "idle":
             self.update_action(self.mood_system.decide_emotion())
@@ -874,6 +890,22 @@ class CharacterWidget(QLabel):
         body = measure() if measure is not None else QRect(0, 0, self.width(), self.height())
         return body if not body.isEmpty() else QRect(0, 0, self.width(), self.height())
 
+    def _body_contains(self, position):
+        """All pointer interactions use the same local box as physics/debug."""
+        return self._physics_body_rect().contains(position)
+
+    def _refresh_body_hover(self, position=None):
+        if position is None:
+            position = self.mapFromGlobal(QCursor.pos())
+        inside = self._body_contains(position)
+        if not inside:
+            CharacterWidget._finish_pet_log(self, 'cursor_left')
+            self._pet_last_position = None
+            self._pet_session_logged = False
+            self._pet_refusal_session_logged = False
+        self._cursor_over_character = inside
+        return inside
+
     def _align_grounded_pose(self):
         """Keep rendered feet on their existing support in the same paint frame.
 
@@ -1091,8 +1123,63 @@ class CharacterWidget(QLabel):
 
     def _mark_character_interaction(self) -> None:
         """캐릭터 상호작용 시 전용 방치 시간을 초기화한다."""
+        self._cancel_autonomous_behavior()
+        needs = getattr(self, "autonomous_needs", None)
+        if needs is not None:
+            needs.on_interaction()
         self._last_character_interaction_time = time.monotonic()
         self.idle_counter = 0
+
+    def _cancel_autonomous_behavior(self) -> None:
+        if not getattr(self, "_autonomous_behavior_active", False):
+            return
+        self._autonomous_behavior_active = False
+        self._autonomous_behavior_generation += 1
+        if (self.rig_view is not None
+                and getattr(self, "_rig_manual_action", None) in {"sleep", "thinking"}):
+            self._rig_manual_action = None
+        if not self.is_dragging and not self.is_moving:
+            self.update_action(self.mood_system.decide_emotion())
+
+    def _run_autonomous_behavior(self, event_name: str) -> bool:
+        """Run a short visible action after the idle-only selector picks an intent."""
+        if event_name == "self_play":
+            was_jumping = self.is_jumping
+            self.jump()
+            return self.is_jumping and not was_jumping
+
+        action = "sleep" if event_name == "self_rest" else "thinking"
+        if self.rig_view is not None:
+            self._play_rig_action(action)
+        elif not list((self.assets_path / action).glob("frame_*.png")):
+            # Legacy sprite packs may not include these optional poses.
+            if event_name == "self_curiosity":
+                self.random_move()
+                return self.is_moving or self.is_jumping
+            return False
+        else:
+            self.current_action = action
+            self.sprite_animator.play(action, fps=24, loop=True)
+
+        self._autonomous_behavior_active = True
+        self._autonomous_behavior_generation += 1
+        generation = self._autonomous_behavior_generation
+        QTimer.singleShot(3000, lambda: self._finish_autonomous_behavior(generation))
+        return True
+
+    def _finish_autonomous_behavior(self, generation: int) -> None:
+        if (generation != self._autonomous_behavior_generation
+                or not self._autonomous_behavior_active):
+            return
+        self._autonomous_behavior_active = False
+        if getattr(self, "_character_closing", False):
+            return
+        if self.rig_view is not None:
+            self._rig_manual_action = None
+        if (self._manual_control_active() or self.is_dragging or self.is_moving
+                or CharacterWidget._dialogue_is_busy(self)):
+            return
+        self.update_action(self.mood_system.decide_emotion())
 
     def update_mood(self):
         if self.is_dragging or self.is_moving:
@@ -1101,6 +1188,7 @@ class CharacterWidget(QLabel):
             return
 
         character_idle_time = self.get_character_idle_time()
+        self.autonomous_needs.update(character_idle_time)
         self.mood_system.update_idle_pressure(character_idle_time)
         self.idle_counter += 1
         self.mood_system.decay()
@@ -1130,21 +1218,32 @@ class CharacterWidget(QLabel):
             return
         if self._cursor_over_character or self.is_dragging or self.is_moving:
             return
+        if self.is_jumping or not self.on_ground or self._autonomous_behavior_active:
+            return
         if CharacterWidget._dialogue_is_busy(self):
             return
         if random.random() > 0.06:
             return
 
-        emotion = self.mood_system.decide_emotion()["emotion"]
-        if emotion in {"anger", "disgust", "fear", "anxiety", "sadness", "despair"}:
-            event_name = "self_rest"
+        mood = self.mood_system.decide_emotion()
+        emotion = mood["emotion"]
+        event_name = self.autonomous_needs.choose(emotion, mood["intensity"])
+        if event_name == "self_rest":
             self.mood_system.on_self_rest()
-        elif emotion in {"joy", "delight", "excitement", "interest", "contentment"}:
-            event_name = "self_play"
+        elif event_name == "self_play":
             self.mood_system.on_self_play()
         else:
-            event_name = "self_curiosity"
             self.mood_system.on_self_curiosity()
+
+        behavior_started = self._run_autonomous_behavior(event_name)
+        if behavior_started:
+            self.autonomous_needs.satisfy(event_name)
+        log_event(
+            'character.autonomous.need_selected',
+            '방치 상태의 욕구를 바탕으로 자율 활동을 선택했습니다.',
+            category='캐릭터 상태', selected_activity=event_name, behavior_started=behavior_started,
+            needs=self.autonomous_needs.snapshot(), emotion=emotion,
+        )
 
         self._last_autonomous_event_time = now
         self._autonomous_event_cooldown = random.uniform(10.0, 60.0)
@@ -1177,12 +1276,19 @@ class CharacterWidget(QLabel):
 
     def _get_sprite_display_emotion(self, emotion):
         override = getattr(getattr(self, 'manual_control', None), 'display_emotion', None)
-        return SPRITE_DISPLAY_EMOTIONS[override] if override else emotion
+        if override:
+            return SPRITE_DISPLAY_EMOTIONS[override]
+        if (self.autonomous_needs.values.get('boredom', 0.0)
+                >= AutonomousNeeds.VISIBLE_BOREDOM_THRESHOLD):
+            return 'bored'
+        return emotion
 
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(mood["emotion"])
+            self.sprite_animator.set_emotion(
+                self._get_sprite_display_emotion(mood["emotion"])
+            )
             self._refresh_rig_overlay()
             busy = (getattr(self, "is_dragging", False)
                     or getattr(self, "is_moving", False)
@@ -1196,6 +1302,10 @@ class CharacterWidget(QLabel):
                 self.current_action = "idle"
                 self.sprite_animator.set_yaw(self._idle_rig_yaw())
                 self.sprite_animator.play("idle")
+            return
+        if (getattr(self, "_autonomous_behavior_active", False)
+                or getattr(self, "is_jumping", False)
+                or not getattr(self, "on_ground", True)):
             return
         action = self._animation_for_emotion(self._get_sprite_display_emotion(mood["emotion"]))
         if self._manual_control_active() and (self.is_moving or self.is_jumping or not self.on_ground
@@ -1311,6 +1421,16 @@ class CharacterWidget(QLabel):
             final_pixmap = flipped_pixmap
         else:
             final_pixmap = scaled_pixmap
+
+        # Measure before decorating: held icons must never expand the body box.
+        body_canvas = QPixmap(target_width, target_height)
+        body_canvas.fill(Qt.GlobalColor.transparent)
+        body_painter = QPainter(body_canvas)
+        body_painter.drawPixmap(0, 0, final_pixmap)
+        body_painter.end()
+        body_canvas = body_canvas.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+        self._sprite_body_rect = QRegion(body_canvas.mask()).boundingRect()
         
         # 아이콘 오버레이 (들고있는 아이템이 있을 때)
         if self.held_items:
@@ -1323,6 +1443,7 @@ class CharacterWidget(QLabel):
         painter.end()
         self.setPixmap(canvas.scaled(self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatio,
                                      Qt.TransformationMode.SmoothTransformation))
+        self._refresh_body_hover()
         self.repaint()
 
     def _get_item_icon(self, file_path):
@@ -1358,27 +1479,30 @@ class CharacterWidget(QLabel):
             painter = QPainter(decorated)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            # 광환 (흐린 노란색 원형)
-            glow_color = QColor(255, 215, 0, 80)  # 금색, 반투명
-            painter.setBrush(QBrush(glow_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(8, 8, 64, 64)
+            if self.show_debug:
+                # Ownership decoration follows the hitbox display setting.
+                painter.setBrush(QBrush(QColor(255, 215, 0, 80)))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(8, 8, 64, 64)
             
-            # 아이콘 중앙에 배치
-            painter.drawPixmap(8, 8, icon_pixmap)
+            # Windows may return a smaller icon or a high-DPI pixmap.
+            # Normalize its pixels before fitting it into the ring's logical box.
+            fitted_icon = icon_pixmap.copy()
+            fitted_icon.setDevicePixelRatio(1.0)
+            fitted_icon = fitted_icon.scaled(
+                64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            icon_x = 8 + (64 - fitted_icon.width()) // 2
+            icon_y = 8 + (64 - fitted_icon.height()) // 2
+            painter.drawPixmap(icon_x, icon_y, fitted_icon)
             
-            # 금색 테두리 (소유권 표시)
-            painter.setPen(QPen(QColor(255, 215, 0), 3))  # 금색 3px 테두리
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(8, 8, 64, 64)
-            
-            # 코너에 별 모양 배지 (캐릭터 소유 표시)
-            star_color = QColor(255, 255, 0)  # 노란색 별
-            painter.setBrush(QBrush(star_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            
-            # 우상단 별 (작은 원으로 표현)
-            painter.drawEllipse(66, 6, 12, 12)
+            if self.show_debug:
+                painter.setPen(QPen(QColor(255, 215, 0), 3))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(8, 8, 64, 64)
+                painter.setBrush(QBrush(QColor(255, 255, 0)))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(66, 6, 12, 12)
             
             painter.end()
             
@@ -1400,7 +1524,10 @@ class CharacterWidget(QLabel):
             painter = QPainter(result)
             
             # 여러 아이콘을 순차적으로 표시 (최대 3개, 겹쳐서 배치)
-            base_icon_x = 90 if not self.is_flipped else 10  # 우측 또는 좌측
+            badge_size = 48
+            stack_width = badge_size + (min(len(self.held_items), 3) - 1) * 10
+            base_icon_x = (max(0, result.width() - stack_width - 10)
+                           if not self.is_flipped else 10)
             base_icon_y = 50  # 위쪽
             
             for idx, item_path in enumerate(self.held_items[:3]):  # 최대 3개만 표시
@@ -1417,6 +1544,9 @@ class CharacterWidget(QLabel):
                     icon_pixmap = self._get_item_icon(item_path)
                     if icon_pixmap is not None and not icon_pixmap.isNull():
                         decorated_icon = self._decorate_icon_with_ownership(icon_pixmap)
+                        decorated_icon = decorated_icon.scaled(
+                            badge_size, badge_size, Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
                         painter.drawPixmap(icon_x, icon_y, decorated_icon)
                 except Exception as e:
                     print(f"[경고] 아이콘 표시 실패: {e}")
@@ -1439,6 +1569,10 @@ class CharacterWidget(QLabel):
             return character_pixmap
 
     def contextMenuEvent(self, event):
+        if (event.reason() != QContextMenuEvent.Reason.Keyboard
+                and not self._body_contains(event.pos())):
+            event.ignore()
+            return
         # The mouse path opens on press; do not open it again on release.
         menu = getattr(self, "_context_menu", None)
         if menu is None or not menu.isVisible():
@@ -1450,6 +1584,9 @@ class CharacterWidget(QLabel):
 
     # 클릭 이벤트
     def mousePressEvent(self, event):
+        if not self._refresh_body_hover(event.position().toPoint()):
+            event.ignore()
+            return
         print(f"[mousePressEvent] button={event.button()} pos={event.globalPosition().toPoint()}")
         if event.button() == Qt.MouseButton.RightButton:
             self._show_context_menu(event.globalPosition().toPoint(), include_dialogue=True)
@@ -1518,6 +1655,9 @@ class CharacterWidget(QLabel):
             self.dialogue_system.update_dialogue_position()
             return
 
+        if not self._refresh_body_hover(event.position().toPoint()):
+            event.ignore()
+            return
         current_pos = event.globalPosition().toPoint()
         current_time = time.monotonic()
         if self._pet_last_position is None:
@@ -1599,7 +1739,7 @@ class CharacterWidget(QLabel):
             return {'unavailable': str(exc)}
 
     def enterEvent(self, event):
-        self._cursor_over_character = True
+        self._refresh_body_hover(event.position().toPoint())
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -1611,6 +1751,11 @@ class CharacterWidget(QLabel):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if (not getattr(self, 'is_dragging', False)
+                or (event is not None and event.button() != Qt.MouseButton.LeftButton)):
+            if event is not None:
+                event.ignore()
+            return
         drag_duration = getattr(self, 'drag_time', 0)
         was_dragging = getattr(self, 'is_dragging', False)
         self.is_dragging = False
@@ -1738,9 +1883,12 @@ class CharacterWidget(QLabel):
         self.show_debug = bool(enabled)
         if self.rig_view is not None:
             self.rig_view.set_debug_painter(self._paint_debug if self.show_debug else None)
+            self._refresh_rig_overlay()
+        elif self.current_pixmap is not None and not self.current_pixmap.isNull():
+            self.set_pixmap_with_flip(self.current_pixmap)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, *, trace_id=None):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, personality_traits=None, trace_id=None):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
         same_width = self.custom_screen_width == requested_width
@@ -1750,6 +1898,8 @@ class CharacterWidget(QLabel):
             bounds = screen.geometry()
             width, height = min(width, bounds.width()), min(height, bounds.height())
         self.personality_system.load_preset(personality)
+        if personality_traits is not None:
+            self.personality_system.set_traits(personality_traits, preset_name=personality)
         options = normalize_character_options({
             'size_percent': self.size_percent if size_percent is None else size_percent,
             'movement_speed': self.movement_speed if movement_speed is None else movement_speed,
@@ -1757,6 +1907,8 @@ class CharacterWidget(QLabel):
             'show_hitboxes': self.show_debug if show_hitboxes is None else show_hitboxes,
             'movement_range_extra_percent': (self.movement_range_extra_percent
                                             if movement_range_extra_percent is None else movement_range_extra_percent),
+            'boredom_minutes': (self.autonomous_needs.boredom_minutes
+                                if boredom_minutes is None else boredom_minutes),
         }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
@@ -1767,6 +1919,7 @@ class CharacterWidget(QLabel):
         self.movement_speed = options['movement_speed']
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
+        self.autonomous_needs.set_boredom_minutes(options['boredom_minutes'])
         self.set_show_hitboxes(options['show_hitboxes'])
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)
         bounds_changed = not (same_width and same_height)
@@ -1876,9 +2029,10 @@ class CharacterWidget(QLabel):
             self.russell_dialog.set_explanation_provider(
                 self.mood_system.get_emotion_explanation
             )
-        self.russell_dialog.set_live_mode()
-        valence, arousal, dominant = state_provider()
-        self.russell_dialog.update_state(valence, arousal, dominant)
+        # A hidden dialog fetches once in showEvent. Refresh an already visible
+        # dialog here instead of rebuilding the same explanation twice on open.
+        if self.russell_dialog.isVisible():
+            self.russell_dialog.set_live_mode()
         self.russell_dialog.start_auto_refresh()
 
         if not self.russell_dialog.isVisible():
@@ -1902,14 +2056,17 @@ class CharacterWidget(QLabel):
     # ====== 드래그 앤 드롭 시스템 ======
     def dragEnterEvent(self, event):
         """드래그가 위젯으로 진입했을 때"""
+        # Accept entry so a file can travel through host padding into the body.
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             print(f"[드래그 진입] 파일/폴더 감지")
 
     def dragMoveEvent(self, event):
         """드래그하는 중"""
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() and self._body_contains(event.position().toPoint()):
             event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dragLeaveEvent(self, event):
         """드래그가 위젯을 벗어났을 때"""
@@ -1917,6 +2074,9 @@ class CharacterWidget(QLabel):
 
     def dropEvent(self, event):
         """파일/폴더를 드롭했을 때 - 여러 개 파일 수용"""
+        if not self._body_contains(event.position().toPoint()):
+            event.ignore()
+            return
         mime_data = event.mimeData()
         
         if mime_data.hasUrls():
@@ -1925,6 +2085,21 @@ class CharacterWidget(QLabel):
                 file_path = url.toLocalFile()
                 self.acquire_item(file_path)
             event.acceptProposedAction()
+
+    def _restore_held_items(self):
+        """The existing storage folder is the inventory across app restarts."""
+        try:
+            items = sorted(self.character_items_path.iterdir(), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            log_event('character.items.restore_failed', '보관 아이템 목록을 불러오지 못했습니다.',
+                      category='캐릭터 상태', level='WARNING', error=str(exc),
+                      path=str(self.character_items_path))
+            return
+        self.held_items = [str(item) for item in items]
+        self.held_items_icons = {}
+        if self.held_items:
+            log_event('character.items.restored', '보관 아이템 목록을 복구했습니다.',
+                      category='캐릭터 상태', held_item_count=len(self.held_items))
 
     def acquire_item(self, file_path):
         """파일/폴더를 획득했을 때 - 캐릭터 폴더로 이동 (여러 개 가능)"""
@@ -2131,15 +2306,39 @@ class CharacterWidget(QLabel):
         self._paint_debug(painter)
         painter.end()
 
+    def _overlapping_window_surfaces(self):
+        """Use the physics hitbox for window contact, excluding host padding.
+
+        Keep distant windows as future landing candidates; only local overlap
+        and the current window directly under the feet count as contact.
+        """
+        origin = self.mapToGlobal(QPoint(0, 0))
+        body = self._physics_body_rect().translated(origin)
+        overlapping = []
+        for surface in self.surfaces:
+            if not surface.name.startswith('window_') or surface.height is None:
+                continue
+            window_rect = QRect(int(surface.x_min), int(surface.y_level),
+                                int(surface.x_max - surface.x_min), int(surface.height))
+            feet_touch = (self.on_ground and self.current_surface is surface
+                          and body.y() + body.height() == surface.y_level
+                          and body.x() + body.width() > surface.x_min
+                          and body.x() < surface.x_max)
+            if body.intersects(window_rect) or feet_touch:
+                overlapping.append(surface)
+        return overlapping
+
     def _paint_debug(self, painter):
         """Use host screen coordinates, including on the native GL child."""
         if not self.show_debug:
             return
         painter.save()
         origin = self.mapToGlobal(QPoint(0, 0))
-        host_rect = QRect(origin, self.size())
-        windows = [s for s in self.surfaces if s.name.startswith('window_')]
+        body = self._physics_body_rect()
+        windows = self._overlapping_window_surfaces()
         overlapping = []
+        painter.save()
+        painter.setClipRect(body, Qt.ClipOperation.IntersectClip)
         painter.setPen(QPen(QColor(255, 220, 0), 2))
         painter.setBrush(QBrush(QColor(255, 230, 0, 35)))
         for surface in windows:
@@ -2147,12 +2346,12 @@ class CharacterWidget(QLabel):
                 continue
             window_rect = QRect(int(surface.x_min), int(surface.y_level),
                                 int(surface.x_max - surface.x_min), int(surface.height))
-            if window_rect.intersects(host_rect):
-                overlapping.append(surface.window_title or surface.name.removeprefix('window_'))
-                painter.drawRect(window_rect.translated(-origin))
+            overlapping.append(surface.window_title or surface.name.removeprefix('window_'))
+            painter.drawRect(window_rect.translated(-origin))
+        painter.restore()
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(255, 90, 90), 2))
-        painter.drawRect(self._character_visual_rect().adjusted(0, 0, -1, -1))
+        painter.drawRect(body.adjusted(0, 0, -1, -1))
         painter.setPen(QPen(QColor(255, 165, 0), 3))
         for surface in self.surfaces:
             if surface.name == 'ground':
@@ -2183,11 +2382,9 @@ class CharacterWidget(QLabel):
         """Character bounds exclude transparent host padding and effect icons."""
         if self.rig_view is not None:
             return self.rig_view.character_rect().toAlignedRect()
-        pixmap = self.pixmap()
-        if pixmap is not None and not pixmap.isNull():
-            mask = pixmap.mask()
-            if not mask.isNull():
-                return QRegion(mask).boundingRect()
+        body = getattr(self, '_sprite_body_rect', None)
+        if body is not None:
+            return QRect(body)
         return self.rect()
 
     def update_dragging(self):
@@ -2205,6 +2402,8 @@ class CharacterWidget(QLabel):
     # 캐릭터 랜덤 이동
     def random_move(self):
         if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
+            return
+        if getattr(self, "_autonomous_behavior_active", False):
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or (self.sprite_animator.current_action == "land"
@@ -2302,7 +2501,8 @@ class CharacterWidget(QLabel):
 
         was_chasing = getattr(self, '_ball_chasing', False)
         self._ball_chasing = True
-        target_x = ball_x - self.width() // 2
+        body = self._physics_body_rect()
+        target_x = ball_x - (body.x() + body.width() // 2)
         left, right = CharacterWidget._horizontal_limits(self)
         target_x = max(left, min(target_x, right))
         delta_x = target_x - self.x()

@@ -4,7 +4,8 @@ from inspect import signature
 from PyQt6.QtCore import QObject, QTimer
 
 from .ai_settings import load_ai_settings, save_ai_settings
-from .config_manager import (load_config, load_character_options, load_dialogue_style, save_config,
+from .config_manager import (load_config, load_character_options, load_personality_traits,
+                            load_dialogue_style, save_config,
                             load_hand_overlay_options, save_hand_overlay_options)
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
@@ -35,6 +36,10 @@ class SettingsController(QObject):
             self.dialog.deleteLater()
         self.request_id = None
         width, height, personality = load_config()
+        personality_traits = load_personality_traits()
+        if personality_traits is None:
+            from .personality_system import PersonalitySystem
+            personality_traits = PersonalitySystem(personality).personality.to_dict()
         tts = self.character.dialogue_system.tts
         try:
             ai = load_ai_settings()
@@ -44,7 +49,8 @@ class SettingsController(QObject):
                       category='오류', level='ERROR', error=str(exc))
             ai = self.character.gemini_config
             ai_error = 'AI 설정 파일을 읽을 수 없습니다. 파일을 확인한 뒤 다시 열어 주세요.'
-        local = {'character': {'width': width, 'height': height, 'personality': personality},
+        local = {'character': {'width': width, 'height': height, 'personality': personality,
+                               'personality_traits': personality_traits},
                  'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
@@ -104,7 +110,9 @@ class SettingsController(QObject):
                 if section == 'character':
                     options = {key: value[key] for key in DEFAULT_CHARACTER_OPTIONS}
                     save_config(value['width'], value['height'], value['personality'],
-                                character_options=options, trace_id=self.operation_id)
+                                character_options=options,
+                                personality_traits=value['personality_traits'],
+                                trace_id=self.operation_id)
                     apply_runtime = self.character.apply_character_settings
                     runtime_options = dict(options)
                     try:
@@ -113,11 +121,17 @@ class SettingsController(QObject):
                         accepts_trace = False
                     if accepts_trace:
                         runtime_options['trace_id'] = self.operation_id
+                    runtime_options['personality_traits'] = value['personality_traits']
                     apply_runtime(value['width'], value['height'], value['personality'], **runtime_options)
                 elif section == 'voice':
                     tts = self.character.dialogue_system.tts
+                    # Turning speech off must work even if its saved model was
+                    # removed or the optional runtime is no longer available.
+                    if not value['enabled']:
+                        tts.set_enabled(False)
                     tts.set_voice(value['voice_id'])
-                    tts.set_enabled(value['enabled'])
+                    if value['enabled']:
+                        tts.set_enabled(True)
                     tts.sync_settings()
                 elif section == 'dialogue':
                     width, height, personality = load_config()

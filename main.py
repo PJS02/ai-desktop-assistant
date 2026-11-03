@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
 from dotenv import load_dotenv
 from character.character_widget import CharacterWidget
-from character.config_manager import load_config, load_character_options
+from character.config_manager import load_config, load_character_options, load_personality_traits
 from character.settings_controller import SettingsController
 from character.config_manager import load_hand_overlay_options
 from hand_overlay.controller import HandOverlayController
@@ -266,6 +266,7 @@ def main():
         screen_width=width,
         screen_height=height,
         personality_preset=personality,
+        personality_traits=load_personality_traits(),
         on_show_perception_console=mediapipe_manager.show_console,
         on_show_log_window=log_window.show_and_raise,
         on_close_log_window=log_window.shutdown,

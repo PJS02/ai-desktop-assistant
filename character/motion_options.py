@@ -2,9 +2,11 @@
 import math
 
 DEFAULT_CHARACTER_OPTIONS = {'size_percent': 100, 'movement_speed': 80, 'jump_height': 225,
-                             'show_hitboxes': True, 'movement_range_extra_percent': 0}
+                             'show_hitboxes': True, 'movement_range_extra_percent': 0,
+                             'boredom_minutes': 3}
 CHARACTER_OPTION_RANGES = {'size_percent': (50, 200), 'movement_speed': (20, 400),
-                           'jump_height': (20, 500), 'movement_range_extra_percent': (-200, 200)}
+                           'jump_height': (20, 500), 'movement_range_extra_percent': (-200, 200),
+                           'boredom_minutes': (0, 10)}
 
 
 def random_movement_scale(size_percent, extra_percent):

@@ -5,11 +5,13 @@ from app_logging import log_event
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QLineEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .personality_system import PersonalitySystem
 from .tts_service import available_voices
+from .tts_models import ENGINE_NAMES, download_manager
+from .tts_backend import runtime_python
 from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
 from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
@@ -24,11 +26,11 @@ class SettingsDialog(QDialog):
     character_command_requested = pyqtSignal(str)
     display_emotion_requested = pyqtSignal(str)
 
-    def __init__(self, local, parent=None):
+    def __init__(self, local, parent=None, model_manager=None):
         super().__init__(parent)
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
-        self.setWindowTitle('통합 설정')
+        self.setWindowTitle('설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
         self.resize(700, 640)
         self.setMinimumSize(520, 430)
@@ -39,11 +41,11 @@ class SettingsDialog(QDialog):
         self.close_on_success = False
         self.tabs = QTabWidget()
         self.controls = {}
+        self.model_manager = model_manager if model_manager is not None else download_manager()
         root = QVBoxLayout(self)
-        title = QLabel('통합 설정')
+        title = QLabel('설정')
         title.setStyleSheet('font-size: 22px; font-weight: 600;')
         root.addWidget(title)
-        root.addWidget(QLabel('캐릭터와 인식 기능의 설정을 한곳에서 관리하세요.'))
         root.addWidget(self.tabs, 1)
         self._character_page(local)
         self._voice_page(local)
@@ -73,7 +75,13 @@ class SettingsDialog(QDialog):
             QTabBar::tab:selected { color: #2463b6; background: white; border-bottom: 2px solid #2463b6; }
             QScrollArea { border: none; background: white; }
             QScrollArea > QWidget > QWidget { background: white; }
-            QLineEdit, QComboBox, QSpinBox { min-height: 28px; padding: 3px; border: 1px solid #dce2ea; border-radius: 5px; background: white; }
+            QLineEdit, QComboBox { min-height: 28px; padding: 3px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; }
+            QComboBox QAbstractItemView { background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; border: 1px solid #cbd5e1; outline: 0; }
+            QComboBox QAbstractItemView::item { min-height: 26px; padding: 4px 8px; }
+            QSpinBox { min-height: 28px; padding: 0 21px 0 6px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; }
+            QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: border; width: 16px; border-left: 1px solid #dce2ea; background: #f6f8fb; }
+            QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
+            QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
             QPushButton { padding: 8px 15px; }
             QPushButton#emotionButton { background: white; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
             QPushButton#emotionButton:checked { background: #e8f1fd; color: #2463b6; border: 2px solid #2463b6; font-weight: 600; }
@@ -118,6 +126,7 @@ class SettingsDialog(QDialog):
         self.character_sliders = {}
         self.character_inputs = {}
         for key, label, suffix in (
+            ('boredom_minutes', '지루함 최댓값 도달 시간', '분'),
             ('size_percent', '캐릭터 크기', ' %'),
             ('movement_speed', '이동 속도', ' px/초'),
             ('movement_range_extra_percent', '추가 이동 폭 비율', ' %'),
@@ -132,6 +141,9 @@ class SettingsDialog(QDialog):
             slider.setRange(low, high)
             spin.setRange(low, high)
             spin.setSuffix(suffix)
+            if key == 'boredom_minutes':
+                slider.setToolTip('0분이면 지루함이 쌓이지 않습니다.')
+                spin.setToolTip('0분이면 지루함이 쌓이지 않습니다.')
             spin.setMinimumWidth(120)
             slider.setValue(local['character'][key])
             spin.setValue(local['character'][key])
@@ -188,6 +200,43 @@ class SettingsDialog(QDialog):
         form.addRow('', self.personality_description)
         self.personality.currentIndexChanged.connect(self._describe_personality)
         self._describe_personality()
+        self.personality_traits = {}
+        initial_traits = local['character'].get('personality_traits')
+        if not isinstance(initial_traits, dict):
+            initial_traits = PersonalitySystem(local['character']['personality']).personality.to_dict()
+        self.personality_trait_inputs = {}
+        trait_labels = {
+            'openness': ('개방성', '익숙한 방식', '새로운 시도'),
+            'conscientiousness': ('성실성', '즉흥적', '계획적'),
+            'extraversion': ('외향성', '차분함', '활발함'),
+            'agreeableness': ('친화성', '비판적', '협조적'),
+            'neuroticism': ('신경질적', '정서적 안정', '민감함'),
+        }
+        for key, (label, low_label, high_label) in trait_labels.items():
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            ends = QLabel(low_label)
+            ends.setMinimumWidth(68)
+            ends.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(-100, 100)
+            value = QSpinBox()
+            value.setRange(-100, 100)
+            value.setSuffix(' %')
+            value.setMinimumWidth(88)
+            numeric = round(max(-1.0, min(1.0, float(initial_traits.get(key, 0.0)))) * 100)
+            slider.setValue(numeric)
+            value.setValue(numeric)
+            slider.valueChanged.connect(value.setValue)
+            value.valueChanged.connect(slider.setValue)
+            self.personality_trait_inputs[key] = value
+            line.addWidget(ends)
+            line.addWidget(slider, 1)
+            line.addWidget(value)
+            line.addWidget(QLabel(high_label))
+            form.addRow(label, row)
+        self.personality.currentIndexChanged.connect(self._load_personality_preset)
         self.dialogue_style = self._combo(DIALOGUE_STYLES,
             normalize_dialogue_style(local.get('dialogue', {}).get('style')))
         form.addRow('말풍선 UI', self.dialogue_style)
@@ -317,6 +366,11 @@ class SettingsDialog(QDialog):
         preset = PersonalitySystem.PERSONALITY_PRESETS[self.personality.currentData()]
         self.personality_description.setText(preset['description'])
 
+    def _load_personality_preset(self):
+        preset = PersonalitySystem.PERSONALITY_PRESETS[self.personality.currentData()]
+        for key, control in self.personality_trait_inputs.items():
+            control.setValue(round(preset[key] * 100))
+
     def _voice_page(self, local):
         _, _, form = self._page('음성', 'AI 답변을 읽는 목소리를 선택하세요. 적용 즉시 바뀌며 다음 실행에도 유지됩니다.')
         self.tts_enabled = QCheckBox('AI 답변 음성으로 읽기')
@@ -326,6 +380,82 @@ class SettingsDialog(QDialog):
         self.tts_enabled.toggled.connect(self.voice.setEnabled)
         form.addRow(self.tts_enabled)
         form.addRow('목소리', self.voice)
+        self.voice_runtime_status = QLabel()
+        self.voice_runtime_status.setWordWrap(True)
+        form.addRow(self.voice_runtime_status)
+        self.model_rows = {}
+        for engine, name in ENGINE_NAMES.items():
+            row = QWidget()
+            layout = QVBoxLayout(row)
+            layout.setContentsMargins(0, 6, 0, 6)
+            heading = QHBoxLayout()
+            heading.addWidget(QLabel(name))
+            heading.addStretch()
+            button = QPushButton('다운로드')
+            button.clicked.connect(lambda checked=False, key=engine: self._download_voice_model(key))
+            heading.addWidget(button)
+            layout.addLayout(heading)
+            status = QLabel()
+            status.setWordWrap(True)
+            layout.addWidget(status)
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            progress.hide()
+            layout.addWidget(progress)
+            form.addRow(row)
+            self.model_rows[engine] = (button, status, progress)
+        self.model_manager.changed.connect(self._refresh_voice_models)
+        self.model_manager.progress_changed.connect(self._voice_download_progress)
+        self.model_manager.finished.connect(self._voice_download_finished)
+        self._refresh_voice_models()
+
+    def _refresh_voice_models(self):
+        try:
+            runtime_python()
+            ready = True
+            self.voice_runtime_status.setText('추가 음성 실행 환경이 준비되어 있습니다.')
+        except ValueError:
+            ready = False
+            self.voice_runtime_status.setText('추가 음성은 프로젝트의 setup_tts_runtime.cmd로 실행 환경을 먼저 준비해 주세요.')
+        store, active = self.model_manager.store, self.model_manager.active_engine
+        for engine, (button, status, progress) in self.model_rows.items():
+            installed = store.installed(engine)
+            self.voice.model().item(self.voice.findData(engine)).setEnabled(installed and ready)
+            if active == engine:
+                button.setText('취소')
+                button.setEnabled(True)
+                progress.show()
+                status.setText('음성 모델을 다운로드하고 검증하는 중입니다.')
+            else:
+                progress.hide()
+                button.setText('설치 완료' if installed else '다시 다운로드' if engine in self.model_manager.last_result else '다운로드')
+                button.setEnabled(active is None and not installed and store.published(engine))
+                if engine in self.model_manager.last_result:
+                    status.setText(self.model_manager.last_result[engine][1])
+                elif installed:
+                    status.setText('설치 완료 — 목소리를 선택하고 적용해 주세요.')
+                elif not store.published(engine):
+                    status.setText('배포 준비 중 — 학습한 목소리가 게시되면 다운로드할 수 있습니다.')
+                else:
+                    size = sum(a['size'] for a in store.assets(engine)) / 1024**3
+                    status.setText(f'미설치 · 최대 {size:.2f} GiB 다운로드 · 공통 파일은 재사용합니다.')
+
+    def _download_voice_model(self, engine):
+        if self.model_manager.active_engine == engine:
+            self.model_manager.cancel()
+            self.model_rows[engine][1].setText('취소 중…')
+        else:
+            self.model_rows[engine][2].setValue(0)
+            self.model_manager.start(engine)
+
+    def _voice_download_progress(self, engine, value, text):
+        _, status, progress = self.model_rows[engine]
+        progress.setValue(value)
+        status.setText(text)
+
+    def _voice_download_finished(self, engine, ok, message):
+        self._refresh_voice_models()
+        self.model_rows[engine][1].setText(message)
 
     def _recognition_page(self, local):
         _, layout, self.remote_form = self._page('사용자 인식', '카메라·감정 인식은 실행 중에 적용됩니다. 마이크·STT 옵션을 바꾸면 실행 중인 음성 인식을 자동으로 다시 시작합니다.')
@@ -445,7 +575,10 @@ class SettingsDialog(QDialog):
         form.addRow('모델 ID', self.model)
 
     def changes(self):
-        local = {'character': {'width': self.width.value(), 'height': self.height.value(), 'personality': self.personality.currentData()},
+        local = {'character': {'width': self.width.value(), 'height': self.height.value(),
+                               'personality': self.personality.currentData(),
+                               'personality_traits': {key: control.value() / 100.0
+                                                     for key, control in self.personality_trait_inputs.items()}},
                  'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData()},
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
