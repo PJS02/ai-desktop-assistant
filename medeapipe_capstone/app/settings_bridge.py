@@ -8,7 +8,7 @@ from app.device_settings import save_device_settings
 from recognition.stt_engine import LANGUAGE_OPTIONS, PROVIDER_OPTIONS, SENSITIVITY_OPTIONS, SILENCE_OPTIONS
 
 MODEL_OPTIONS = {'EmotiEffNet B2': 'emotieff_b2', 'MobileNetV3 (기존)': 'mobilenet_v3'}
-BOOL_FIELDS = ('tracking', 'marker_only', 'mirror', 'info_overlay', 'emotion', 'always_recognition', 'timestamps')
+BOOL_FIELDS = ('tracking', 'marker_only', 'mirror', 'info_overlay', 'cham_overlay', 'emotion', 'always_recognition', 'timestamps')
 STT_FIELDS = ('microphone', 'provider', 'language', 'silence', 'sensitivity', 'timestamps')
 
 

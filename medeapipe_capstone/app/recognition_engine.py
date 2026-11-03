@@ -198,6 +198,7 @@ class RecognitionEngine(SettingsBridge):
         self.mirror_var.trace_add('write', lambda *_: self.sync_desktop_hands())
         self.info_overlay_var = self.make_value(self.saved_bool(saved_recognition, "info_overlay", True)
         )
+        self.cham_overlay_var = self.make_value(self.saved_bool(saved_recognition, "cham_overlay", True))
         self.emotion_var = self.make_value(self.saved_bool(saved_recognition, "emotion", background_mode)
         )
         saved_emotion_model = saved_recognition.get("emotion_model", "emotieff_b2")
@@ -739,6 +740,7 @@ class RecognitionEngine(SettingsBridge):
             "marker_only": bool(self.marker_only_var.get()),
             "mirror": bool(self.mirror_var.get()),
             "info_overlay": bool(self.info_overlay_var.get()),
+            "cham_overlay": bool(self.cham_overlay_var.get()),
             "emotion": bool(self.emotion_var.get()),
             "emotion_model": EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()],
             "always_recognition": bool(self.always_recognition_var.get()),
@@ -1330,7 +1332,7 @@ class RecognitionEngine(SettingsBridge):
             },
         }
         self._log_mode_result()
-        if frame_bgr is None:
+        if frame_bgr is None or not self.cham_overlay_var.get():
             return
         cv2.putText(
             frame_bgr,

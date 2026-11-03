@@ -34,6 +34,35 @@ class _SettingsComboBox(QComboBox):
         event.ignore()
 
 
+class _PreviewImage(QLabel):
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+        self._image = QImage()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setStyleSheet('background: #15202c; color: #dce5f0; border-radius: 6px;')
+
+    def set_image(self, image):
+        self._image = image
+        self._render_image()
+
+    def set_message(self, text):
+        self._image = QImage()
+        self.clear()
+        self.setText(text)
+
+    def _render_image(self):
+        if not self._image.isNull():
+            self.setPixmap(QPixmap.fromImage(self._image).scaled(
+                max(1, self.width()), max(1, self.height()),
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render_image()
+
+
 class SettingsDialog(QDialog):
     apply_requested = pyqtSignal(dict)
     apply_timeout = pyqtSignal(str)
@@ -537,10 +566,15 @@ class SettingsDialog(QDialog):
         self.preview_button = QPushButton('카메라 미리보기')
         self.preview_button.setCheckable(True)
         self.preview_button.toggled.connect(self._sync_preview)
-        self.remote_form.insertRow(0, self.preview_button)
-        self.preview_label = QLabel('미리보기를 켜면 카메라 영상과 인식 결과가 표시됩니다.')
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setWordWrap(True)
+        self.preview_enlarge_button = QPushButton('크게 보기')
+        self.preview_enlarge_button.setAutoDefault(False)
+        self.preview_enlarge_button.clicked.connect(self._show_large_preview)
+        preview_buttons = QHBoxLayout()
+        preview_buttons.addWidget(self.preview_button, 1)
+        preview_buttons.addWidget(self.preview_enlarge_button)
+        self.remote_form.insertRow(0, preview_buttons)
+        self.preview_window = None
+        self.preview_label = _PreviewImage('미리보기를 켜면 카메라 영상과 인식 결과가 표시됩니다.')
         self.preview_label.setMinimumHeight(180)
         self.preview_label.setMaximumHeight(240)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -570,9 +604,37 @@ class SettingsDialog(QDialog):
             self._preview_active = enabled
             self.preview_requested.emit(enabled)
             if not enabled:
-                self.preview_label.clear()
-                self.preview_label.setText('미리보기가 꺼져 있습니다. 카메라 인식은 계속됩니다.')
+                self._preview_message('미리보기가 꺼져 있습니다. 카메라 인식은 계속됩니다.')
                 self.preview_status.clear()
+                if self.preview_window is not None:
+                    self.preview_window.close()
+
+    def _show_large_preview(self):
+        self.preview_button.setChecked(True)
+        if self.preview_window is None:
+            self.preview_window = QDialog(self, Qt.WindowType.Window | Qt.WindowType.WindowMinMaxButtonsHint
+                                           | Qt.WindowType.WindowCloseButtonHint)
+            self.preview_window.setWindowTitle('카메라 미리보기 · 크게 보기')
+            self.preview_window.resize(1000, 750)
+            self.preview_window.setMinimumSize(480, 360)
+            layout = QVBoxLayout(self.preview_window)
+            self.large_preview_label = _PreviewImage('카메라 화면을 기다리는 중…')
+            layout.addWidget(self.large_preview_label, 1)
+            close_button = QPushButton('닫기')
+            close_button.clicked.connect(self.preview_window.close)
+            layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        if not self.preview_label._image.isNull():
+            self.large_preview_label.set_image(self.preview_label._image)
+        else:
+            self.large_preview_label.set_message(self.preview_label.text())
+        self.preview_window.show()
+        self.preview_window.raise_()
+        self.preview_window.activateWindow()
+
+    def _preview_message(self, text):
+        self.preview_label.set_message(text)
+        if self.preview_window is not None:
+            self.large_preview_label.set_message(text)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -599,9 +661,9 @@ class SettingsDialog(QDialog):
             return
         if image.isNull() or image.width() > 1280 or image.height() > 1280:
             return
-        self.preview_label.setPixmap(QPixmap.fromImage(image).scaled(
-            max(1, self.preview_label.width()), max(1, self.preview_label.height()),
-            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.preview_label.set_image(image)
+        if self.preview_window is not None and self.preview_window.isVisible():
+            self.large_preview_label.set_image(image)
         state = packet.get('state') or {}
         emotion = (state.get('emotion') or {}).get('label') or '인식 대기'
         self.preview_status.setText(f"{state.get('result', '')}\n감정: {emotion}\n음성: {state.get('speech', '')}")
@@ -686,6 +748,7 @@ class SettingsDialog(QDialog):
                 combo.setEnabled(not state.get('game_active', False))
         for key, label in [('tracking', '추적 지점 표시'), ('marker_only', '검은 배경에 추적 지점 표시'),
                            ('mirror', '좌우 반전'), ('info_overlay', '영상에 상태 표시'),
+                           ('cham_overlay', '영상에 참참참 방향 표시'),
                            ('emotion', '영상에 감정 결과 표시'), ('always_recognition', '영상에 동작 결과 표시')]:
             if key not in state['values']:
                 continue
@@ -706,8 +769,7 @@ class SettingsDialog(QDialog):
         self.remote_fields.setEnabled(True)
         self.remote_status.setText(state.get('status', '현재 설정을 불러왔습니다.'))
         if not state.get('camera_running', False) and self._preview_active:
-            self.preview_label.clear()
-            self.preview_label.setText('카메라가 중지되어 있습니다. 카메라 시작을 눌러 주세요.')
+            self._preview_message('카메라가 중지되어 있습니다. 카메라 시작을 눌러 주세요.')
         for operation, button in self.device_buttons.items():
             running = state.get('camera_running', False) if operation.startswith('camera_') else state.get('stt_running', False)
             button.setEnabled(bool(running) != operation.endswith('_start'))
@@ -716,8 +778,7 @@ class SettingsDialog(QDialog):
         self.remote_status.setText(message)
         self.remote_fields.setEnabled(False)
         self.remote_baseline = None
-        self.preview_label.clear()
-        self.preview_label.setText('인식 작업에 연결하지 못했습니다. 장치 새로고침으로 다시 연결하세요.')
+        self._preview_message('인식 작업에 연결하지 못했습니다. 장치 새로고침으로 다시 연결하세요.')
         self.preview_status.clear()
         for button in self.device_buttons.values():
             button.setEnabled(False)

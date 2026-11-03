@@ -266,6 +266,7 @@ class HolisticGuiApp(RecognitionEngine):
         self.make_toggle(toggle_frame, LABEL_MARKER_ONLY, self.marker_only_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_MIRROR, self.mirror_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_INFO_OVERLAY, self.info_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, '참참참 방향 표시', self.cham_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_EMOTION, self.emotion_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.emotion_model_menu = tk.OptionMenu(
             toggle_frame,
