@@ -1,4 +1,4 @@
-"""Settings commands run on the recognition scheduler, never the stdin thread."""
+"""Settings commands run on the existing Tk loop, never the stdin thread."""
 import json
 import time
 from copy import deepcopy
@@ -18,8 +18,7 @@ class SettingsBridge:
         microphones = [device.label for device in self.stt.audio_devices]
         values = {'camera': self.camera_var.get() if cameras else None,
                   'microphone': self.stt_mic_var.get() if microphones else None,
-                  'mode': (self.rps_previous_mode if self.rps_session else
-                           self.cham_previous_mode if getattr(self, 'cham_session', None) else self.active_mode),
+                  'mode': self.rps_previous_mode if self.rps_session else self.active_mode,
                   'emotion_model': MODEL_OPTIONS[self.emotion_model_var.get()]}
         for key in BOOL_FIELDS:
             variable = self.stt_timestamps_var if key == 'timestamps' else getattr(self, key + '_var')
@@ -40,10 +39,9 @@ class SettingsBridge:
             for item in choices[key]:
                 item['label'] = names.get(item['value'], item['value'].replace(' sec', '초'))
         status = f"카메라 {'실행 중' if self.cap is not None else '중지'} · 음성 인식 {'실행 중' if self.stt.is_running else '중지'}"
-        game_active = bool(self.rps_session or getattr(self, 'cham_session', None))
-        if game_active:
-            status += '\n게임을 닫으면 인식 모드를 변경할 수 있습니다.'
-        return {'values': values, 'choices': choices, 'status': status, 'game_active': game_active,
+        if self.rps_session:
+            status += '\n가위바위보 게임을 닫으면 인식 모드를 변경할 수 있습니다.'
+        return {'values': values, 'choices': choices, 'status': status, 'game_active': bool(self.rps_session),
                 'camera_running': self.cap is not None, 'stt_running': self.stt.is_running}
 
     @staticmethod
@@ -89,8 +87,6 @@ class SettingsBridge:
                 if getattr(self, 'settings_apply_pending', False):
                     raise ValueError('이전 설정을 적용하는 중입니다. 잠시 후 다시 시도하세요.')
                 self.apply_unified_settings(request.get('request_id'), request.get('values'))
-            elif action == 'device':
-                self.control_device(request.get('operation'))
             else:
                 raise ValueError('지원하지 않는 설정 요청입니다.')
         except (ValueError, OSError, RuntimeError) as exc:
@@ -98,20 +94,6 @@ class SettingsBridge:
             log_event('settings.recognition.failed', '인식 설정 요청 실패', category='오류', level='ERROR',
                       trace_id=request_id, error=str(exc))
             self.settings_result(request_id, False, f'사용자 인식 설정을 모두 적용하지 못했습니다: {exc}')
-
-    def control_device(self, operation):
-        operations = {'camera_start': self.start_selected_camera, 'camera_stop': self.release_camera,
-                      'stt_start': lambda: self.start_stt(show_error=False), 'stt_stop': self.stop_stt}
-        if operation not in operations:
-            raise ValueError('지원하지 않는 장치 명령입니다.')
-        if (getattr(self, 'settings_apply_pending', False)
-                or self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive()):
-            raise RuntimeError('장치 설정이나 검색이 끝난 뒤 다시 시도하세요.')
-        operations[operation]()
-        running = self.cap is not None if operation.startswith('camera_') else self.stt.is_running
-        ok = bool(running) == operation.endswith('_start')
-        self.emit_settings({'kind': 'device_result', 'ok': ok, 'state': self.settings_state(),
-                            'message': '장치 명령을 적용했습니다.' if ok else '장치 상태와 로그를 확인하세요.'})
 
     def apply_unified_settings(self, request_id, patch):
         self._settings_request_id = request_id or new_trace_id('settings')
@@ -124,8 +106,8 @@ class SettingsBridge:
         original_settings = deepcopy(self.device_settings)
         previous_model = getattr(self, 'emotion_recognizer', None)
         previous_model_key = getattr(self, 'loaded_emotion_model_key', None)
-        if (self.rps_session or getattr(self, 'cham_session', None)) and 'mode' in patch:
-            raise ValueError('게임을 닫은 뒤 인식 모드를 변경하세요.')
+        if self.rps_session and 'mode' in patch:
+            raise ValueError('가위바위보 게임을 닫은 뒤 인식 모드를 변경하세요.')
         if self.camera_discovery_thread is not None and self.camera_discovery_thread.is_alive():
             raise ValueError('장치 검색이 끝난 뒤 적용하세요.')
         for key, value in patch.items():
@@ -197,7 +179,7 @@ class SettingsBridge:
             for key in ('provider', 'language', 'silence', 'sensitivity'):
                 getattr(self, 'stt_' + key + '_var').set(state['values'][key])
             self.stt_mic_var.set(state['values']['microphone'] or '')
-            if not (self.rps_session or getattr(self, 'cham_session', None)):
+            if not self.rps_session:
                 self.active_mode = state['values']['mode']
                 self.update_mode_status()
             log_event('settings.recognition.rolled_back', '저장 실패 후 설정 복원', category='오류', level='ERROR',
@@ -214,7 +196,7 @@ class SettingsBridge:
                       category='사용자 인식', trace_id=request_id)
             self.stop_stt()
             deadline = time.monotonic() + 20
-            self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline))
+            self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline))
         else:
             self.settings_result(request_id, True, '설정을 저장하고 적용했습니다. 중지된 장치는 다음 시작부터 새 설정을 사용합니다.')
 
@@ -224,20 +206,20 @@ class SettingsBridge:
         if time.monotonic() > deadline:
             log_event('settings.recognition.stt_timeout', '설정 저장 후 음성 재시작 확인 시간 초과',
                       category='오류', level='WARNING', trace_id=request_id, saved=True, runtime_status='unknown')
-            self.settings_result(request_id, False, '설정은 저장했지만 음성 인식 재시작을 확인하지 못했습니다. 설정과 로그창에서 상태를 확인하세요.', runtime_status='unknown')
+            self.settings_result(request_id, False, '설정은 저장했지만 음성 인식 재시작을 확인하지 못했습니다. 인식 콘솔에서 상태를 확인하세요.', runtime_status='unknown')
             return
         if not started:
             if self.stt.is_running:
-                self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline))
+                self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline))
                 return
             self.start_stt(show_error=False)
             if not self.stt.is_running:
                 self.settings_result(request_id, False, '설정은 저장했지만 음성 인식을 시작하지 못했습니다. 마이크 상태를 확인하세요.')
                 return
-            self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))
+            self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))
         elif self.stt.is_running and self.stt.stream is not None:
             self.settings_result(request_id, True, '설정을 저장하고 적용했습니다. 음성 인식도 새 설정으로 다시 시작했습니다.')
         elif not self.stt.is_running:
-            self.settings_result(request_id, False, '설정은 저장했지만 마이크를 열지 못했습니다. 설정과 로그창에서 상태를 확인하세요.')
+            self.settings_result(request_id, False, '설정은 저장했지만 마이크를 열지 못했습니다. 인식 콘솔에서 상태를 확인하세요.')
         else:
-            self.scheduler.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))
+            self.root.after(100, lambda: self.restart_settings_stt(request_id, deadline, True))

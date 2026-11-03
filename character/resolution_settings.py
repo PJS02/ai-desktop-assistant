@@ -6,6 +6,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
+from .personality_system import PersonalitySystem
+
 
 class ResolutionSettingsDialog(QDialog):
     """해상도 및 성격 설정 다이얼로그"""
@@ -25,7 +27,7 @@ class ResolutionSettingsDialog(QDialog):
         super().__init__()
         self.selected_width = current_width or 1920
         self.selected_height = current_height or 1080
-        self.selected_personality = current_personality or "Russell (기본)"
+        self.selected_personality = current_personality or PersonalitySystem.DEFAULT_PRESET
         self.setup_ui()
     
     def setup_ui(self):
@@ -164,8 +166,6 @@ class ResolutionSettingsDialog(QDialog):
         layout.addWidget(desc)
         
         # 성격 프리셋 (personality_system.py에서 가져올 것)
-        from character.personality_system import PersonalitySystem
-        
         preset_group = QGroupBox("성격 프리셋")
         preset_layout = QVBoxLayout()
         
@@ -212,10 +212,8 @@ class ResolutionSettingsDialog(QDialog):
     
     def on_personality_changed(self, preset_name: str):
         """성격 선택 변경"""
-        from character.personality_system import PersonalitySystem
-        
         if preset_name not in PersonalitySystem.PERSONALITY_PRESETS:
-            preset_name = "Russell (기본)"
+            preset_name = PersonalitySystem.DEFAULT_PRESET
         
         preset = PersonalitySystem.PERSONALITY_PRESETS[preset_name]
         

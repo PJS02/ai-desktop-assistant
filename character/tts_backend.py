@@ -76,7 +76,6 @@ class LocalVoiceBackend:
             if self.process is not None and self.process.poll() is None and self.voice == voice:
                 return
             self.stop()
-            log_event('tts.model_loading', '음성 모델 불러오기 시작', category='대화·AI', model=voice)
             python = runtime_python()
             self.store.verify_engine(voice)
             work = self.store.root / voice
@@ -114,22 +113,9 @@ class LocalVoiceBackend:
             threading.Thread(target=stderr, daemon=True, name='tts-errors').start()
         if self._line(cancelled, 180).get('status') != 'ready':
             raise RuntimeError('TTS 모델 준비 응답이 올바르지 않습니다.')
-        log_event('tts.model_ready', '음성 모델 준비 완료', category='대화·AI', model=voice)
-
-    def prepare(self, voice, cancelled):
-        """Load and retain the selected model without generating any speech."""
-        try:
-            self._start(voice, cancelled)
-        except SynthesisCancelled:
-            raise
-        except Exception as exc:
-            self.stop()
-            log_event('tts.model_failed', '음성 모델 준비 실패', category='대화·AI',
-                      level='ERROR', model=voice, error=str(exc))
-            raise
 
     def synthesize(self, text, voice, cancelled):
-        self.prepare(voice, cancelled)
+        self._start(voice, cancelled)
         if cancelled():
             raise SynthesisCancelled()
         fd, name = tempfile.mkstemp(suffix='.wav', prefix='capstone-tts-')
@@ -153,7 +139,6 @@ class LocalVoiceBackend:
     def stop(self):
         with self.lock:
             process, self.process = self.process, None
-            voice = self.voice
             self.voice = None
             if process is not None:
                 if process.poll() is None:
@@ -166,7 +151,6 @@ class LocalVoiceBackend:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None:
                         stream.close()
-                log_event('tts.model_unloaded', '음성 모델 실행기 종료', category='대화·AI', model=voice)
 
     def close(self):
         self.closed = True

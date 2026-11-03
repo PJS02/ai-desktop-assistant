@@ -22,7 +22,6 @@ class DialogueSystem(QObject):
     dialogue_ended = pyqtSignal()       # 대화 종료
     user_input_received = pyqtSignal(str, str)  # text, text/voice
     ai_response_ready = pyqtSignal(object)
-    ai_motion_changed = pyqtSignal(str)
     
     def __init__(self, character_widget, *, tts=None, response_provider=None,
                  time_provider=time.monotonic):
@@ -51,7 +50,6 @@ class DialogueSystem(QObject):
         self.conversation_history = []
         self._speaking = False
         self._tts_busy = False
-        self._pending_ai_response = None
         self._response_hold_until = 0.0
         self._input_wait_signature = None
         self._request_traces = {}
@@ -64,8 +62,6 @@ class DialogueSystem(QObject):
             self.tts.speaking_changed.connect(self._on_tts_speaking_changed)
         if hasattr(self.tts, 'busy_changed'):
             self.tts.busy_changed.connect(self._on_tts_busy_changed)
-        if hasattr(self.tts, 'sync_bubble_changed'):
-            self.tts.sync_bubble_changed.connect(self._on_sync_bubble_changed)
         
         # 대화 큐
         self.dialogue_queue: List[dict] = []
@@ -371,9 +367,6 @@ class DialogueSystem(QObject):
             measure = getattr(host, '_physics_body_rect', None)
             body = measure() if measure else QRect(0, 0, host.width(), host.height())
             game = getattr(host, 'rps_game', None)
-            cham = getattr(host, 'cham_game', None)
-            if cham is not None and cham.isVisible():
-                game = cham
             avoid = game.geometry() if game is not None and game.isVisible() else None
             if self.current_dialogue:
                 self.current_dialogue.update_position_with_character(
@@ -462,7 +455,6 @@ class DialogueSystem(QObject):
         self._active_input = turn
         turn['state'] = 'responding'
         self.is_ai_responding = True
-        self.ai_motion_changed.emit('waiting')
         self.last_request_time = now
         self._request_generation += 1
         generation = self._request_generation
@@ -606,6 +598,11 @@ class DialogueSystem(QObject):
         self._active_input = None
         self.is_ai_responding = False
         self._response_hold_until = self._time_provider() + 5.0
+        if self.current_user_dialogue is not None:
+            self.current_user_dialogue.duration = 5000
+            if not self._speaking and not self.current_user_dialogue.is_hovering:
+                self.current_user_dialogue.close_timer.start(5000)
+            self.current_user_dialogue.raise_()
         self.show_ai_response(response_text, log_context=turn['log_context'], failed=failed)
         self._process_next_input()
 
@@ -622,8 +619,6 @@ class DialogueSystem(QObject):
 
     def _on_tts_speaking_changed(self, speaking):
         self._speaking = bool(speaking)
-        if self._speaking:
-            self._flush_ai_response('playback_started')
         for bubble in (self.current_dialogue, self.current_user_dialogue):
             if bubble is not None:
                 if self._speaking:
@@ -636,37 +631,12 @@ class DialogueSystem(QObject):
     def _on_tts_busy_changed(self, busy):
         self._tts_busy = bool(busy)
         if not self._tts_busy:
-            self._flush_ai_response('tts_unavailable')
             self._process_next_input()
-
-    def _on_sync_bubble_changed(self, enabled):
-        if not enabled:
-            self._flush_ai_response('sync_disabled')
-
-    def _flush_ai_response(self, reason):
-        pending, self._pending_ai_response = self._pending_ai_response, None
-        if pending is None or self._closed:
-            return
-        text, context, legacy = pending
-        if reason != 'ai_error':
-            self.ai_motion_changed.emit('idle')
-        # Count the normal reading interval from display, including delayed audio.
-        self._response_hold_until = max(self._response_hold_until, self._time_provider() + 5.0)
-        if legacy and getattr(self.show_dialogue, '__func__', None) is not DialogueSystem.show_dialogue:
-            self.show_dialogue(text, duration=5000)
-        else:
-            self.show_dialogue(text, duration=5000, log_context=context)
-        if self.current_user_dialogue is not None:
-            self.current_user_dialogue.duration = 5000
-            self.current_user_dialogue.close_timer.start(5000)
-            self.current_user_dialogue.raise_()
-        log_event('dialogue.output_displayed', 'AI 답변 말풍선 표시', category='대화·AI',
-                  trace_id=context['trace_id'], reason=reason, text=text)
 
     def is_conversation_busy(self, *, include_hold=True, include_manual=True):
         """Reserve the character for admitted user turns and their full output."""
         return bool(self._closed or self.is_ai_responding or self.pending_inputs
-                    or self._speaking or self._tts_busy or self._pending_ai_response is not None
+                    or self._speaking or self._tts_busy
                     or (include_hold and self._time_provider() < self._response_hold_until)
                     or (include_manual and self.manual_dialogue_active))
 
@@ -693,19 +663,14 @@ class DialogueSystem(QObject):
             return
         context = dict(log_context or {})
         context.setdefault('trace_id', new_trace_id('output'))
-        self._pending_ai_response = (response_text, context, log_context is None)
-        # Preserve failure status through normalization: friendly error notices
-        # belong in the bubble, but must not be synthesized as character speech.
+        if log_context is None and getattr(self.show_dialogue, '__func__', None) is not DialogueSystem.show_dialogue:
+            self.show_dialogue(response_text, duration=5000)
+        else:
+            self.show_dialogue(response_text, duration=5000, log_context=context)
         if failed or self._is_error_response(response_text):
-            self.ai_motion_changed.emit('error')
-            self._flush_ai_response('ai_error')
             log_event('dialogue.tts_skipped', 'AI 오류 안내 음성 생략', category='대화·AI',
                       trace_id=context['trace_id'], reason='ai_error', text=response_text)
             return
-        wait_for_audio = (getattr(self.tts, 'sync_bubble', False) is True
-                          and getattr(self.tts, 'enabled', True) is not False)
-        if not wait_for_audio:
-            self._flush_ai_response('immediate')
         log_event('dialogue.tts_requested', '대화 음성 출력 요청', category='대화·AI',
                   trace_id=context['trace_id'], text=response_text)
         # Only opt into an explicitly implemented API; Mock/dynamic providers keep speak(text).
@@ -713,16 +678,12 @@ class DialogueSystem(QObject):
             self.tts.speak_with_context(response_text, context)
         else:
             self.tts.speak(response_text)
-        # Disabled/empty speech can return without a busy-state transition.
-        if self._pending_ai_response is not None and not self._tts_busy:
-            self._flush_ai_response('tts_unavailable')
 
     def shutdown(self):
         """Stop UI work; a late network response cannot resurrect a closed app."""
         if self._closed:
             return
         self._closed = True
-        self._pending_ai_response = None
         self._request_generation += 1
         self._input_timer.stop()
         for turn in self.pending_inputs:
@@ -737,7 +698,6 @@ class DialogueSystem(QObject):
                       text=self._active_input.get('text'))
         self._active_input = None
         self.is_ai_responding = False
-        self.ai_motion_changed.emit('idle')
         self.clear_queue(reason='shutdown')
         self.close_current_dialogue(reason='shutdown')
         if self.current_input_widget:

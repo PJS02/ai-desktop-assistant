@@ -34,9 +34,7 @@ def load_gpt():
         't2s_weights_path': str(model_dir / 'gpt.ckpt'), 'vits_weights_path': str(model_dir / 'sovits.pth'),
         'bert_base_path': str(pretrained / 'chinese-roberta-wwm-ext-large'),
         'cnhuhbert_base_path': str(pretrained / 'chinese-hubert-base')}})
-    send(status='loading', completed=1, total=3, detail='실행 환경 준비 완료 · 음성 모델을 불러오는 중')
     model = TTS(config)
-    send(status='loading', completed=2, total=3, detail='음성 모델 준비 완료 · 기준 음성을 분석하는 중')
     reference = str(MODELS / 'common/reference.wav')
     model.set_ref_audio(reference)
     def synthesize(text, output):
@@ -59,21 +57,15 @@ def load_openvoice():
     from transformers import AutoModelForMaskedLM, AutoTokenizer
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     folder = MODELS / 'openvoice_v2'
-    send(status='loading', completed=1, total=7, detail='실행 환경 준비 완료 · 음색 변환 모델을 불러오는 중')
     converter = ToneColorConverter(str(folder / 'converter/config.json'), device=device, enable_watermark=False)
     converter.load_ckpt(str(folder / 'converter/checkpoint.pth'))
-    send(status='loading', completed=2, total=7, detail='음색 변환 준비 완료 · 음성 합성 모델을 불러오는 중')
     model = TTS(language='KR', device=device, use_hf=False,
                 config_path=str(folder / 'melo/config.json'), ckpt_path=str(folder / 'melo/checkpoint.pth'))
-    send(status='loading', completed=3, total=7, detail='음성 합성 준비 완료 · 언어 모델을 불러오는 중')
     bert_id = korean.model_id
     japanese_bert.models[bert_id] = AutoModelForMaskedLM.from_pretrained(bert_id, local_files_only=True).to(device).eval()
     japanese_bert.tokenizers[bert_id] = AutoTokenizer.from_pretrained(bert_id, local_files_only=True)
-    send(status='loading', completed=4, total=7, detail='언어 모델 준비 완료 · 한국어 처리를 준비하는 중')
     korean.korean_text_to_phonemes('안녕하세요')
-    send(status='loading', completed=5, total=7, detail='한국어 처리 준비 완료 · 음색 정보를 불러오는 중')
     source = torch.load(folder / 'kr.pth', map_location=device)
-    send(status='loading', completed=6, total=7, detail='음색 정보 준비 완료 · 기준 음성을 분석하는 중')
     with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=device.startswith('cuda')):
         target = converter.extract_se(str(MODELS / 'common/reference.wav'))
     def synthesize(text, output):

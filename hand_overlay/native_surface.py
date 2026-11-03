@@ -49,11 +49,6 @@ signature(user, "CreateWindowExW", HANDLE, w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWOR
 signature(user, "ValidateRect", w.BOOL, HANDLE, HANDLE)
 signature(user, "ShowWindow", w.BOOL, HANDLE, c.c_int)
 signature(user, "DestroyWindow", w.BOOL, HANDLE)
-_set_window_owner = signature(user,
-                             "SetWindowLongPtrW" if c.sizeof(HANDLE) == 8 else "SetWindowLongW",
-                             c.c_ssize_t, HANDLE, c.c_int, c.c_ssize_t)
-signature(user, "SetWindowPos", w.BOOL, HANDLE, HANDLE, c.c_int, c.c_int,
-          c.c_int, c.c_int, w.UINT)
 signature(user, "UpdateLayeredWindow", w.BOOL, HANDLE, HANDLE, c.POINTER(w.POINT),
           c.POINTER(w.SIZE), HANDLE, c.POINTER(w.POINT), w.DWORD, c.POINTER(Blend), w.DWORD)
 signature(gdi, "CreateCompatibleDC", HANDLE, HANDLE)
@@ -103,25 +98,6 @@ class LayeredSurface:
         self.buffer = HANDLE()
         self.size = (0, 0)
         self.visible = False
-        self._owner = 0
-
-    def set_owner(self, hwnd):
-        """Keep this popup above its character without per-frame raises or focus."""
-        hwnd = int(hwnd or 0)
-        if hwnd == self._owner:
-            return
-        c.set_last_error(0)
-        previous = _set_window_owner(self.hwnd, -8, hwnd)  # GWLP_HWNDPARENT
-        if not previous and c.get_last_error():
-            raise c.WinError(c.get_last_error())
-        self.raise_above_owner()
-        self._owner = hwnd
-
-    def raise_above_owner(self):
-        # Preserve geometry and input focus when the owner has been raised.
-        flags = 0x0001 | 0x0002 | 0x0010 | 0x0200  # NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
-        if not user.SetWindowPos(self.hwnd, HANDLE(-1), 0, 0, 0, 0, flags):
-            raise c.WinError(c.get_last_error())
 
     def present(self, image, geometry, screen):
         size = (image.width(), image.height())

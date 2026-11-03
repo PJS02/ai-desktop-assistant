@@ -592,6 +592,11 @@ class RussellEmotionDialog(QDialog):
         self.occ_rows = []
         occ_group = QGroupBox("현재 활성 OCC 성분")
         occ_layout = QGridLayout()
+        occ_group.setTitle("누적 OCC 성분 강도")
+        occ_hint = QLabel("성분은 서로 독립된 누적 강도이며, 확률이나 합계 비율이 아닙니다.")
+        occ_hint.setWordWrap(True)
+        occ_hint.setStyleSheet("color: #687386; font-weight: normal;")
+        occ_layout.addWidget(occ_hint, 0, 0, 1, 2)
         self.occ_row_names = list(self.OCC_NAMES)
         for index, name in enumerate(self.occ_row_names):
             row = QHBoxLayout()
@@ -603,7 +608,7 @@ class RussellEmotionDialog(QDialog):
             bar.setTextVisible(True)
             row.addWidget(label)
             row.addWidget(bar)
-            occ_layout.addLayout(row, index // 2, index % 2)
+            occ_layout.addLayout(row, index // 2 + 1, index % 2)
             self.occ_rows.append((label, bar))
         occ_group.setLayout(occ_layout)
 
@@ -640,22 +645,28 @@ class RussellEmotionDialog(QDialog):
         self.resize(1040, min(900, max(700, self.screen().availableGeometry().height() - 80)))
         self.setStyleSheet("""
             QDialog { background: #f6f8fb; color: #202124; }
+            QLabel, QGroupBox, QTableWidget, QTextBrowser, QProgressBar {
+                color: #202124;
+            }
             QLabel#title { color: #202124; padding-left: 6px; }
             QLabel#subtitle { color: #687386; padding: 0 0 8px 7px; }
             QLabel#summary { background: #17223b; color: white; border-radius: 10px;
                              padding: 12px; font-size: 14px; font-weight: 700; }
             QLabel#changeCard { background: #eaf1ff; border: 1px solid #c8d9ff;
                                 border-radius: 9px; padding: 10px; color: #263b69; }
-            QGroupBox { font-weight: 700; border: 1px solid #d9dfe9; border-radius: 8px;
-                        margin-top: 10px; padding-top: 10px; background: white; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QGroupBox { color: #202124; font-weight: 700; border: 1px solid #d9dfe9;
+                        border-radius: 8px; margin-top: 18px; padding-top: 12px;
+                        background: white; }
+            QGroupBox::title { subcontrol-origin: margin; top: 2px; left: 10px;
+                               padding: 0 5px; color: #202124; background: white; }
             QTableWidget { border: none; gridline-color: #e7eaf0; alternate-background-color: #f7f9fc;
                            selection-background-color: #ddeaff; selection-color: #263b69; }
-            QTextBrowser { border: 1px solid #e7eaf0; background: #fcfdff; padding: 6px; }
+            QTextBrowser { border: 1px solid #e7eaf0; background: #fcfdff;
+                           color: #202124; padding: 6px; }
             QHeaderView::section { background: #eef2f8; color: #4b5568; border: none;
                                    border-bottom: 1px solid #d9dfe9; padding: 6px; font-weight: 700; }
             QProgressBar { border: 1px solid #d6dce7; border-radius: 5px; text-align: center;
-                           background: #edf0f5; min-height: 17px; }
+                           color: #202124; background: #edf0f5; min-height: 17px; }
             QProgressBar::chunk { background: #5b8def; border-radius: 4px; }
             QPushButton { background: white; color: #263b69; border: 1px solid #c8d9ff;
                           border-radius: 6px; padding: 7px 14px; }
