@@ -6,7 +6,7 @@ import time
 import uuid
 from app_logging import log_event
 
-from PyQt6.QtCore import QEvent, QRect, Qt, QTimer
+from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QPixmap
 from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
 
@@ -73,6 +73,8 @@ class RpsGameOverlay(QWidget):
     """카운트다운 → 캐릭터 선택 → 사용자 기준 결과. 조작은 캐릭터 메뉴에서 한다."""
 
     COUNTDOWN_SECONDS = 3.0
+    cue_requested = pyqtSignal(str)
+    cue_stopped = pyqtSignal()
     CAPTURE_SECONDS = 5.0
     REVEAL_SECONDS = 0.65
     RESULT_SECONDS = 4.0
@@ -98,6 +100,7 @@ class RpsGameOverlay(QWidget):
         self.opponent = None
         self.result = None
         self.deadline = 0.0
+        self._last_cue = None
         self._anchor = parent
         self.images = {hand: QPixmap(str(ASSETS / f"{hand.lower()}.png")) for hand in HANDS}
 
@@ -161,6 +164,8 @@ class RpsGameOverlay(QWidget):
         self.start_round()
 
     def start_round(self):
+        self.cue_stopped.emit()
+        self._last_cue = None
         if self.session:
             log_event('game.rps.ended', '이전 가위바위보 판을 재시작합니다.',
                       category='캐릭터 상태', trace_id=self.session, reason='restarted', state=self.state)
@@ -203,6 +208,13 @@ class RpsGameOverlay(QWidget):
         self.opponent_image.clear()
         self.opponent_image.setText("?")
         self.hint.setText("한 손의 모양을 잠시 유지해주세요.")
+        if time.time() < self.deadline:
+            self._request_cue('paper')
+
+    def _request_cue(self, cue):
+        if cue != self._last_cue:
+            self._last_cue = cue
+            self.cue_requested.emit(cue)
 
     def handle_payload(self, payload):
         if self.state not in {"countdown", "waiting"}:
@@ -231,7 +243,12 @@ class RpsGameOverlay(QWidget):
             if remaining <= 0:
                 self._begin_capture()
             else:
-                self.opponent_image.setText(str(max(1, math.ceil(remaining))))
+                step = max(1, math.ceil(remaining))
+                self.opponent_image.setText(str(step))
+                # Attach one independent recording to each existing UI stage.
+                cue = {2: 'scissors', 1: 'rock'}.get(step)
+                if cue:
+                    self._request_cue(cue)
         if self.state == "waiting":
             if now >= self.deadline:
                 self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
@@ -279,6 +296,7 @@ class RpsGameOverlay(QWidget):
         self.update_position()
 
     def finish_without_result(self, message, *, reason='connection_failed'):
+        self.cue_stopped.emit()
         log_event('game.rps.no_result', '가위바위보 판정을 완료하지 못했습니다.',
                   category='캐릭터 상태', level='WARNING', trace_id=self.session,
                   reason=reason, detail=message, last_hand=self.tracker.label if self.tracker else None)
@@ -318,6 +336,7 @@ class RpsGameOverlay(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent):
+        self.cue_stopped.emit()
         if self.session:
             log_event('game.rps.ended', '가위바위보 판을 종료합니다.', category='캐릭터 상태',
                       trace_id=self.session, state=self.state, result=self.result,

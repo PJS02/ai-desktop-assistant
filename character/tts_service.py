@@ -103,6 +103,10 @@ class SupertonicTTS(QObject):
         return self._busy
 
     @property
+    def request_source(self):
+        return self._request_contexts.get(self._generation, {}).get('source')
+
+    @property
     def sync_bubble(self) -> bool:
         return self._sync_bubble
 
@@ -186,7 +190,7 @@ class SupertonicTTS(QObject):
         self._request_contexts[self._generation] = dict(context or {})
         self._set_busy(True)
         self._stop_playback(reason='replaced')
-        self._log_tts('tts.clip_requested', 'GPT-SoVITS 인사 음성 재생', path=str(path), voice_id='gpt_sovits')
+        self._log_tts('tts.clip_requested', 'GPT-SoVITS 사전 제작 음성 재생', path=str(path), voice_id='gpt_sovits')
         self._play_audio(self._generation, pcm, sample_rate)
         return True
 
@@ -197,6 +201,15 @@ class SupertonicTTS(QObject):
             return
         self._start_worker()
         self._enqueue('prepare', self._generation, '', self._voice_id)
+
+    def stop_clip(self, source) -> None:
+        """Cancel only a clip still owned by the caller, preserving newer speech."""
+        if self._request_contexts.get(self._generation, {}).get('source') != source:
+            return
+        self._cancel_request(self._generation, 'stopped')
+        self._generation += 1
+        self._stop_playback(reason='stopped')
+        self._set_busy(False)
 
     def _start_worker(self):
         if self._thread is None or not self._thread.is_alive():

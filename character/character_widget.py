@@ -33,6 +33,7 @@ from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 
 CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
+GAME_AUDIO_DIRECTORY = Path(__file__).resolve().parent.parent / 'assets/audio/games'
 
 
 # Context 모듈 import
@@ -388,6 +389,8 @@ class CharacterWidget(QLabel):
         
         # ====== 대화 시스템 초기화 ======
         self.dialogue_system = DialogueSystem(self)
+        self._pending_game_cues = []
+        self.dialogue_system.tts.busy_changed.connect(self._on_game_voice_busy_changed)
         self._automatic_request_generation = 0
         self._automatic_request_active = False
         print("[대화 시스템 초기화 완료]")
@@ -1879,11 +1882,48 @@ class CharacterWidget(QLabel):
         self.animation_controller.idle.stop()
     
     # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
+    def _play_game_cue(self, cue):
+        if self._character_closing or cue not in {
+                'scissors', 'rock', 'paper', 'cham_1', 'cham_2', 'cham_final'}:
+            return False
+        tts = self.dialogue_system.tts
+        if tts.busy and tts.request_source != 'game':
+            log_event('game.voice.skipped', '진행 중인 음성을 유지하고 게임 음성을 생략합니다.',
+                      category='대화·AI', cue=cue, reason='voice_busy')
+            return False
+        if tts.busy or self._pending_game_cues:
+            self._pending_game_cues.append(cue)
+            self._on_game_voice_busy_changed(tts.busy)
+            return True
+        return self._play_game_recording(cue)
+
+    def _play_game_recording(self, cue):
+        return self.dialogue_system.tts.play_clip(
+            GAME_AUDIO_DIRECTORY / f'{cue}.wav',
+            context={'source': 'game', 'cue': cue, 'trace_id': new_trace_id('game-voice')})
+
+    def _on_game_voice_busy_changed(self, busy):
+        if not busy and self._pending_game_cues:
+            QTimer.singleShot(0, self._drain_game_cues)
+
+    def _drain_game_cues(self):
+        tts = self.dialogue_system.tts
+        if tts.busy and tts.request_source != 'game':
+            self._pending_game_cues.clear()
+        while not self._character_closing and self._pending_game_cues and not tts.busy:
+            self._play_game_recording(self._pending_game_cues.pop(0))
+
+    def _stop_game_voice(self):
+        self._pending_game_cues.clear()
+        self.dialogue_system.tts.stop_clip('game')
+
     def show_rps_game(self):
         if CharacterWidget._cham_game_active(self):
             self.cham_game.close()
         if self.rps_game is None:
             self.rps_game = RpsGameOverlay(self._rps_command_callback, self)
+            self.rps_game.cue_requested.connect(self._play_game_cue)
+            self.rps_game.cue_stopped.connect(self._stop_game_voice)
         self._mark_character_interaction()
         self.rps_game.start_game()
         self.dialogue_system.update_dialogue_position()
@@ -1906,6 +1946,8 @@ class CharacterWidget(QLabel):
         if self.cham_game is None:
             self.cham_game = ChamGameOverlay(self._rps_command_callback, self,
                                              pose_callback=self._apply_cham_pose)
+            self.cham_game.cue_requested.connect(self._play_game_cue)
+            self.cham_game.cue_stopped.connect(self._stop_game_voice)
         if self.cham_game.is_active:
             self.cham_game.close()
         self._cham_saved_pose = (self._rig_preferred_yaw, getattr(self, '_rig_direction_explicit', False),
