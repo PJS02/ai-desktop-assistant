@@ -473,7 +473,9 @@ class DialogueSystem(QObject):
                   trace_id=turn['trace_id'], turn_id=turn['turn_id'], generation=generation,
                   queue_size=len(self.pending_inputs),
                   queued_seconds=round(now - turn['queued_at'], 3))
-        self.show_user_dialogue(turn['text'], duration=3000, log_context=context)
+        # Keep the question visible through network/TTS preparation, then allow
+        # the user to read it alongside the actual answer.
+        self.show_user_dialogue(turn['text'], duration=0, log_context=context)
         try:
             if not self.gemini_config:
                 self._load_gemini_config()
@@ -622,7 +624,13 @@ class DialogueSystem(QObject):
         self._speaking = bool(speaking)
         if self._speaking:
             self._flush_ai_response('playback_started')
-        else:
+        for bubble in (self.current_dialogue, self.current_user_dialogue):
+            if bubble is not None:
+                if self._speaking:
+                    bubble.close_timer.stop()
+                elif bubble.duration > 0 and not bubble.is_hovering:
+                    bubble.close_timer.start(bubble.duration)
+        if not self._speaking:
             self._process_next_input()
 
     def _on_tts_busy_changed(self, busy):
@@ -648,6 +656,10 @@ class DialogueSystem(QObject):
             self.show_dialogue(text, duration=5000)
         else:
             self.show_dialogue(text, duration=5000, log_context=context)
+        if self.current_user_dialogue is not None:
+            self.current_user_dialogue.duration = 5000
+            self.current_user_dialogue.close_timer.start(5000)
+            self.current_user_dialogue.raise_()
         log_event('dialogue.output_displayed', 'AI 답변 말풍선 표시', category='대화·AI',
                   trace_id=context['trace_id'], reason=reason, text=text)
 
