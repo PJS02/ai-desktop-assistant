@@ -25,6 +25,7 @@ from app.device_settings import (
 )
 from app.project_version import __version__
 from app.settings_bridge import SettingsBridge
+from app.preview_stream import PreviewPublisher
 from bridge.interaction_event_client import InteractionEventClient
 from recognition import holistic_tracker as core
 from recognition.emotion_recognizer import EmotionRecognizer
@@ -119,6 +120,7 @@ class HolisticGuiApp(SettingsBridge):
         self.hand_overlay_sequence = 0
         self.hand_overlay_image_size = (1280, 720)
         self.current_photo = None
+        self.preview_publisher = PreviewPublisher()
         self.enlarged_preview = None
         self.enlarged_video = None
         self.last_preview_frame = None
@@ -130,6 +132,7 @@ class HolisticGuiApp(SettingsBridge):
         self.restart_camera_after_discovery = False
         self.rps_session = None
         self.rps_previous_mode = None
+        self.cham_session = self.cham_previous_mode = self.cham_sample = None
         self.rps_sample = None
         saved_recognition = self.device_settings.get("recognition", {})
         saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
@@ -227,6 +230,7 @@ class HolisticGuiApp(SettingsBridge):
         self.stt = RealtimeSTT()
         self.stt.speech_session = self.speech_session
 
+        log_event('recognition.tracker.loading', 'MediaPipe 모델을 불러오는 중', category='사용자 인식')
         self.holistic = core.mp_holistic.Holistic(
             static_image_mode=False,
             model_complexity=2,
@@ -236,6 +240,7 @@ class HolisticGuiApp(SettingsBridge):
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
+        log_event('recognition.tracker.configured', 'MediaPipe 준비 완료', category='사용자 인식')
         self.emotion_recognizer = None
         self.load_emotion_model()
         self.event_client = InteractionEventClient()
@@ -319,6 +324,12 @@ class HolisticGuiApp(SettingsBridge):
                 self.show_console()
             elif command == "hide":
                 self.hide_console()
+            elif command in ('preview 1', 'preview 0'):
+                self.preview_publisher.set_enabled(command.endswith('1'))
+            elif command.startswith("cham_begin "):
+                self.begin_cham_game(command.split(" ", 1)[1])
+            elif command.startswith("cham_end "):
+                self.end_cham_game(command.split(" ", 1)[1])
             elif command.startswith("rps_begin "):
                 self.begin_rps_game(command.split(" ", 1)[1])
             elif command.startswith("rps_end "):
@@ -338,6 +349,8 @@ class HolisticGuiApp(SettingsBridge):
         self.root.after(100, self.poll_control_commands)
 
     def begin_rps_game(self, session):
+        if getattr(self, 'cham_session', None):
+            self.end_cham_game(self.cham_session)
         # 임시 게임 모드는 저장된 사용자 모드를 덮어쓰지 않는다.
         if self.rps_session is None:
             self.rps_previous_mode = self.active_mode
@@ -1136,7 +1149,8 @@ class HolisticGuiApp(SettingsBridge):
     def save_recognition_settings(self):
         """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
         self.device_settings["recognition"] = {
-            "mode": self.rps_previous_mode if self.rps_session else self.active_mode,
+            "mode": (self.rps_previous_mode if self.rps_session else
+                     self.cham_previous_mode if getattr(self, "cham_session", None) else self.active_mode),
             "tracking": bool(self.tracking_var.get()),
             "marker_only": bool(self.marker_only_var.get()),
             "mirror": bool(self.mirror_var.get()),
@@ -1164,8 +1178,8 @@ class HolisticGuiApp(SettingsBridge):
         return 'saved'
 
     def set_mode(self, mode_key):
-        if self.rps_session is not None:
-            self.status_var.set("가위바위보 게임을 닫으면 모드를 변경할 수 있습니다.")
+        if self.rps_session or getattr(self, "cham_session", None):
+            self.status_var.set("게임을 닫으면 모드를 변경할 수 있습니다.")
             return
         if self.active_mode == mode_key:
             self.active_mode = None
@@ -1214,6 +1228,7 @@ class HolisticGuiApp(SettingsBridge):
             log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
         self.pending_frame = None
         self.pending_frame_captured_at = None
+        self.rps_sample = self.cham_sample = None
         if getattr(self, 'hand_overlay_enabled', False):
             self.send_hand_overlay_clear()
 
@@ -1225,6 +1240,7 @@ class HolisticGuiApp(SettingsBridge):
             self.hand_overlay_session = uuid.uuid4().hex
             self.hand_overlay_sequence = 0
             self.hand_overlay_enabled = True
+            log_event('hand_overlay.model.ready', 'MediaPipe 손 추적 준비 완료', category='사용자 인식')
             if self.cap is None:
                 self.send_hand_overlay_clear()
         else:
@@ -1334,9 +1350,11 @@ class HolisticGuiApp(SettingsBridge):
             # STT 이벤트 재전송이나 카메라 중단 시 과거 손으로 판정하지 않게 한다.
             self.rps_sample = {
                 "session": self.rps_session,
-                "captured_at": time.time(),
+                "captured_at": captured_at,
                 "hands": dict(self.mode_result.get("result") or {}),
             }
+        if self.cham_session is not None:
+            self.cham_sample = self.build_cham_sample(frame_record, captured_at)
         self.apply_emotion_overlay(annotated)
         self.send_recognition_state()
         self.render_frame(annotated)
@@ -1478,6 +1496,7 @@ class HolisticGuiApp(SettingsBridge):
             },
             "mode": self.mode_result,
             "rps_game": self.rps_sample,
+            "cham_game": getattr(self, "cham_sample", None),
             "speech": {
                 "latest_text": self.latest_speech_text,
                 "sequence": self.speech_sequence,
@@ -2244,7 +2263,7 @@ class HolisticGuiApp(SettingsBridge):
         self.enlarged_preview.lift()
 
     def close_enlarged_preview(self):
-        if self.enlarged_preview is not None:
+        if getattr(self, "enlarged_preview", None) is not None:
             window = self.enlarged_preview
             self.enlarged_preview = self.enlarged_video = None
             window.destroy()
@@ -2257,6 +2276,14 @@ class HolisticGuiApp(SettingsBridge):
             label.configure(image=label.photo)
 
     def render_frame(self, frame_bgr):
+        if self.preview_publisher.ready():
+            self.preview_publisher.offer(frame_bgr, {
+                'result': self.result_var.get(), 'emotion': self.build_emotion_state(),
+                'speech': self.latest_speech_text, 'stt': self.stt_status_var.get(),
+            })
+        if self.background_mode and not self.root.winfo_viewable() and self.cap is not None:
+            self.last_preview_frame = None
+            return
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         resized = self.fit_frame(frame_rgb, DISPLAY_WIDTH, DISPLAY_HEIGHT)
         image = Image.fromarray(resized)
@@ -2277,6 +2304,7 @@ class HolisticGuiApp(SettingsBridge):
             return
         self.is_shutting_down = True
         log_event('recognition.shutdown.started', '사용자 인식 종료 시작', category='사용자 인식')
+        self.preview_publisher.close()
         self.event_client.stop()
         self.stt.stop()
         self.release_camera()

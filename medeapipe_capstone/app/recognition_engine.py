@@ -366,30 +366,6 @@ class RecognitionEngine(SettingsBridge):
         print("[가위바위보] 이전 인식 모드 복원")
 
 
-    def begin_cham_game(self, session):
-        if self.rps_session:
-            self.end_rps_game(self.rps_session)
-        if self.cham_session is None:
-            self.cham_previous_mode = self.active_mode
-        self.cham_session, self.cham_sample = session, None
-        self.active_mode = "cham"
-        self.update_mode_status()
-        if self.cap is None:
-            self.start_selected_camera()
-        log_event('recognition.game.started', '참참참 인식 시작', category='사용자 인식',
-                  trace_id=session, mode='cham', previous_mode=self.cham_previous_mode)
-
-
-    def end_cham_game(self, session):
-        if session != self.cham_session:
-            return
-        self.active_mode = self.cham_previous_mode
-        self.cham_session, self.cham_sample = None, None
-        self.update_mode_status()
-        log_event('recognition.game.finished', '참참참 종료 및 모드 복원',
-                  category='사용자 인식', trace_id=session, restored_mode=self.active_mode)
-
-
     def refresh_cameras(self, stop_after_first=False):
         log_event('device.camera.discovery.started', '카메라 검색 시작', category='사용자 인식', stop_after_first=stop_after_first)
         saved_camera = self.device_settings.get("camera", {})
@@ -1344,20 +1320,6 @@ class RecognitionEngine(SettingsBridge):
             2,
             cv2.LINE_AA,
         )
-
-
-    def build_cham_sample(self, frame_record, captured_at):
-        upper = frame_record["upper_body_landmarks"]
-        visible = (bool(frame_record["face_landmarks"])
-                   and all(upper.get(name) is not None and
-                           upper[name].get("visibility", 0) >= 0.5
-                           for name in ("NOSE", "LEFT_EYE", "RIGHT_EYE")))
-        direction = self.detect_face_direction(upper) if visible else "NONE"
-        # The game always uses mirror coordinates, matching physical user movement.
-        if not self.mirror_var.get():
-            direction = {"LEFT": "RIGHT", "RIGHT": "LEFT"}.get(direction, direction)
-        return {"session": self.cham_session, "captured_at": captured_at,
-                "direction": direction}
 
 
     def apply_air_overlay(self, frame_bgr, frame_record):

@@ -22,10 +22,15 @@ class SettingsController(QObject):
         self.applied_local = {}
         self.operation_id = None
         self._operations = {}
+        self._preview_active = False
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setInterval(100)
+        self.preview_timer.timeout.connect(self._poll_preview)
         self.dialogue_timer = QTimer(self)
         self.dialogue_timer.setInterval(100)
         self.dialogue_timer.timeout.connect(self._refresh_dialogue_generation)
         manager.settings_message.connect(self.handle_message)
+        manager.process_started.connect(self._restore_preview)
         self.load_timeout = QTimer(self)
         self.load_timeout.setSingleShot(True)
         self.load_timeout.timeout.connect(self.connection_timeout)
@@ -54,7 +59,8 @@ class SettingsController(QObject):
             ai_error = 'AI 설정 파일을 읽을 수 없습니다. 파일을 확인한 뒤 다시 열어 주세요.'
         local = {'character': {'width': width, 'height': height, 'personality': personality,
                                'personality_traits': personality_traits},
-                 'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id},
+                 'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
+                           'sync_bubble': tts.sync_bubble},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style()}
@@ -66,6 +72,9 @@ class SettingsController(QObject):
         self.dialog.manual_speech_requested.connect(self._speak_manual_dialogue)
         self.dialog.manual_dialogue_hide_requested.connect(self._hide_manual_dialogue)
         self.dialog.finished.connect(self.dialogue_timer.stop)
+        self.dialog.preview_requested.connect(self._set_preview)
+        self.dialog.device_requested.connect(self._device_command)
+        self.dialog.finished.connect(lambda _result: self._set_preview(False))
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.apply_timeout.connect(self._apply_timed_out)
         self.dialog.refresh_requested.connect(self.refresh)
@@ -129,6 +138,33 @@ class SettingsController(QObject):
         if not accepted:
             self.dialog.status.setText('대사 생성을 시작하지 못했습니다. AI 설정과 진행 중인 대화를 확인해 주세요.')
 
+    def show_recognition(self):
+        self.show()
+        self.dialog.tabs.setCurrentIndex(2)
+        self.dialog.preview_button.setChecked(True)
+        return True
+
+    def _set_preview(self, enabled):
+        self._preview_active = bool(enabled)
+        if enabled:
+            self.preview_timer.start()
+        else:
+            self.preview_timer.stop()
+        self.manager.set_preview_enabled(enabled)
+
+    def _restore_preview(self):
+        if self._preview_active:
+            self.manager.set_preview_enabled(True)
+
+    def _poll_preview(self):
+        packet = self.manager.take_preview()
+        if packet is not None and self.dialog is not None:
+            self.dialog.show_preview_packet(packet)
+
+    def _device_command(self, operation):
+        if not self.dialog.pending:
+            self.manager.device_command(operation)
+
     def refresh(self, devices=False):
         if self.dialog.pending:
             return
@@ -187,6 +223,7 @@ class SettingsController(QObject):
                     tts.set_voice(value['voice_id'])
                     if value['enabled']:
                         tts.set_enabled(True)
+                    tts.set_sync_bubble(value.get('sync_bubble', False))
                     tts.sync_settings()
                 elif section == 'dialogue':
                     width, height, personality = load_config()
@@ -242,6 +279,10 @@ class SettingsController(QObject):
             log_event('settings.remote.unknown', '인식 프로세스 종료로 실제 적용 결과를 알 수 없습니다.',
                       level='WARNING', trace_id=self.request_id)
         if self.dialog is None:
+            return
+        if message.get('kind') == 'device_result':
+            self.dialog.set_remote(message['state'], preserve_draft=True)
+            self.dialog.status.setText(message['message'])
             return
         if message.get('kind') == 'unavailable':
             self.load_timeout.stop()
