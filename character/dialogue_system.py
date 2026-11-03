@@ -42,6 +42,7 @@ class DialogueSystem(QObject):
         self._response_provider = response_provider
         self._time_provider = time_provider
         self._closed = False
+        self.manual_dialogue_active = False
         self._request_generation = 0
         self._active_input = None
         self._last_failed_input = None
@@ -124,6 +125,40 @@ class DialogueSystem(QObject):
     def show_user_dialogue(self, text: str, duration: int = 3000, *, log_context=None):
         if not self._closed:
             self._show_bubble(text, duration, log_context=log_context, user=True)
+
+    def show_manual_dialogue(self, user_text='', character_text=''):
+        """Display authored bubbles without AI, speech or conversation history."""
+        user_text, character_text = user_text.strip(), character_text.strip()
+        if (not (user_text or character_text)
+                or self.is_conversation_busy(include_hold=False, include_manual=False)):
+            return False
+        self.clear_queue(reason='manual_display_priority')
+        self.manual_dialogue_active = True
+        context = {'trace_id': new_trace_id('manual-display'), 'source': 'manual_display'}
+        if character_text:
+            self.show_dialogue(character_text, duration=0, log_context=context)
+        if user_text:
+            self.show_user_dialogue(user_text, duration=0, log_context=context)
+        if self.current_user_dialogue is not None:
+            self.current_user_dialogue.raise_()
+        return True
+
+    def speak_manual_dialogue(self, user_text='', character_text=''):
+        """Read the authored character bubble using the existing voice/playback."""
+        character_text = character_text.strip()
+        if not character_text or not self.tts.enabled:
+            return False
+        if not self.show_manual_dialogue(user_text, character_text):
+            return False
+        context = dict(self.current_dialogue._log_context)
+        context['source'] = 'manual_speech'
+        log_event('dialogue.manual_speech_requested', '직접 입력한 캐릭터 대사 읽기',
+                  category='대화·AI', trace_id=context['trace_id'], text=character_text)
+        if callable(getattr(type(self.tts), 'speak_with_context', None)):
+            self.tts.speak_with_context(character_text, context)
+        else:
+            self.tts.speak(character_text)
+        return True
 
     def _show_bubble(self, text: str, duration: int, *, log_context=None, user=False):
         """말풍선 대화 표시"""
@@ -318,6 +353,7 @@ class DialogueSystem(QObject):
     
     def close_current_dialogue(self, reason='closed'):
         """현재 표시 중인 대화 종료"""
+        self.manual_dialogue_active = False
         if self.current_user_dialogue:
             self.current_user_dialogue._log_close_reason = reason
             self.current_user_dialogue.close()
@@ -379,6 +415,7 @@ class DialogueSystem(QObject):
             return False
         raw_text = text
         text = text.strip()
+        self.manual_dialogue_active = False
         self.user_input_epoch += 1
         # A direct user turn takes priority over a delayed ambient script.
         self.clear_queue(reason='user_input_priority')
@@ -614,15 +651,17 @@ class DialogueSystem(QObject):
         log_event('dialogue.output_displayed', 'AI 답변 말풍선 표시', category='대화·AI',
                   trace_id=context['trace_id'], reason=reason, text=text)
 
-    def is_conversation_busy(self):
+    def is_conversation_busy(self, *, include_hold=True, include_manual=True):
         """Reserve the character for admitted user turns and their full output."""
         return bool(self._closed or self.is_ai_responding or self.pending_inputs
                     or self._speaking or self._tts_busy or self._pending_ai_response is not None
-                    or self._time_provider() < self._response_hold_until)
+                    or (include_hold and self._time_provider() < self._response_hold_until)
+                    or (include_manual and self.manual_dialogue_active))
 
-    def show_automatic_response(self, text, expected_input_epoch=None, *, log_context=None, failed=False):
+    def show_automatic_response(self, text, expected_input_epoch=None, *, log_context=None, failed=False,
+                                allow_during_hold=False):
         """Ambient responses never replace a conversation or a later user turn."""
-        if self.is_conversation_busy():
+        if self.is_conversation_busy(include_hold=not allow_during_hold):
             log_event('dialogue.automatic_discarded', '대화 우선으로 자동 대사 폐기', category='대화·AI',
                       trace_id=(log_context or {}).get('trace_id'), reason='conversation_busy', text=text)
             return False

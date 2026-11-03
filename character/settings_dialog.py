@@ -8,7 +8,7 @@ from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .personality_system import PersonalitySystem
@@ -39,6 +39,10 @@ class SettingsDialog(QDialog):
     apply_timeout = pyqtSignal(str)
     refresh_requested = pyqtSignal(bool)
     character_command_requested = pyqtSignal(str)
+    dialogue_generation_requested = pyqtSignal()
+    manual_dialogue_requested = pyqtSignal(str, str)
+    manual_speech_requested = pyqtSignal(str, str)
+    manual_dialogue_hide_requested = pyqtSignal()
     display_emotion_requested = pyqtSignal(str)
     preview_requested = pyqtSignal(bool)
     device_requested = pyqtSignal(str)
@@ -240,6 +244,51 @@ class SettingsDialog(QDialog):
         self.manual_status.setWordWrap(True)
         self.manual_status.setStyleSheet('font-weight: 600; color: #2463b6; padding: 8px 0;')
         form.addRow(self.manual_status)
+        self.generate_dialogue_button = QPushButton('대사 생성')
+        self.generate_dialogue_button.setAutoDefault(False)
+        self.generate_dialogue_button.clicked.connect(lambda _checked=False: self.dialogue_generation_requested.emit())
+        form.addRow(self.generate_dialogue_button)
+        heading = QLabel('말풍선 직접 입력')
+        heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
+        form.addRow(heading)
+        self.manual_user_text = QPlainTextEdit()
+        self.manual_character_text = QPlainTextEdit()
+        self.manual_user_text.setPlaceholderText('사용자 말풍선에 표시할 대사')
+        self.manual_character_text.setPlaceholderText('캐릭터 말풍선에 표시할 대사')
+        for label, editor in (('사용자 대사', self.manual_user_text),
+                              ('캐릭터 대사', self.manual_character_text)):
+            editor.setAccessibleName(label)
+            editor.setFixedHeight(70)
+            form.addRow(label, editor)
+        line = QWidget()
+        buttons = QHBoxLayout(line)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        self.manual_bubble_buttons = {}
+        for target, label in (('user', '사용자 표시'), ('character', '캐릭터 표시'), ('both', '둘 다 표시')):
+            button = QPushButton(label)
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _checked=False, value=target: self._show_manual_bubbles(value))
+            self.manual_bubble_buttons[target] = button
+            buttons.addWidget(button)
+        form.addRow(line)
+        line = QWidget()
+        buttons = QHBoxLayout(line)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        self.speak_manual_dialogue_button = QPushButton('말하기')
+        self.speak_manual_dialogue_button.setAutoDefault(False)
+        self.speak_manual_dialogue_button.clicked.connect(self._speak_manual_bubbles)
+        buttons.addWidget(self.speak_manual_dialogue_button)
+        self.hide_manual_bubbles_button = QPushButton('말풍선 숨기기')
+        self.hide_manual_bubbles_button.setAutoDefault(False)
+        self.hide_manual_bubbles_button.setEnabled(False)
+        self.hide_manual_bubbles_button.clicked.connect(lambda: self.manual_dialogue_hide_requested.emit())
+        buttons.addWidget(self.hide_manual_bubbles_button)
+        form.addRow(line)
+        hint = QLabel('입력한 대사를 그대로 표시합니다. 설정창을 닫아도 숨기기 전까지 유지됩니다.\n'
+                      '말하기를 누르면 캐릭터 대사를 현재 설정된 음성으로 읽습니다.\n'
+                      'AI 답변은 생성하지 않으며, 일반 대화를 시작하면 직접 표시가 해제됩니다.')
+        hint.setWordWrap(True)
+        form.addRow(hint)
         self.command_buttons = {}
         for row in COMMAND_ROWS:
             line = QWidget()
@@ -302,6 +351,41 @@ class SettingsDialog(QDialog):
 
     def set_manual_status(self, message):
         self.manual_status.setText(message)
+
+    def _show_manual_bubbles(self, target):
+        user = self.manual_user_text.toPlainText().strip() if target != 'character' else ''
+        character = self.manual_character_text.toPlainText().strip() if target != 'user' else ''
+        if not user and not character:
+            self.status.setText('표시할 대사를 입력해 주세요.')
+            return
+        self.manual_dialogue_requested.emit(user, character)
+
+    def _speak_manual_bubbles(self):
+        user = self.manual_user_text.toPlainText().strip()
+        character = self.manual_character_text.toPlainText().strip()
+        if not character:
+            self.status.setText('말할 캐릭터 대사를 입력해 주세요.')
+            return
+        self.manual_speech_requested.emit(user, character)
+
+    def set_manual_dialogue_state(self, available, visible, *, voice_enabled=True, speaking=False):
+        for button in self.manual_bubble_buttons.values():
+            button.setEnabled(available)
+            button.setToolTip('진행 중인 대화·음성 출력이 끝나면 표시할 수 있어요.' if not available else '')
+        self.hide_manual_bubbles_button.setEnabled(available and visible)
+        self.speak_manual_dialogue_button.setEnabled(available and voice_enabled)
+        self.speak_manual_dialogue_button.setText('말하는 중…' if speaking else '말하기')
+        self.speak_manual_dialogue_button.setToolTip(
+            '음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.' if not voice_enabled else
+            '진행 중인 대화·음성 출력이 끝나면 말할 수 있어요.' if not available else
+            '입력한 캐릭터 대사를 현재 설정된 음성으로 읽습니다.')
+
+    def set_dialogue_generation_state(self, generating, available=True):
+        self.generate_dialogue_button.setText('대사 생성 중…' if generating else '대사 생성')
+        self.generate_dialogue_button.setEnabled(not generating and available)
+        self.generate_dialogue_button.setToolTip(
+            '진행 중인 대사 생성을 기다려 주세요.' if generating else
+            '대화·음성 출력이 끝나면 다시 생성할 수 있어요.' if not available else '')
 
     def set_display_emotion_state(self, emotion):
         selected = self.display_emotion_buttons.get(emotion, self.display_emotion_reset)
