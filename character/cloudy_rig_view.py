@@ -363,7 +363,9 @@ class CloudyRigView(QOpenGLWidget):
                 head = QImage(self._identities[head_name])
                 if head.isNull():
                     raise RuntimeError(f"Cannot decode effect mask: {head_name}")
-            image = build_effect(name, recipe, head)
+            skin_name = next((c.get('skin') for c in recipe['commands'] if c.get('skin')), None)
+            skin = QImage(self._identities[skin_name]) if skin_name else None
+            image = build_effect(name, recipe, head, skin)
         else:
             image = QImage(identity)
         if image.isNull():

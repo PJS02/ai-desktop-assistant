@@ -87,6 +87,14 @@
     });
     context.save = function () { saved.push(copy(state)); };
     context.restore = function () { if (saved.length) state = saved.pop(); };
+    context.scale = function (x, y) {
+      var t = state.transform || (state.transform = [1, 1, 0, 0]);
+      t[0] *= x; t[1] *= y;
+    };
+    context.translate = function (x, y) {
+      var t = state.transform || (state.transform = [1, 1, 0, 0]);
+      t[2] += t[0] * x; t[3] += t[1] * y;
+    };
     context.drawImage = function (image) {
       canvas.commands.push({op: 'drawImage', image: image.name,
         args: Array.prototype.slice.call(arguments, 1), state: copy(state)});
@@ -128,6 +136,8 @@
         heads[name] = {name: name, width: part.size[0], height: part.size[1]};
       });
       var sprites = root.CloudyEmotionFX ? root.CloudyEmotionFX.createSprites(heads, P) : {};
+      // Reuse the authored classic spiral eyes in the native character view.
+      if (root.CloudyDizzyFX) Object.assign(sprites, root.CloudyDizzyFX.createSprites({}, P, {skipSkin:true}));
       Object.keys(sprites).forEach(function (name) {
         var image = sprites[name];
         var recipe = {width: image.width, height: image.height, commands: image.commands};
@@ -138,6 +148,17 @@
             anchor: root.CloudyEmotionFX.anchors[direction].shade.slice()}];
         }
         recipes[name] = recipe;
+      });
+      if (root.CloudyDizzyFX) Object.keys(root.CloudyDizzyFX.plainViews).forEach(function (direction) {
+        var fx = root.CloudyDizzyFX, view = fx.plainViews[direction];
+        var head = fx.views[direction].baseFace, art = fx.generatedSkinArt[direction];
+        recipes['fx_dizzy_skin_' + direction] = {
+          width: view.skinBounds[2] * 4, height: view.skinBounds[3] * 4,
+          commands: [{op:'dizzySkin', head:head, skin:art.name, toAtlas:art.toAtlas,
+            bounds:view.skinBounds, headBounds:P[head].bbox, covers:view.covers,
+            apertures:fx.views[direction].eyes.map(function (eye) { return eye.aperture; })
+              .concat(view.cleanup || [])}]
+        };
       });
       [['fx_question', '?'], ['fx_Z', 'Z'], ['fx_z', 'z']].forEach(function (pair) {
         var image = recordingCanvas(); image.width = 128; image.height = 128;
@@ -208,6 +229,7 @@
     ['emotion', 'speaking', 'speechTime', 'walkAmount'].forEach(function (key) {
       if (state[key] !== undefined) options[key] = state[key];
     });
+    if (options.emotion === 'dizzy' || options.emotion === 'dizzy_plain') options.emotion = 'neutral';
     var authoredFlight = state.jumpActive === true && Number.isFinite(state.jumpPhase);
     var sampleAction = authoredFlight ? 'jump' : action;
     var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
@@ -264,6 +286,11 @@
         });
       }
     }
+    if (state.emotion === 'dizzy' || state.emotion === 'dizzy_plain') {
+      pose.dizzy = pose.exprSleep > 0 ? 0 : 1;
+      pose.dizzyPlain = state.emotion === 'dizzy_plain' ? pose.dizzy : 0;
+    }
+    else { delete pose.dizzy; delete pose.dizzyPlain; }
     return {action: action, time: time, pose: pose, originalPose: originalPose,
       externalRootHeightAdjustment: adjustment};
   }

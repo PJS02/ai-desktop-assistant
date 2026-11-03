@@ -1932,14 +1932,11 @@ class HolisticGuiApp(SettingsBridge):
     def update_wave_histories(self, frame_record):
         for side in ("left", "right"):
             hand_records = frame_record[f"{side}_hand_landmarks"]
-            hand_map = core.records_by_name(hand_records)
-            # The wrist can stay almost still while an open palm waves.
-            # Follow the knuckles instead; partial landmark inputs use the wrist.
-            anchor = core.average_point(*(core.point_from_record(hand_map.get(name))
-                                          for name in ('INDEX_FINGER_MCP', 'MIDDLE_FINGER_MCP', 'PINKY_MCP')))
+            anchor = core.open_palm_wave_anchor(hand_records)
             if anchor is None:
-                anchor = core.hand_anchor_point(hand_records)
-            self.wave_histories[side].append(anchor)
+                self.wave_histories[side].clear()
+            else:
+                self.wave_histories[side].append(anchor)
 
     def detect_wave(self, side, frame_width):
         # Missing hands break the motion history, so old movement cannot be
@@ -1955,8 +1952,8 @@ class HolisticGuiApp(SettingsBridge):
 
         xs = [point[0] for point in points]
         amplitude = max(xs) - min(xs)
-        min_amplitude = max(16, frame_width * 0.025)
-        direction_changes = self.count_wave_direction_changes(xs, min_delta=max(4, min_amplitude * 0.2))
+        min_amplitude = max(32, frame_width * 0.05)
+        direction_changes = self.count_wave_direction_changes(xs, min_delta=min_amplitude * 0.5)
         if amplitude >= min_amplitude and direction_changes >= 2:
             return "HELLO"
         return "NONE"

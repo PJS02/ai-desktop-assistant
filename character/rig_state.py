@@ -6,7 +6,7 @@ from PyQt6.QtGui import QPixmap
 RIG_EMOTIONS = frozenset({
     "neutral", "happy", "excited", "proud", "relieved", "calm", "anxious",
     "hurt", "displeased", "distressed", "sad", "depressed", "tired", "angry",
-    "scared",
+    "scared", "dizzy", "dizzy_plain",
 })
 HOST_EMOTIONS = {
     "idle": "neutral", "joy": "happy", "delight": "happy",
