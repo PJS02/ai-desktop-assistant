@@ -202,7 +202,7 @@ class SettingsController(QObject):
                     options = {key: value[key] for key in DEFAULT_CHARACTER_OPTIONS}
                     save_config(value['width'], value['height'], value['personality'],
                                 character_options=options,
-                                personality_traits=value['personality_traits'],
+                                personality_traits=value.get('personality_traits'),
                                 trace_id=self.operation_id)
                     apply_runtime = self.character.apply_character_settings
                     runtime_options = dict(options)
@@ -212,7 +212,8 @@ class SettingsController(QObject):
                         accepts_trace = False
                     if accepts_trace:
                         runtime_options['trace_id'] = self.operation_id
-                    runtime_options['personality_traits'] = value['personality_traits']
+                    if 'personality_traits' in value:
+                        runtime_options['personality_traits'] = value['personality_traits']
                     apply_runtime(value['width'], value['height'], value['personality'], **runtime_options)
                 elif section == 'voice':
                     tts = self.character.dialogue_system.tts
