@@ -45,6 +45,7 @@ class RigAnimator(QObject):
         self.current_emotion = "neutral"
         self._requested_emotion = "neutral"
         self._emotion_override = None
+        self._motion_emotion = None
         self.is_looping = True
         self.is_playing = False
         self._paused = False
@@ -56,7 +57,7 @@ class RigAnimator(QObject):
         if self._released:
             return
         self._requested_emotion = rig_emotion(name)
-        emotion = self._emotion_override or self._requested_emotion
+        emotion = self._motion_emotion or self._emotion_override or self._requested_emotion
         if emotion != self.current_emotion:
             self.current_emotion = emotion
             self.view.set_emotion(emotion)
@@ -64,6 +65,10 @@ class RigAnimator(QObject):
     def set_emotion_override(self, name=None):
         """Pin only the rendered face while continuing to receive real moods."""
         self._emotion_override = rig_emotion(name) if name else None
+        self.set_emotion(self._requested_emotion)
+
+    def set_motion_emotion(self, name=None):
+        self._motion_emotion = rig_emotion(name) if name else None
         self.set_emotion(self._requested_emotion)
 
     def set_direction(self, flipped=False, *, front=False):

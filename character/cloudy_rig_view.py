@@ -115,6 +115,7 @@ class CloudyRigView(QOpenGLWidget):
         self._last_paint_time = time.perf_counter()
         self._overlay = QPixmap()
         self._debug_painter = None
+        self._contact_painter = None
         self._diagnostic_fbo = None
         self._character_pixel_rect = None
         self._frames = 0
@@ -173,6 +174,10 @@ class CloudyRigView(QOpenGLWidget):
 
     def set_debug_painter(self, callback):
         self._debug_painter = callback
+        self.update()
+
+    def set_contact_painter(self, callback):
+        self._contact_painter = callback
         self.update()
 
     def character_rect(self):
@@ -439,12 +444,14 @@ class CloudyRigView(QOpenGLWidget):
             # Publish this frame's body bounds before Qt presents the host. A
             # landing pose can extend the feet beyond the previous fall bounds.
             self.pose_bounds_changed.emit()
-            if not self._overlay.isNull() or self._debug_painter is not None:
+            if not self._overlay.isNull() or self._debug_painter is not None or self._contact_painter is not None:
                 painter = QPainter(self)
                 if not self._overlay.isNull():
                     painter.drawPixmap(self.rect(), self._overlay)
                 if self._debug_painter is not None:
                     self._debug_painter(painter)
+                if self._contact_painter is not None:
+                    self._contact_painter(painter)
                 painter.end()
             self._draw_ms = (time.perf_counter() - t0) * 1000 - self._plan_ms
             self._frames += 1
@@ -480,6 +487,7 @@ class CloudyRigView(QOpenGLWidget):
                       trace_id=getattr(self.planner, 'log_trace_id', None), **self._diagnostic_snapshot())
             self._released = True
             self._debug_painter = None
+            self._contact_painter = None
             self._timer.stop()
             self._cleanup_gl()
             if hasattr(self.planner, "close"):
