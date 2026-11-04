@@ -6,13 +6,13 @@ from PyQt6.QtGui import QPixmap
 RIG_EMOTIONS = frozenset({
     "neutral", "happy", "excited", "proud", "relieved", "calm", "anxious",
     "hurt", "displeased", "distressed", "sad", "depressed", "tired", "angry",
-    "scared", "dizzy", "dizzy_plain",
+    "fear", "scared", "dizzy", "dizzy_plain",
 })
 HOST_EMOTIONS = {
     "idle": "neutral", "joy": "happy", "delight": "happy",
     "excitement": "excited", "interest": "excited", "contentment": "relieved",
     "peaceful": "calm", "anger": "angry", "disgust": "displeased",
-    "fear": "scared", "anxiety": "anxious", "sadness": "sad",
+    "anxiety": "anxious", "sadness": "sad",
     "melancholy": "depressed", "despair": "distressed", "distress": "distressed",
     "pride": "proud", "relief": "relieved", "pain": "hurt", "fatigue": "tired",
     "bored": "tired",

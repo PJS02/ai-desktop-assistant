@@ -19,7 +19,7 @@ DISPLAY_EMOTIONS = (
     ('neutral', '중립'), ('happy', '기쁨'), ('excited', '신남'), ('proud', '자부심'),
     ('relieved', '안도'), ('calm', '차분함'), ('anxious', '불안'), ('hurt', '상처받음'),
     ('displeased', '불쾌'), ('distressed', '괴로움'), ('angry', '분노'), ('sad', '슬픔'),
-    ('scared', '두려움'), ('depressed', '우울'), ('tired', '피곤함'), ('dizzy', '어질어질'),
+    ('fear', '두려움'), ('scared', '놀람'), ('depressed', '우울'), ('tired', '피곤함'), ('dizzy', '어질어질'),
     ('dizzy_plain', '어질어질2'),
 )
 DISPLAY_EMOTION_NAMES = dict(DISPLAY_EMOTIONS)
@@ -27,7 +27,7 @@ SPRITE_DISPLAY_EMOTIONS = {
     'neutral': 'neutral', 'happy': 'happy', 'excited': 'happy', 'proud': 'happy',
     'relieved': 'happy', 'calm': 'neutral', 'anxious': 'fear', 'hurt': 'sad',
     'displeased': 'angry', 'distressed': 'sad', 'angry': 'angry', 'sad': 'sad',
-    'scared': 'fear', 'depressed': 'sad', 'tired': 'neutral', 'dizzy': 'neutral',
+    'fear': 'fear', 'scared': 'fear', 'depressed': 'sad', 'tired': 'neutral', 'dizzy': 'neutral',
     'dizzy_plain': 'neutral',
 }
 

@@ -99,7 +99,7 @@ function updateGallerySelection(){document.querySelectorAll('#emotionGrid button
 function updateGalleryDirection(){
  const gallery=$('#emotionGallery');if(!gallery)return;
  const direction=yaw<0?'left':yaw>0?'right':'front',label=yaw<0?'왼쪽':yaw>0?'오른쪽':'정면';
- $('#galleryDirection').textContent=label+' 표정 15가지';
+ $('#galleryDirection').textContent=label+' 표정 '+Object.keys(M.emotions).length+'가지';
  if(!gallery.open)return;
  const grid=$('#emotionGrid');
  if(!grid.children.length)for(const [id,entry] of Object.entries(M.emotions)){
@@ -108,7 +108,12 @@ function updateGalleryDirection(){
   img.width=180;img.height=241;img.loading='lazy';img.decoding='async';img.alt=entry.label+' 표정';
   text.textContent=entry.label;b.append(img,text);grid.append(b);
  }
- grid.querySelectorAll('button').forEach(b=>{const img=b.querySelector('img'),src='exports/previews-v35/'+direction+'-'+b.dataset.emotion+'.webp?v=face-gallery-v35-20261004';if(img.getAttribute('src')!==src)img.src=src;});
+ grid.querySelectorAll('button').forEach(b=>{
+  const img=b.querySelector('img'),src=b.dataset.emotion==='fear'
+   ?'textures/fear-v1/'+direction+'.png'
+   :'exports/previews-v35/'+direction+'-'+b.dataset.emotion+'.webp?v=face-gallery-v35-20261004';
+  if(img.getAttribute('src')!==src)img.src=src;
+ });
  updateGallerySelection();
 }
 if($('#emotionGallery'))$('#emotionGallery').ontoggle=updateGalleryDirection;
