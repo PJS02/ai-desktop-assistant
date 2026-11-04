@@ -255,7 +255,7 @@ class JsonLineTcpReceiver:
             'emotion': emotion.get('label'),
             'speech': [speech.get('session'), speech.get('sequence', speech.get('id')), speech.get('text', speech.get('latest_text'))]
                       if isinstance(payload.get('speech'), dict) else payload.get('speech'),
-            'mode': mode.get('active'), 'result': mode.get('result') if mode.get('active') != 'air' else None,
+            'mode': mode.get('active'), 'result': mode.get('result'),
             'rps_game': {'session': game.get('session'), 'hands': game.get('hands')} if game else None},
             sort_keys=True, ensure_ascii=False, default=str)
         now = time.monotonic()

@@ -154,7 +154,7 @@ class SupertonicTTS(QObject):
     @staticmethod
     def _validate_custom_voice(voice_id):
         if not ModelStore().installed(voice_id):
-            raise ValueError('설정 → 음성에서 모델을 먼저 다운로드해 주세요.')
+            raise ValueError('설정 → 대화·음성 → 음성 모델 다운로드에서 모델을 먼저 다운로드해 주세요.')
         runtime_python()
 
     def sync_settings(self):

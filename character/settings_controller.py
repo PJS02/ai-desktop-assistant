@@ -123,7 +123,7 @@ class SettingsController(QObject):
     def _speak_manual_dialogue(self, user_text, character_text):
         dialogue = self.character.dialogue_system
         if not dialogue.tts.enabled:
-            self.dialog.status.setText('음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.')
+            self.dialog.status.setText('대화·음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.')
         elif (getattr(self.character, '_automatic_request_active', False)
               or not dialogue.speak_manual_dialogue(user_text, character_text)):
             self.dialog.status.setText('진행 중인 대화·음성 출력이 끝난 뒤 다시 말해 주세요.')
@@ -139,7 +139,7 @@ class SettingsController(QObject):
 
     def show_recognition(self):
         self.show()
-        self.dialog.tabs.setCurrentIndex(2)
+        self.dialog.tabs.setCurrentWidget(self.dialog.recognition_page)
         self.dialog.preview_button.setChecked(True)
         return True
 
@@ -185,7 +185,7 @@ class SettingsController(QObject):
         log_event('settings.refresh.unavailable', '인식 설정 응답을 확인하지 못했습니다.',
                   level='WARNING', reason='not_connected_or_timeout')
         if self.dialog is not None:
-            self.dialog.remote_unavailable('인식 기능에 연결하지 못했습니다. 장치 설정 탭에서 다시 검색하세요.')
+            self.dialog.remote_unavailable('인식 기능에 연결하지 못했습니다. 카메라·마이크 탭에서 장치를 새로고침해 주세요.')
 
     def _apply_timed_out(self, operation_id):
         if operation_id in self._operations:

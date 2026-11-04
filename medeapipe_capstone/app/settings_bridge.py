@@ -72,7 +72,7 @@ class SettingsBridge:
             return [{'label': item, 'value': item} for item in items]
         choices = {'camera': options(cameras), 'microphone': options(microphones),
                    'mode': [{'label': '끄기', 'value': None}, {'label': '가위바위보', 'value': 'rps'},
-                            {'label': '참참참', 'value': 'cham'}, {'label': '에어드로잉', 'value': 'air'}],
+                            {'label': '참참참', 'value': 'cham'}],
                    'emotion_model': [{'label': label, 'value': key} for label, key in MODEL_OPTIONS.items()],
                    'provider': options(PROVIDER_OPTIONS), 'language': options(LANGUAGE_OPTIONS),
                    'silence': options(SILENCE_OPTIONS), 'sensitivity': options(SENSITIVITY_OPTIONS)}

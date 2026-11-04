@@ -150,7 +150,7 @@ _VALUES = {
     'head_motion': '고개 동작', 'greeting': '인사', 'dialogue': '대화',
     'drag': '드래그', 'pet': '쓰다듬기', 'ball': '공 놀이',
     'emotion_changed': '감정 변화', 'click': '클릭', 'item_acquired': '아이템 획득',
-    'items_released': '아이템 반환', 'cham': '참참참', 'air_drawing': '허공 그림',
+    'items_released': '아이템 반환', 'cham': '참참참',
     'listening': '음성 입력 대기', 'recording': '녹음 중', 'processing': '처리 중',
     'starting': '시작 중', 'stopping': '중지 중', 'stopped': '중지됨',
     'STT listening': '음성 입력 대기', 'STT stopping...': '음성 인식 중지 중',

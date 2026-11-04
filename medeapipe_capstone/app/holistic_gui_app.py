@@ -23,14 +23,10 @@ from app.recognition_engine import (
     EMOTION_CPU_THREADS,
     EMOTION_NEUTRAL_CONFIDENCE_THRESHOLD,
     EMOTION_NEUTRAL_MARGIN_THRESHOLD,
-    AIR_DRAWING_COLORS,
     LABEL_CAMERA,
     LABEL_REFRESH,
     LABEL_START,
     LABEL_MODE,
-    LABEL_RPS,
-    LABEL_CHAM,
-    LABEL_AIR,
     LABEL_WAVE,
     LABEL_HAND_GESTURE,
     LABEL_HEAD_GESTURE,
@@ -237,11 +233,7 @@ class HolisticGuiApp(RecognitionEngine):
         mode_grid.columnconfigure(1, weight=1)
 
         self.mode_buttons = {}
-        for index, (mode_key, label) in enumerate((
-            ("rps", LABEL_RPS),
-            ("cham", LABEL_CHAM),
-            ("air", LABEL_AIR),
-        )):
+        for index, (mode_key, label) in enumerate(MODE_LABELS.items()):
             button = tk.Button(
                 mode_grid,
                 text=label,

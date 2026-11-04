@@ -55,19 +55,12 @@ EMOTION_INFERENCE_INTERVAL_MS = 150
 EMOTION_CPU_THREADS = 2
 EMOTION_NEUTRAL_CONFIDENCE_THRESHOLD = 0.50
 EMOTION_NEUTRAL_MARGIN_THRESHOLD = 0.15
-AIR_DRAWING_COLORS = {
-    "left": (0, 0, 255),
-    "right": (255, 0, 0),
-}
-
-
 LABEL_CAMERA = "\uce74\uba54\ub77c"
 LABEL_REFRESH = "\uce74\uba54\ub77c \uc0c8\ub85c\uace0\uce68"
 LABEL_START = "\uc2dc\uc791"
 LABEL_MODE = "\ubaa8\ub4dc"
 LABEL_RPS = "\uac00\uc704\ubc14\uc704\ubcf4"
 LABEL_CHAM = "\ucc38\ucc38\ucc38"
-LABEL_AIR = "\uc5d0\uc5b4\ub4dc\ub85c\uc789"
 LABEL_WAVE = "\uc190 \ud754\ub4e4\uae30"
 LABEL_HAND_GESTURE = "\uc5c4\uc9c0\ucc99/\ud558\ud2b8/OK"
 LABEL_HEAD_GESTURE = "\uace0\uac1c \ub044\ub355/\uc813\uae30"
@@ -92,7 +85,6 @@ LABEL_STT_RESULT = "STT Result"
 MODE_LABELS = {
     "rps": LABEL_RPS,
     "cham": LABEL_CHAM,
-    "air": LABEL_AIR,
 }
 
 
@@ -134,9 +126,9 @@ class RecognitionEngine(SettingsBridge):
         saved_recognition = self.device_settings.get("recognition", {})
         saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
         saved_mode = saved_recognition.get("mode", "rps")
+        if saved_mode == "air":
+            saved_mode = None
         self.active_mode = saved_mode if saved_mode in (*MODE_LABELS, None) else "rps"
-        self.air_paths = {"left": [], "right": []}
-        self.air_max_points = 180
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
         self.wave_started_at = None
         self._wave_active = False
@@ -654,7 +646,6 @@ class RecognitionEngine(SettingsBridge):
             self.capture_fps = 30.0
         self.frame_index = 0
         self.recognition_performance = RecognitionPerformance()
-        self.clear_air_paths()
         self.reset_motion_states()
         self.source_var.set(
             f"\uc18c\uc2a4: webcam index {selected_candidate['index']} via {selected_candidate['backend_label']}"
@@ -763,7 +754,6 @@ class RecognitionEngine(SettingsBridge):
         if previous != self.active_mode:
             log_event('recognition.mode.changed', '인식 모드 변경', category='사용자 인식', previous=previous, current=self.active_mode)
         self._logged_active_mode = self.active_mode
-        self.clear_air_paths()
         self.reset_motion_states()
         self.update_mode_buttons()
         if self.active_mode in MODE_LABELS:
@@ -772,10 +762,6 @@ class RecognitionEngine(SettingsBridge):
         else:
             self.mode_var.set("\ud604\uc7ac \ubaa8\ub4dc: \uc5c6\uc74c")
             self.result_var.set("\ubaa8\ub4dc \uaebc\uc9d0")
-
-
-    def clear_air_paths(self):
-        self.air_paths = {"left": [], "right": []}
 
 
     def reset_motion_states(self):
@@ -930,8 +916,6 @@ class RecognitionEngine(SettingsBridge):
             self.apply_rps_overlay(frame_bgr, frame_record)
         elif self.active_mode == "cham":
             self.apply_cham_overlay(frame_bgr, frame_record)
-        elif self.active_mode == "air":
-            self.apply_air_overlay(frame_bgr, frame_record)
         elif self.active_mode == "wave":
             self.apply_wave_overlay(frame_bgr, frame_record)
         elif self.active_mode == "gesture":
@@ -1327,36 +1311,14 @@ class RecognitionEngine(SettingsBridge):
         )
 
 
-    def apply_air_overlay(self, frame_bgr, frame_record):
-        self.update_air_paths(frame_record)
-        self.draw_air_paths(frame_bgr)
-        self.result_var.set("\uc5d0\uc5b4\ub4dc\ub85c\uc789: \uc190\uac00\ub77d \uacbd\ub85c \ud45c\uc2dc \uc911")
-        self.mode_result = {
-            "active": "air",
-            "result": {
-                "active": True,
-                "left_points": len([point for point in self.air_paths["left"] if point is not None]),
-                "right_points": len([point for point in self.air_paths["right"] if point is not None]),
-            },
-        }
-        self.draw_mode_text(frame_bgr, "Air Drawing Active")
-        self._log_mode_result()
-
-
     def _log_mode_result(self):
         mode = self.mode_result.get('active')
         result = self.mode_result.get('result')
-        if mode == 'air' and isinstance(result, dict):
-            signature_data = {'active': result.get('active'),
-                              'left_drawing': bool(result.get('left_points')),
-                              'right_drawing': bool(result.get('right_points'))}
-        else:
-            signature_data = result
-        signature = json.dumps([mode, signature_data], ensure_ascii=False, sort_keys=True)
+        signature = json.dumps([mode, result], ensure_ascii=False, sort_keys=True)
         if getattr(self, '_last_logged_mode_result', None) == signature:
             return
         self._last_logged_mode_result = signature
-        log_event('recognition.mode.result', '게임/그리기 인식 상태 변경', category='사용자 인식',
+        log_event('recognition.mode.result', '게임 인식 상태 변경', category='사용자 인식',
                   trace_id=getattr(self, 'rps_session', None), mode=mode, result=result)
 
 
@@ -1824,42 +1786,6 @@ class RecognitionEngine(SettingsBridge):
         if delta >= threshold:
             return "RIGHT"
         return "CENTER"
-
-
-    def update_air_paths(self, frame_record):
-        for side in ("left", "right"):
-            hand_records = frame_record[f"{side}_hand_landmarks"]
-            if not hand_records:
-                self.air_paths[side].append(None)
-                self.trim_air_path(side)
-                continue
-
-            hand_map = core.records_by_name(hand_records)
-            index_tip = hand_map.get("INDEX_FINGER_TIP")
-            if index_tip is None:
-                self.air_paths[side].append(None)
-            else:
-                self.air_paths[side].append((index_tip["pixel_x"], index_tip["pixel_y"]))
-            self.trim_air_path(side)
-
-
-    def trim_air_path(self, side):
-        if len(self.air_paths[side]) > self.air_max_points:
-            self.air_paths[side] = self.air_paths[side][-self.air_max_points :]
-
-
-    def draw_air_paths(self, frame_bgr):
-        if frame_bgr is None:
-            return
-        for side, points in self.air_paths.items():
-            previous = None
-            for point in points:
-                if point is None:
-                    previous = None
-                    continue
-                if previous is not None:
-                    cv2.line(frame_bgr, previous, point, AIR_DRAWING_COLORS[side], 3, cv2.LINE_AA)
-                previous = point
 
 
     def on_close(self):
