@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled, new_trace_id
+from character.reactions import react, reaction_mood
 from .interactions import Box, HandInteractionEngine
 
 
@@ -164,6 +165,10 @@ class CharacterHandActions:
             c.update_render(c.current_action)
         self.mode = mode
         c._mark_character_interaction()
+        if mode == 'palm':
+            reactions = getattr(c, 'reactions', None)
+            if reactions is None or not reactions.safe():
+                react(c, "palm")
         log_event('hand_interaction.hold.started', '손으로 대상 잡기 시작',
                   category='캐릭터 상태', mode=mode)
         self.move_hold(mode, point)
@@ -215,13 +220,19 @@ class CharacterHandActions:
 
     def pet(self, speed, elapsed, point):
         c = self.character
+        before = reaction_mood(c)
         c._mark_character_interaction()
+        react(c, "pet", before=before, sustain=True)
         if self.feedback.pulse('pet'):
             log_throttled('hand_interaction.head.petted', '손으로 머리 쓰다듬기 인식', interval=2,
                           category='캐릭터 상태')
 
     def poke(self, point):
         c = self.character
+        before = reaction_mood(c)
+        now = time.monotonic()
+        repeated = now - getattr(self, '_last_poke', -math.inf) <= 3.2
+        self._last_poke = now
         body = self.body_rect()
         direction = 1 if point[0] < body.center[0] else -1
         c._move_timer.stop()
@@ -237,6 +248,10 @@ class CharacterHandActions:
         c.dialogue_system.update_dialogue_position()
         c._mark_character_interaction()
         self.feedback.pulse('poke', point)
+        if repeated:
+            react(c, "poke_discomfort" if before[0] < -.24 else "poke_play", before=before)
+        else:
+            react(c, "poke_start", before=before, follow="poke_play" if before[0] >= 0 else None)
         log_event('hand_interaction.cheek.poked', '손끝으로 볼 콕 찌르기', category='캐릭터 상태')
 
 

@@ -63,6 +63,9 @@ class ChamGameOverlay(RpsGameOverlay):
         super().__init__(send_command, parent)
         self.setWindowTitle("캐릭터 참참참")
         self.pose_callback = pose_callback
+        self.reaction_face = None
+        self._reaction_until = 0.0
+        self._best_lead = 0
         self.round_number = 1
         self.player_score = self.character_score = 0
         self._yaw = self._turn_from = self._turn_to = 0.0
@@ -135,10 +138,11 @@ class ChamGameOverlay(RpsGameOverlay):
             return
         progress = max(0.0, min(1.0, (now - self._turn_at) / self.TURN_SECONDS))
         smooth = progress * progress * (3 - 2 * progress)
-        self._pose(self._turn_from + (self._turn_to - self._turn_from) * smooth,
-                   self._reaction)
+        face = self._reaction if self.reaction_face is None or now < self._reaction_until else None
+        self._pose(self._turn_from + (self._turn_to - self._turn_from) * smooth, face)
 
     def start_game(self):
+        self._best_lead = 0
         self.cue_stopped.emit()
         self.timer.stop()
         self._end_recognition()
@@ -209,7 +213,12 @@ class ChamGameOverlay(RpsGameOverlay):
         self.character_score += int(caught)
         self.player_score += int(not caught)
         self.result = "caught" if caught else "escaped"
+        self._best_lead = max(self._best_lead, self.character_score - self.player_score)
         self._reaction = "happy" if caught else "sad"
+        if self.reaction_face is not None:
+            event = "game_earned_win" if caught else "game_loss"
+            self._reaction = self.reaction_face(event, 1.0)
+            self._reaction_until = now + 1.15
         self.state = "result"
         self.deadline = now + self.RESULT_SECONDS
         self._show_message('잡혔다!' if caught else '피했다!',
@@ -259,6 +268,12 @@ class ChamGameOverlay(RpsGameOverlay):
                 self._turn(0, now)
                 self._show_message('네가 이겼어!' if self.player_score > self.character_score
                                    else '내가 이겼어!', '다시 하기는 우클릭 메뉴에서')
+                if self.reaction_face is not None:
+                    won = self.character_score > self.player_score
+                    event = ("game_earned_win" if won else "game_disappointed"
+                             if self._best_lead >= 2 else "game_loss")
+                    self._reaction = self.reaction_face(event, 1.25)
+                    self._reaction_until = now + 1.55
                 self._end_recognition()
         elif self.state in {"finished", "error"} and now >= self.deadline:
             self.close()

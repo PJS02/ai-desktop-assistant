@@ -75,6 +75,7 @@ class RpsGameOverlay(QWidget):
     COUNTDOWN_SECONDS = 3.0
     cue_requested = pyqtSignal(str)
     cue_stopped = pyqtSignal()
+    result_revealed = pyqtSignal(str)
     CAPTURE_SECONDS = 5.0
     REVEAL_SECONDS = 0.65
     RESULT_SECONDS = 4.0
@@ -265,6 +266,9 @@ class RpsGameOverlay(QWidget):
                                 "무승부!": "무승부!"}[self.result])
             self.hint.setText(f"사용자 기준 · 나 {HANDS[self.player]} / 캐릭터 {HANDS[self.opponent]}\n"
                               "다시 하기·종료는 캐릭터 메뉴에서")
+            self.result_revealed.emit({
+                "당신의 승리!": "game_loss", "캐릭터의 승리!": "game_win", "무승부!": "game_draw",
+            }[self.result])
         elif self.state in {"result", "error"} and now >= self.deadline:
             self.close()
             return
