@@ -4,9 +4,19 @@ for (const direction of ['front', 'left', 'right']) {
   const parts = window.CLOUDY_PARTS;
   const face = direction + '_00';
   const base = parts[face + '_russell_scared'];
-  const fear = {...base, file: 'textures/fear-v1/' + direction + '.png'};
-  parts[face + '_russell_fear'] = fear;
-  parts[face + '_russell_talk_fear'] = fear;
-  parts[face + '_generic_clean_fear'] = {...base, file: 'textures/fear-v1/' + direction + '-clean.png'};
-  parts[face + '_blink_fear'] = parts[face + '_blink_scared'];
+  const expressions = {fear: 'fear-v1/' + direction};
+  for (const emotion of ['pleasant', 'thrilled', 'quiet', 'serene']) {
+    expressions[emotion] = 'sector-faces/' + emotion + '-' + direction;
+  }
+  for (const [emotion, file] of Object.entries(expressions)) {
+    const version = emotion === 'fear' ? '' : '?v=serene-option-4';
+    const rest = {...base, file: 'textures/' + file + '.png' + version};
+    parts[face + '_russell_' + emotion] = rest;
+    parts[face + '_russell_talk_' + emotion] = rest;
+    parts[face + '_generic_clean_' + emotion] = {...base, file: 'textures/' + file + '-clean.png' + version};
+    const blink = parts[face + '_blink_scared'];
+    parts[face + '_blink_' + emotion] = emotion === 'serene'
+      ? {...blink, file: 'textures/' + file + '-blink.png' + version}
+      : blink;
+  }
 }

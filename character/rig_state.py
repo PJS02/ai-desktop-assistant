@@ -7,6 +7,7 @@ RIG_EMOTIONS = frozenset({
     "neutral", "happy", "excited", "proud", "relieved", "calm", "anxious",
     "hurt", "displeased", "distressed", "sad", "depressed", "tired", "angry",
     "fear", "scared", "dizzy", "dizzy_plain",
+    "pleasant", "thrilled", "quiet", "serene",
 })
 HOST_EMOTIONS = {
     "idle": "neutral", "joy": "happy", "delight": "happy",

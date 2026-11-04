@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const $=s=>document.querySelector(s), M=CloudyMotion;
 const names={idle:'대기',walk:'걷기',run:'달리기',wave:'인사',thinking:'생각',sleep:'수면',hovering:'들기',jump:'점프',fall:'낙하',land:'착지',sequence:'연속 동작'};
 const emotions={auto:'자동',...Object.fromEntries(Object.entries(M.emotions).map(([id,entry])=>[id,entry.label])),dizzy:'어질어질 · 기존',dizzy_plain:'어질어질 · 소용돌이만'};
@@ -109,9 +109,10 @@ function updateGalleryDirection(){
   text.textContent=entry.label;b.append(img,text);grid.append(b);
  }
  grid.querySelectorAll('button').forEach(b=>{
-  const img=b.querySelector('img'),src=b.dataset.emotion==='fear'
-   ?'textures/fear-v1/'+direction+'.png'
-   :'exports/previews-v35/'+direction+'-'+b.dataset.emotion+'.webp?v=face-gallery-v35-20261004';
+  const id=b.dataset.emotion,img=b.querySelector('img');
+  const src=id==='fear'?'textures/fear-v1/'+direction+'.png'
+   :['pleasant','thrilled','quiet','serene'].includes(id)?'textures/sector-faces/'+id+'-'+direction+'.png?v=serene-option-4'
+   :'exports/previews-v35/'+direction+'-'+id+'.webp?v=face-gallery-v35-20261004';
   if(img.getAttribute('src')!==src)img.src=src;
  });
  updateGallerySelection();

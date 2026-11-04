@@ -3,6 +3,12 @@
 'use strict';
 const M=root.CloudyMotion, P=root.CLOUDY_PARTS;
 const mix=(a,b,t)=>a+(b-a)*t, point=(x,y)=>({x,y});
+const sectorMouths={
+ pleasant:{family:'gentle',width:.83,height:.87,restOpening:0},
+ thrilled:{family:'cheerful',width:1.05,height:.88,restOpening:.30},
+ quiet:{family:'gentle',width:.67,height:.65,restOpening:0},
+ serene:{family:'gentle',width:.70,height:.72,restOpening:0}
+};
 // The round elbow bridge enters as the sleeve folds at .67 s. Both lift and
 // lowering use the same pose progress. A fixed-size patch is revealed beneath
 // the forearm sleeve, keeping its anatomy while the visible fold changes.
@@ -439,19 +445,22 @@ class Renderer{
   const aligned=name+'_russell_'+(speaking>.001?'talk_':'')+(expression&&expression!=='talk'?expression:'neutral');
   const fallback=speaking>.001?(emotionalSpeech?name+'_talk_'+expression:name+'_talk'):(expression?name+'_'+expression:name);
   const emotion=expression&&expression!=='talk'?expression:'neutral';
-  const emotionalMouth=name+'_emouth_'+emotion,cleanSpeech=name+'_espeech_'+emotion;
+  const sectorMouth=Object.prototype.hasOwnProperty.call(sectorMouths,emotion)?sectorMouths[emotion]:null;
+  const emotionalMouth=name+'_emouth_'+emotion;
+  const cleanSpeech=name+(sectorMouth?'_generic_clean_':'_espeech_')+emotion;
   // Preserve the five explicitly approved combinations exactly. Other faces
   // return to the original simple speech channel; only smiles get new art.
   const approved=emotion==='displeased'||(cfg.prefix==='front'&&['proud','angry'].includes(emotion));
-  const smileFamily=approved?null:({happy:'cheerful',excited:'cheerful',relieved:'gentle',calm:'gentle',proud:'smirk'}[emotion]||null);
+  const smileFamily=sectorMouth?sectorMouth.family:approved?null:({happy:'cheerful',excited:'cheerful',relieved:'gentle',calm:'gentle',proud:'smirk'}[emotion]||null);
   const hasEmotionalMouth=speaking>.001&&(approved||emotion==='hurt')&&this.textures[emotionalMouth]&&this.textures[cleanSpeech];
-  const hasSmile=speaking>.001&&smileFamily&&this.textures[name+'_smile_'+smileFamily+'_closed']&&this.textures[cleanSpeech];
   const mouth=Math.max(0,Math.min(1,pose.mouthOpen||0));
+  // Sector faces switch from the authored resting lips to one animated mouth.
+  const hasSmile=speaking>.001&&(!sectorMouth||mouth>.025)&&smileFamily&&this.textures[name+'_smile_'+smileFamily+'_closed']&&this.textures[cleanSpeech];
   const speechBlend=hasEmotionalMouth?speaking*M.smoothstep(mouth/.28):0;
   const restingFace=name+'_russell_'+emotion;
   let faceTexture=hasEmotionalMouth?restingFace:hasSmile?cleanSpeech:this.textures[aligned]?aligned:(this.textures[fallback]?fallback:name);
   const gaze=emotion==='anxious'&&this.textures[name+'_gaze_rest'];
-  const generic=speaking>.001&&!hasEmotionalMouth&&!hasSmile;
+  const generic=speaking>.001&&!sectorMouth&&!hasEmotionalMouth&&!hasSmile;
   const genericClean=gaze?name+'_gaze_clean':name+'_generic_clean_'+emotion;
   const genericBlend=generic&&this.textures[genericClean]?speaking*M.smoothstep(mouth/.18):0;
   if(gaze)faceTexture=name+'_gaze_'+(speaking>.001?'talk':'rest');
@@ -531,16 +540,18 @@ class Renderer{
    // Drawn closed, half-open and open smiles share UVs and corner anchors.
    // Interpolate their opening and paint together, instead of bending an
    // unrelated mouth into an emotion or bringing back the original large lip.
-   const phases=['closed','half','open'],segment=mouth<.5?0:1;
-   const amount=M.smoothstep(mouth*2-segment),prefix=name+'_smile_'+smileFamily+'_';
+   const opening=sectorMouth?mix(sectorMouth.restOpening,1,mouth):mouth;
+   const phases=['closed','half','open'],segment=opening<.5?0:1;
+   const amount=M.smoothstep(opening*2-segment),prefix=name+'_smile_'+smileFamily+'_';
    const first=prefix+phases[segment],second=prefix+phases[segment+1];
    const a=P[first],b=P[second],[mx,my]=a.mouthPivot,inset=a.uvInset||0;
    const strength=emotion==='excited'?1.1:emotion==='calm'?.78:1;
-   const width=mix(a.morphSize[0],b.morphSize[0],amount)*strength;
-   const height=mix(a.morphSize[1],b.morphSize[1],amount)*strength;
+   const width=mix(a.morphSize[0],b.morphSize[0],amount)*(sectorMouth?sectorMouth.width:strength);
+   const height=mix(a.morphSize[1],b.morphSize[1],amount)*(sectorMouth?sectorMouth.height:strength);
+   const top=my-(sectorMouth?height/2:3.5);
    this.mesh(first,p=>mapping({x:mx+((p.x/128-inset)/(1-2*inset)-.5)*width,
-    y:my-3.5+(p.y/128-inset)/(1-2*inset)*height}),opacity*speaking,8,12,amount>0?second:null,amount);
-  }else if(speaking>.001&&mouth>.001){
+    y:top+(p.y/128-inset)/(1-2*inset)*height}),opacity*speaking,8,12,amount>0?second:null,amount);
+  }else if(generic&&mouth>.001){
    const [mx,my]=P[name+'_mouth'].mouthPivot;
    this.mesh(name+'_mouth',p=>mapping({x:mx+(p.x-mx)*(.75+.25*mouth),y:my+(p.y-my)*(.16+.84*mouth)}),opacity*speaking*M.smoothstep(mouth/.18),12,20);
   }

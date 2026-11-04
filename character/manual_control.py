@@ -21,6 +21,7 @@ DISPLAY_EMOTIONS = (
     ('displeased', '불쾌'), ('distressed', '괴로움'), ('angry', '분노'), ('sad', '슬픔'),
     ('fear', '두려움'), ('scared', '놀람'), ('depressed', '우울'), ('tired', '피곤함'), ('dizzy', '어질어질'),
     ('dizzy_plain', '어질어질2'),
+    ('pleasant', '유쾌'), ('thrilled', '흥분'), ('quiet', '조용'), ('serene', '고요한'),
 )
 DISPLAY_EMOTION_NAMES = dict(DISPLAY_EMOTIONS)
 SPRITE_DISPLAY_EMOTIONS = {
@@ -29,6 +30,7 @@ SPRITE_DISPLAY_EMOTIONS = {
     'displeased': 'angry', 'distressed': 'sad', 'angry': 'angry', 'sad': 'sad',
     'fear': 'fear', 'scared': 'fear', 'depressed': 'sad', 'tired': 'neutral', 'dizzy': 'neutral',
     'dizzy_plain': 'neutral',
+    'pleasant': 'happy', 'thrilled': 'happy', 'quiet': 'neutral', 'serene': 'neutral',
 }
 
 

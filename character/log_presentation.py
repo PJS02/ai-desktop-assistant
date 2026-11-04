@@ -130,6 +130,7 @@ _VALUES = {
     'duplicate': '이미 처리한 결과', 'unstable': '안정 판정 부족',
     'neutral': '중립', 'happy': '기쁨', 'sad': '슬픔', 'angry': '분노',
     'fear': '두려움', 'scared': '놀람', 'surprise': '놀람', 'surprised': '놀람',
+    'pleasant': '유쾌', 'thrilled': '흥분', 'quiet': '조용', 'serene': '고요한',
     'away': '자리 비움', 'present': '사용자 있음', 'focused': '집중',
     'blocked': '반응 보류', 'shown': '표시됨', 'callback_returned': '콜백 반환 확인',
     'applied': '반영 확인', 'unknown': '확인되지 않음', 'failed': '실패',
