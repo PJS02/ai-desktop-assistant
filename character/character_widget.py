@@ -423,11 +423,9 @@ class CharacterWidget(QLabel):
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
             mood_system=self.mood_system,
-            on_dialogue=self._show_perception_dialogue,
             on_greeting=self._request_user_greeting,
             on_speech=self.dialogue_system.submit_speech,
             on_speech_with_context=self.dialogue_system.submit_speech_with_context,
-            on_dialogue_with_context=lambda text, context: self._show_perception_dialogue(text, log_context=context),
         )
         self.dialogue_system.tts.speaking_changed.connect(self.perception_controller.set_speech_suppressed)
         self.dialogue_system.user_input_received.connect(lambda text, source: self._mark_character_interaction())
