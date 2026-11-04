@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime
 from app_logging import log_event, log_throttled
 from .mood_system import OCC_EMOTION_NAMES
+from .russell_sectors import NEUTRAL_RADIUS, SECTOR_ANGLE, SECTOR_NAMES, SECTORS, russell_face
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -30,21 +31,13 @@ from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 
 class RussellEmotionCanvas(QWidget):
     state_changed = pyqtSignal(float, float, str)
-    RING_LABELS = (
-        ("초조한", 112.5),
-        ("들뜬", 67.5),
-        ("의기양양한", 45),
-        ("행복한", 22.5),
-        ("고요한", -22.5),
-        ("만족한", -45),
-        ("차분한", -67.5),
-        ("힘든", -112.5),
-        ("우울한", -135),
-        ("슬픈", -157.5),
-        ("괴로운", 157.5),
-        ("속상한", 135),
+    RING_LABELS = tuple(
+        (label, i * SECTOR_ANGLE) for i, (_, label) in enumerate(SECTORS) if i % 4
     )
-    AXIS_LABELS = (("흥분 +", 90), ("조용 -", -90), ("불쾌 -", 180), ("유쾌 +", 0))
+    AXIS_LABELS = tuple(
+        (f"{label} {'+' if i < 8 else '-'}", i * SECTOR_ANGLE)
+        for i, (_, label) in enumerate(SECTORS) if i % 4 == 0
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -132,34 +125,6 @@ class RussellEmotionCanvas(QWidget):
         radius = max(1.0, radius)
         return QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2), radius, center
 
-    def _emotion_from_coordinates(self, valence: float, arousal: float) -> str:
-        emotion_points = {
-            "joy": (0.80, 0.70),
-            "delight": (0.70, 0.60),
-            "excitement": (0.60, 0.80),
-            "interest": (0.50, 0.60),
-            "contentment": (0.70, 0.40),
-            "anger": (-0.70, 0.80),
-            "disgust": (-0.80, 0.70),
-            "fear": (-0.60, 0.75),
-            "anxiety": (-0.50, 0.65),
-            "calm": (0.60, -0.50),
-            "peaceful": (0.50, -0.60),
-            "sadness": (-0.60, -0.50),
-            "melancholy": (-0.50, -0.60),
-            "despair": (-0.80, -0.40),
-            "neutral": (0.00, 0.00),
-        }
-
-        closest_emotion = "neutral"
-        min_distance = float("inf")
-        for emotion_name, (target_valence, target_arousal) in emotion_points.items():
-            distance = math.sqrt((valence - target_valence) ** 2 + (arousal - target_arousal) ** 2)
-            if distance < min_distance:
-                min_distance = distance
-                closest_emotion = emotion_name
-        return closest_emotion
-
     def _state_from_mouse_pos(self, pos: QPointF) -> tuple[float, float, str]:
         _, radius, center = self._plot_geometry()
         dx = pos.x() - center.x()
@@ -173,8 +138,7 @@ class RussellEmotionCanvas(QWidget):
 
         valence = max(-1.0, min(1.0, dx / radius if radius > 0 else 0.0))
         arousal = max(-1.0, min(1.0, dy / radius if radius > 0 else 0.0))
-        dominant = self._emotion_from_coordinates(valence, arousal)
-        return valence, arousal, dominant
+        return valence, arousal, russell_face(valence, arousal)
 
     def _apply_mouse_state(self, pos: QPointF) -> None:
         valence, arousal, dominant = self._state_from_mouse_pos(pos)
@@ -222,13 +186,25 @@ class RussellEmotionCanvas(QWidget):
         painter.setBrush(QColor(255, 255, 255))
         painter.drawRect(self.rect())
 
-        painter.setPen(QPen(QColor(0, 0, 0), 2))
+        face = russell_face(self.valence_target, self.arousal_target)
+        neutral_radius = radius * NEUTRAL_RADIUS
+        for i, (name, _) in enumerate(SECTORS):
+            boundary = (i - 0.5) * SECTOR_ANGLE
+            if name == face:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor('#d9efea'))
+                painter.drawPie(rect, round(boundary * 16), round(SECTOR_ANGLE * 16))
+
+        painter.setPen(QPen(QColor('#cad8d9'), 1))
+        for i in range(len(SECTORS)):
+            angle = math.radians((i - 0.5) * SECTOR_ANGLE)
+            direction = QPointF(math.cos(angle), -math.sin(angle))
+            painter.drawLine(center + direction * neutral_radius, center + direction * radius)
+        painter.setBrush(QColor('#d9efea' if face == 'neutral' else '#f7faf9'))
+        painter.drawEllipse(center, neutral_radius, neutral_radius)
+        painter.setPen(QPen(QColor('#52666b'), 1.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(center, radius, radius)
-
-        painter.setPen(QPen(QColor(0, 0, 0), 2))
-        painter.drawLine(int(center.x() - radius), int(center.y()), int(center.x() + radius), int(center.y()))
-        painter.drawLine(int(center.x()), int(center.y() - radius), int(center.x()), int(center.y() + radius))
 
         painter.setPen(QPen(QColor(0, 0, 0), 1))
         label_font = QFont("Malgun Gothic", 9)
@@ -308,10 +284,11 @@ class RussellEmotionCanvas(QWidget):
         
         # 점(반경 6픽셀) 근처면 (15픽셀 이내) 툴팁 표시
         if distance <= 15:
+            face = russell_face(self.valence_target, self.arousal_target)
             tooltip_text = (
                 f"정서가(Valence): {self.valence_target:+.3f}\n"
                 f"각성도(Arousal): {self.arousal_target:+.3f}\n"
-                f"감정: {self.dominant}"
+                f"표정: {SECTOR_NAMES[face]}"
             )
             global_pos = event.globalPosition().toPoint()
             QToolTip.showText(global_pos, tooltip_text, self)
@@ -687,10 +664,11 @@ class RussellEmotionDialog(QDialog):
     def update_state(self, valence: float, arousal: float, dominant: str, intensity: float | None = None) -> None:
         self.canvas.set_state(valence, arousal, dominant)
         self.history_canvas.add_sample(valence, arousal)
-        emotion_name = self.EMOTION_NAMES.get(dominant, dominant)
+        emotion_name = self.EMOTION_NAMES.get(dominant, SECTOR_NAMES.get(dominant, dominant))
+        face = SECTOR_NAMES[russell_face(valence, arousal)]
         strength = f"{intensity * 100:.0f}%" if intensity is not None else "강도 정보 없음"
         self.value_label.setText(
-            f"현재 감정: {emotion_name} {strength}  ·  "
+            f"원형 표정: {face}  ·  감정 판단: {emotion_name} {strength}\n"
             f"Valence {valence:+.2f}  ·  Arousal {arousal:+.2f}"
         )
 

@@ -38,9 +38,10 @@ class RigAnimator(QObject):
     frame_changed = pyqtSignal(QPixmap)
     animation_finished = pyqtSignal()
 
-    def __init__(self, view, parent=None):
+    def __init__(self, view, parent=None, *, mood_face=None):
         super().__init__(parent)
         self.view = view
+        self._mood_face = mood_face
         self.current_animation = None
         self.current_action = "idle"
         self.current_emotion = "neutral"
@@ -62,6 +63,9 @@ class RigAnimator(QObject):
         if emotion != self.current_emotion:
             self.current_emotion = emotion
             self.view.set_emotion(emotion)
+
+    def set_mood_emotion(self, name):
+        self.set_emotion(self._mood_face() if self._mood_face is not None else name)
 
     def set_emotion_override(self, name=None):
         """Pin only the rendered face while continuing to receive real moods."""

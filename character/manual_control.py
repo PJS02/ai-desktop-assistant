@@ -64,7 +64,7 @@ class ManualControl(QObject):
         mood = host.mood_system.decide_emotion()
         if host.rig_view is not None:
             host.sprite_animator.set_emotion_override(self.display_emotion)
-            host.sprite_animator.set_emotion(mood['emotion'])
+            host.sprite_animator.set_mood_emotion(mood['emotion'])
         elif host.is_moving and host.on_ground and not host.is_dragging:
             host.current_action = host._get_walk_animation(mood['emotion'])
             host.update_render(host.current_action)
@@ -292,7 +292,7 @@ class ManualControl(QObject):
             if not host.current_action.startswith(self.motion):
                 emotion = host.mood_system.decide_emotion()['emotion']
                 if self.motion == 'run':
-                    host.sprite_animator.set_emotion(emotion)
+                    host.sprite_animator.set_mood_emotion(emotion)
                     host.current_action = 'run'
                 else:
                     host.current_action = host._get_walk_animation(emotion)

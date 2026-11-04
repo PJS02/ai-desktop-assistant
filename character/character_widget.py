@@ -497,7 +497,9 @@ class CharacterWidget(QLabel):
                 view.set_external_physics(True)
                 view.set_debug_painter(self._paint_debug if self.show_debug else None)
                 self.rig_view = view
-                self.sprite_animator = RigAnimator(view, parent=self)
+                self.sprite_animator = RigAnimator(
+                    view, parent=self, mood_face=self.mood_system.get_display_emotion
+                )
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
                 view.failed.connect(self._queue_sprite_fallback)
                 view.pose_bounds_changed.connect(self._align_grounded_pose, Qt.ConnectionType.DirectConnection)
@@ -580,7 +582,7 @@ class CharacterWidget(QLabel):
         self.current_action = action
         self.sprite_animator.set_yaw(self._idle_rig_yaw())
         mood_emotion = self.mood_system.decide_emotion()["emotion"]
-        self.sprite_animator.set_emotion(self._get_sprite_display_emotion(mood_emotion))
+        self.sprite_animator.set_mood_emotion(mood_emotion)
         self.sprite_animator.play(action, loop=action != "wave")
         if action == "idle":
             self.update_action(self.mood_system.decide_emotion())
@@ -1364,9 +1366,7 @@ class CharacterWidget(QLabel):
         if CharacterWidget._cham_game_active(self):
             return
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(
-                self._get_sprite_display_emotion(mood["emotion"])
-            )
+            self.sprite_animator.set_mood_emotion(mood["emotion"])
             self._refresh_rig_overlay()
             busy = (getattr(self, "is_dragging", False)
                     or getattr(self, "is_moving", False)
@@ -1453,7 +1453,7 @@ class CharacterWidget(QLabel):
                 if self.on_ground and (self.is_moving or getattr(self, "_ball_chasing", False)):
                     if (self._manual_control_active()
                             and getattr(self.manual_control, 'motion', None) == 'run'):
-                        self.sprite_animator.set_emotion(mood["emotion"])
+                        self.sprite_animator.set_mood_emotion(mood["emotion"])
                         self.current_action = 'run'
                     else:
                         self.current_action = self._get_walk_animation(mood["emotion"])
@@ -2511,7 +2511,7 @@ class CharacterWidget(QLabel):
         emotion = mood["emotion"]
         self.current_action = "jump" if self.rig_view is not None else self._get_emotion_animation(emotion)
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(emotion)
+            self.sprite_animator.set_mood_emotion(emotion)
             phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
             if phase_setter is not None:
                 phase_setter(.15)
@@ -2806,7 +2806,7 @@ class CharacterWidget(QLabel):
         """
         if self.rig_view is not None:
             self._rig_manual_action = None
-            self.sprite_animator.set_emotion(emotion)
+            self.sprite_animator.set_mood_emotion(emotion)
             self.sprite_animator.set_direction(self.is_flipped)
             self._refresh_rig_overlay()
             return "walk"
@@ -2841,7 +2841,7 @@ class CharacterWidget(QLabel):
         등의 폴더를 만들면 자동으로 사용됨
         """
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(emotion)
+            self.sprite_animator.set_mood_emotion(emotion)
             return "fall"
         # TODO: fall 애니메이션 구현
         # emotion_fall = f"fall_{emotion}"

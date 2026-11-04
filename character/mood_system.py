@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
+from .russell_sectors import russell_face
+
 
 class OccEmotionToMood(Enum):
     """OCC 감정 모델과 Mood 시스템 간의 매핑"""
@@ -1171,6 +1173,9 @@ class MoodSystem:
         emotion_info = self.decide_emotion()
         self._last_dominant_emotion = emotion_info["emotion"]
         return emotion_info["emotion"]
+
+    def get_display_emotion(self) -> str:
+        return russell_face(self.russell.valence, self.russell.arousal)
 
     def get_russell_state(self) -> Dict[str, float]:
         """현재 Russell 좌표 반환"""

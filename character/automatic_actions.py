@@ -81,7 +81,7 @@ class AutomaticActions(QObject):
             host.animation_controller.update_base_pos(host.pos())
             host._automatic_pose = host.current_action = action
             host.sprite_animator.set_yaw(host._idle_rig_yaw())
-            host.sprite_animator.set_emotion(host.mood_system.decide_emotion()['emotion'])
+            host.sprite_animator.set_mood_emotion(host.mood_system.decide_emotion()['emotion'])
             host.update_render(action)
 
     def shutdown(self):
