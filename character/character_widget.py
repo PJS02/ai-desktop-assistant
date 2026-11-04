@@ -18,6 +18,7 @@ from hand_overlay.interaction_host import ContactFeedback
 from hand_overlay.interactions import PET_HEAD_HEIGHT_RATIO
 from .emotion_assets import resolve_animation_asset
 from .mood_system import MoodSystem
+from .emotion_delta_overlay import EmotionDeltaOverlay
 from .autonomous_needs import AutonomousNeeds
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
@@ -95,6 +96,7 @@ class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     automatic_response_ready = pyqtSignal(object)
+    occ_changed = pyqtSignal(dict)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -173,7 +175,7 @@ class CharacterWidget(QLabel):
         self.personality_system = PersonalitySystem(personality_preset or PersonalitySystem.DEFAULT_PRESET)
         if personality_traits is not None:
             self.personality_system.set_traits(personality_traits, preset_name=personality_preset)
-        self.mood_system = MoodSystem(self.personality_system)  # 성격을 mood_system에 전달
+        self.mood_system = MoodSystem(self.personality_system, on_occ_change=self.occ_changed.emit)
         self.russell_dialog = None
         self.current_action = "idle"
         self.drag_pos = None
@@ -272,6 +274,8 @@ class CharacterWidget(QLabel):
 
         self.is_moving = False
         self.contact_feedback = ContactFeedback(self)
+        self.emotion_delta_overlay = EmotionDeltaOverlay(self)
+        self.occ_changed.connect(self.emotion_delta_overlay.collect)
         self._pet_last_position = None
         self._pet_last_time = 0.0
         self._cursor_over_character = False
@@ -455,6 +459,9 @@ class CharacterWidget(QLabel):
         timer = getattr(self, '_taskbar_visibility_timer', None)
         if timer is not None:
             timer.stop()
+        overlay = getattr(self, 'emotion_delta_overlay', None)
+        if overlay is not None:
+            overlay.clear()
         super().hideEvent(event)
 
     def _ensure_taskbar_visibility(self):

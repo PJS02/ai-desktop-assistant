@@ -3,6 +3,7 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from app_logging import log_event, log_throttled
+from .mood_system import OCC_EMOTION_NAMES
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -416,11 +417,7 @@ class RussellEmotionDialog(QDialog):
         "melancholy": "우울", "despair": "절망", "neutral": "중립",
         "idle": "중립",
     }
-    OCC_NAMES = {
-        "joy": "기쁨", "distress": "고통", "hope": "희망", "fear": "두려움",
-        "satisfaction": "만족", "relief": "안도", "pride": "자부심",
-        "shame": "수치심", "gratitude": "감사", "anger": "분노",
-    }
+    OCC_NAMES = OCC_EMOTION_NAMES
 
     def __init__(self, parent=None):
         super().__init__(parent)
