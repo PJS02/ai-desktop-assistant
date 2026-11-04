@@ -3,6 +3,9 @@ from dataclasses import dataclass
 import math
 
 
+PET_HEAD_HEIGHT_RATIO = .40
+
+
 def distance(a, b):
     return math.dist(a, b)
 
@@ -425,7 +428,7 @@ class HandInteractionEngine:
     def _touch(self, hand, body, now, fresh):
         margin = max(4, body.width * .10)
         head = Box(body.x - margin, body.y - margin,
-                   body.width + margin * 2, body.height * .40 + margin)
+                   body.width + margin * 2, body.height * PET_HEAD_HEIGHT_RATIO + margin)
         tips = hand.petting_tips
         contact = next((tip for tip in tips if head.contains(tip)), None)
         identity = hand.track_id

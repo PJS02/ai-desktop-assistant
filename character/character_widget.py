@@ -15,6 +15,7 @@ from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, 
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
 from hand_overlay.interaction_host import ContactFeedback
+from hand_overlay.interactions import PET_HEAD_HEIGHT_RATIO
 from .emotion_assets import resolve_animation_asset
 from .mood_system import MoodSystem
 from .autonomous_needs import AutonomousNeeds
@@ -946,10 +947,7 @@ class CharacterWidget(QLabel):
             position = self.mapFromGlobal(QCursor.pos())
         inside = self._body_contains(position)
         if not inside:
-            CharacterWidget._finish_pet_log(self, 'cursor_left')
-            self._pet_last_position = None
-            self._pet_session_logged = False
-            self._pet_refusal_session_logged = False
+            CharacterWidget._reset_mouse_pet(self, 'cursor_left')
         self._cursor_over_character = inside
         return inside
 
@@ -1736,8 +1734,13 @@ class CharacterWidget(QLabel):
             self.dialogue_system.update_dialogue_position()
             return
 
-        if not self._refresh_body_hover(event.position().toPoint()):
+        position = event.position().toPoint()
+        if not self._refresh_body_hover(position):
             event.ignore()
+            return
+        body = self._physics_body_rect()
+        if position.y() >= body.top() + body.height() * PET_HEAD_HEIGHT_RATIO:
+            CharacterWidget._reset_mouse_pet(self, 'cursor_left_head')
             return
         current_pos = event.globalPosition().toPoint()
         current_time = time.monotonic()
@@ -1800,6 +1803,12 @@ class CharacterWidget(QLabel):
             )
             self._pet_session_logged = True
 
+    def _reset_mouse_pet(self, reason):
+        CharacterWidget._finish_pet_log(self, reason)
+        self._pet_last_position = None
+        self._pet_session_logged = False
+        self._pet_refusal_session_logged = False
+
     def _finish_pet_log(self, reason):
         trace_id = getattr(self, '_pet_trace_id', None)
         if trace_id:
@@ -1825,11 +1834,8 @@ class CharacterWidget(QLabel):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        CharacterWidget._finish_pet_log(self, 'cursor_left')
+        CharacterWidget._reset_mouse_pet(self, 'cursor_left')
         self._cursor_over_character = False
-        self._pet_last_position = None
-        self._pet_session_logged = False
-        self._pet_refusal_session_logged = False
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event, *, hand_throw_velocity=None):
