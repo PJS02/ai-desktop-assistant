@@ -765,6 +765,9 @@ class RecognitionEngine(SettingsBridge):
 
 
     def reset_motion_states(self):
+        self._heart_since = self._heart_last_seen = None
+        self._heart_frame = None
+        self._heart_samples = 0
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
         self.wave_started_at = None
         self._wave_active = False
@@ -1373,7 +1376,24 @@ class RecognitionEngine(SettingsBridge):
             "left": self.detect_static_hand_gesture(frame_record["left_hand_landmarks"]),
             "right": self.detect_static_hand_gesture(frame_record["right_hand_landmarks"]),
         }
-        if self.detect_two_hand_heart(frame_record):
+        now = time.monotonic()
+        heart = self.detect_two_hand_heart(frame_record)
+        token = (frame_record.get('frame_index'), frame_record.get('timestamp_ms'))
+        if token == (None, None):
+            token = id(frame_record)
+        last_seen = getattr(self, '_heart_last_seen', None)
+        if not heart or last_seen is None or now - last_seen > .6:
+            self._heart_since = now if heart else None
+            self._heart_last_seen = None
+            self._heart_frame = None
+            self._heart_samples = 0
+        if heart and token != getattr(self, '_heart_frame', None):
+            self._heart_frame = token
+            self._heart_last_seen = now
+            self._heart_samples += 1
+        if (heart and self._heart_samples >= 2
+                and now - self._heart_since >= .18
+                and now - self._heart_last_seen <= .6):
             gesture_states["left"] = "HEART"
             gesture_states["right"] = "HEART"
 
@@ -1557,35 +1577,12 @@ class RecognitionEngine(SettingsBridge):
             return "THUMBS_UP"
         if pose["pinch"] and extended["middle"] and extended["ring"] and extended["pinky"]:
             return "OK"
-        if pose["pinch"] and not extended["middle"] and not extended["ring"] and not extended["pinky"]:
-            return "HEART"
         return "NONE"
 
 
     def detect_two_hand_heart(self, frame_record):
-        left_map = core.records_by_name(frame_record["left_hand_landmarks"])
-        right_map = core.records_by_name(frame_record["right_hand_landmarks"])
-        if not left_map or not right_map:
-            return False
-
-        left_scale = self.hand_scale(left_map)
-        right_scale = self.hand_scale(right_map)
-        scale = max(40, (left_scale + right_scale) / 2)
-        threshold = scale * 0.75
-
-        left_thumb = core.point_from_record(left_map.get("THUMB_TIP"))
-        right_thumb = core.point_from_record(right_map.get("THUMB_TIP"))
-        left_index = core.point_from_record(left_map.get("INDEX_FINGER_TIP"))
-        right_index = core.point_from_record(right_map.get("INDEX_FINGER_TIP"))
-        left_wrist = core.point_from_record(left_map.get("WRIST"))
-        right_wrist = core.point_from_record(right_map.get("WRIST"))
-
-        thumb_distance = core.distance_between_points(left_thumb, right_thumb)
-        index_distance = core.distance_between_points(left_index, right_index)
-        wrist_distance = core.distance_between_points(left_wrist, right_wrist)
-        if thumb_distance is None or index_distance is None or wrist_distance is None:
-            return False
-        return thumb_distance < threshold and index_distance < threshold and wrist_distance > scale
+        return core.is_two_hand_heart(frame_record.get("left_hand_landmarks", []),
+                                      frame_record.get("right_hand_landmarks", []))
 
 
     def analyze_hand_pose(self, hand_records):
