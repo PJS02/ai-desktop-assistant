@@ -1,6 +1,7 @@
 """Show short changes in OCC emotion strength over the character."""
 
 import random
+import math
 import time
 from dataclasses import dataclass
 
@@ -20,6 +21,10 @@ SOURCE_LABELS = {
     "복잡한 작업 감지": "복잡한 작업",
     "파일 전달받음": "파일 받기",
     "파일 놓침": "파일 반환",
+    "파일 반환 완료": "파일 반환",
+    "거친 드래그로 파일 놓침": "파일 놓침",
+    "손으로 쓰다듬기": "손 쓰다듬기",
+    "안전하게 착지": "안전한 착지",
 }
 
 
@@ -53,6 +58,7 @@ class EmotionDeltaOverlay(QWidget):
         self._cause_font = QFont(self._font)
         self._cause_font.setPixelSize(13)
         self._pending = {}
+        self._pending_at = {}
         self._popups = []
         self.enabled = enabled
         self.duration_ms = duration_ms
@@ -74,7 +80,11 @@ class EmotionDeltaOverlay(QWidget):
             return
         for emotion, delta in changes.items():
             key = (source, emotion)
+            now = time.monotonic()
+            if now - self._pending_at.get(key, now) > 4.:
+                self._pending.pop(key, None)
             self._pending[key] = self._pending.get(key, 0.0) + delta
+            self._pending_at[key] = now
         if not self._batch.isActive():
             self._batch.start()
 
@@ -87,6 +97,7 @@ class EmotionDeltaOverlay(QWidget):
         self._batch.stop()
         self._animation.stop()
         self._pending.clear()
+        self._pending_at.clear()
         self._popups.clear()
         self.hide()
 
@@ -96,13 +107,19 @@ class EmotionDeltaOverlay(QWidget):
         if not self.enabled or not self.parentWidget().isVisible():
             self.clear()
             return
-        ranked = sorted(self._pending.items(), key=lambda entry: abs(entry[1]), reverse=True)
-        self._pending.clear()
-        lines = [
-            (source, emotion, round(delta * 100))
-            for (source, emotion), delta in ranked[:2]
-            if abs(delta) >= 0.01 - 1e-12
-        ]
+        now = time.monotonic()
+        for key in list(self._pending):
+            if now - self._pending_at.get(key, now) > 4.:
+                del self._pending[key]
+                self._pending_at.pop(key, None)
+        ranked = sorted(((key, delta) for key, delta in self._pending.items()
+                         if abs(delta) >= .01 - 1e-12),
+                        key=lambda entry: abs(entry[1]), reverse=True)
+        lines = []
+        for (source, emotion), delta in ranked[:2]:
+            points = math.trunc(delta * 100 + math.copysign(1e-9, delta))
+            lines.append((source, emotion, points))
+            self._pending[source, emotion] -= points / 100
         if lines:
             self._popups = self._make_popups(lines)
             self._duration = self.duration_ms / 1000
@@ -141,7 +158,7 @@ class EmotionDeltaOverlay(QWidget):
                 drift_x = -side * random.uniform(4, 12)
                 delay = 0.0
             drift = QPointF(drift_x, -random.uniform(22, 27))
-            positive_gain = points > 0 and OccEmotionToMood(emotion) not in NEGATIVE_OCC_EMOTIONS
+            positive_gain = (points > 0) != (OccEmotionToMood(emotion) in NEGATIVE_OCC_EMOTIONS)
             color = QColor('#a6f284' if positive_gain else '#ff797d')
             popups.append(EmotionPopup(cause, path, color, origin, drift, delay))
         return popups

@@ -179,6 +179,7 @@ class ChamGameOverlay(RpsGameOverlay):
         # Commit before reading any of the player's response frames.
         self.opponent = secrets.choice(tuple(DIRECTIONS))
         self.state = "countdown"
+        self._report_emotion('game_start', 'expect', round=True)
         self.deadline = now + 2 * self.BEAT_SECONDS
         self._show_message('참', '준비…')
         self._request_cue('cham_1')
@@ -208,6 +209,8 @@ class ChamGameOverlay(RpsGameOverlay):
             self._finish_round(direction, now)
 
     def _finish_round(self, direction, now):
+        if self.state not in {'waiting', 'countdown'}:
+            return
         self.player = direction
         caught = direction == self.opponent
         self.character_score += int(caught)
@@ -215,8 +218,9 @@ class ChamGameOverlay(RpsGameOverlay):
         self.result = "caught" if caught else "escaped"
         self._best_lead = max(self._best_lead, self.character_score - self.player_score)
         self._reaction = "happy" if caught else "sad"
+        self._report_emotion('game_win' if caught else 'game_loss', 'result', round=True)
         if self.reaction_face is not None:
-            event = "game_earned_win" if caught else "game_loss"
+            event = "game_win" if caught else "game_loss"
             self._reaction = self.reaction_face(event, 1.0)
             self._reaction_until = now + 1.15
         self.state = "result"
@@ -229,6 +233,7 @@ class ChamGameOverlay(RpsGameOverlay):
                   player_score=self.player_score, character_score=self.character_score)
 
     def _error(self, message):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         self.state = "error"
         self.deadline = time.time() + self.ERROR_SECONDS
@@ -268,10 +273,11 @@ class ChamGameOverlay(RpsGameOverlay):
                 self._turn(0, now)
                 self._show_message('네가 이겼어!' if self.player_score > self.character_score
                                    else '내가 이겼어!', '다시 하기는 우클릭 메뉴에서')
+                won = self.character_score > self.player_score
+                event = ("game_win" if won else "game_disappointed"
+                         if self._best_lead >= 2 else "game_loss")
+                self._report_emotion(event, 'final', final=True, expected_win=self._best_lead >= 2)
                 if self.reaction_face is not None:
-                    won = self.character_score > self.player_score
-                    event = ("game_earned_win" if won else "game_disappointed"
-                             if self._best_lead >= 2 else "game_loss")
                     self._reaction = self.reaction_face(event, 1.25)
                     self._reaction_until = now + 1.55
                 self._end_recognition()
@@ -281,6 +287,7 @@ class ChamGameOverlay(RpsGameOverlay):
             self.update_position()
 
     def closeEvent(self, event):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         if self.session:
             log_event('game.cham.ended', '참참참 게임 종료', category='캐릭터 상태',

@@ -211,6 +211,12 @@ class MoodSystem:
         self._last_recovery_trace_at = 0.0
         self._last_influence_trace_id = None
         self._decay_block_reason = None
+        from .interaction_emotions import InteractionEmotions
+        self.interactions = InteractionEmotions(self)
+
+    def on_interaction(self, event, **context):
+        """Apply one confirmed event even when its temporary face is suppressed."""
+        return self.interactions.apply(event, **context)
 
     def _personality_snapshot(self) -> dict:
         result = {"preset": "미설정", "traits": {}}
@@ -308,64 +314,20 @@ class MoodSystem:
             details="사용자 인식 모델에서 긍정 제스처 감지",
         )
 
-    def on_pet(self, movement_speed: float, elapsed_seconds: float = 0.15) -> float:
-        """커서로 부드럽게 쓰다듬을 때 작은 기쁨과 친밀감을 누적한다."""
-        if self.should_refuse_pet():
-            return 0.0
-        state_before = self._capture_emotion_state()
-        before = self.get_russell_state()
-        before_occ = dict(self.occ_intensities)
-
-        elapsed_seconds = max(0.0, min(1.0, float(elapsed_seconds)))
-        movement_speed = max(0.0, float(movement_speed))
-        comfort = math.exp(-((movement_speed - 140.0) / 180.0) ** 2)
-        amount = elapsed_seconds * comfort
-
-        self._add_occ_intensity(OccEmotionToMood.JOY, 0.90 * amount)
-        self._add_occ_intensity(OccEmotionToMood.GRATITUDE, 0.30 * amount)
-        self._add_occ_intensity(OccEmotionToMood.SATISFACTION, 0.16 * amount)
-        for emotion in (
-            OccEmotionToMood.DISTRESS,
-            OccEmotionToMood.ANGER,
-            OccEmotionToMood.FEAR,
-            OccEmotionToMood.SHAME,
-        ):
-            self.occ_intensities[emotion] = max(
-                0.0,
-                self.occ_intensities[emotion] * (1.0 - 0.08 * amount),
-            )
-        self._event_valence_bias = min(
-            1.0,
-            self._event_valence_bias + 0.07 * amount,
-        )
-        self._event_arousal_bias = min(
-            1.0,
-            self._event_arousal_bias + 0.03 * amount,
-        )
-        self._update_russell_from_occ()
-        if amount > 0.0:
-            self._record_influence(
-                source="쓰다듬기", category="positive", base_weight=amount,
-                adjusted_weight=amount, personality_multiplier=1.0,
-                personality_factors=[], before=(before["valence"], before["arousal"]),
-                before_occ=before_occ, state_before=state_before,
-                weight_applied=False, merge_window=0.5,
-                details="부드러운 쓰다듬기로 기쁨·감사·만족을 누적하고 부정 감정을 완화",
-                event_input={"movement_speed": movement_speed, "elapsed_seconds": elapsed_seconds,
-                             "comfort": comfort, "amount": amount},
-            )
-        log_throttled('mood.pet', '쓰다듬기 보상을 감정 상태에 반영했습니다.',
-                      key=f'pet:{id(self)}', interval=1.5, category='캐릭터 상태',
-                      movement_speed=movement_speed, elapsed_seconds=elapsed_seconds,
-                      comfort=comfort, amount=amount, before=before,
-                      after=self.get_russell_state(), target=[self._target_valence, self._target_arousal],
-                      occ_changes={emotion.value: self.occ_intensities[emotion] - before_occ[emotion]
-                                   for emotion in self.occ_intensities},
-                      final_emotion=self.decide_emotion())
-        return amount
+    def on_pet(self, movement_speed: float, elapsed_seconds: float = 0.15,
+               *, source="쓰다듬기", event_id=None) -> float:
+        """Share time/quality-based affection for mouse and camera contacts."""
+        result = self.on_interaction('pet', speed=movement_speed, elapsed=elapsed_seconds,
+                                     movement_speed=movement_speed, elapsed_seconds=elapsed_seconds,
+                                     source=source, event_id=event_id)
+        return result['dose']
 
     def should_refuse_pet(self) -> bool:
         """감정이 극도로 부정적일 때 접촉을 거부한다."""
+        # Fear can accept comforting contact; hostility is a different appraisal.
+        if (self.occ_intensities[OccEmotionToMood.FEAR] > .2
+                and self.occ_intensities[OccEmotionToMood.ANGER] < .2):
+            return False
         emotion = self.decide_emotion()
         return (
             self.russell.valence <= -0.65
@@ -503,66 +465,13 @@ class MoodSystem:
         )
 
     def on_item_acquired(self):
-        """파일/폴더를 들었을 때 - 큰 기쁨"""
-        event = EmotionEvent(
-            goal_relevance=0.98,      # 최대 긍정적
-            expectedness=0.85,
-            controllability=0.9,
-            self_attribution=0.7,     # 높은 성취감
-            agent_benevolence=0.8,    # 매우 긍정적 의도
-        )
-        self.appraise_event(
-            event, weight=2.0, valence_bias=0.2, arousal_bias=0.25, source="파일 전달받음", category="positive",
-            details="사용자가 파일 또는 폴더를 캐릭터에게 전달",
-        )
+        self.on_interaction('file_received')
 
     def on_item_dropped(self):
-        """물건을 떨어뜨렸을 때 - 실패감"""
-        event = EmotionEvent(
-            goal_relevance=-0.7,      # 부정적 (실패)
-            expectedness=0.6,
-            controllability=0.4,
-            self_attribution=0.8,     # 강한 자책
-            agent_benevolence=-0.3,
-        )
-        self.appraise_event(
-            event, weight=1.0, valence_bias=-0.3, arousal_bias=-0.15, source="파일 놓침", category="negative",
-            details="보관하던 파일 또는 폴더를 떨어뜨림",
-        )
+        self.on_interaction('files_dropped')
 
     def on_ball_play(self):
-        """공을 찼을 때 - 작은 즐거움과 각성도 상승"""
-        state_before = self._capture_emotion_state()
-        recovery = {
-            OccEmotionToMood.DISTRESS: 0.85,
-            OccEmotionToMood.FEAR: 0.88,
-            OccEmotionToMood.ANGER: 0.9,
-            OccEmotionToMood.SHAME: 0.92,
-        }
-        for emotion, factor in recovery.items():
-            self.occ_intensities[emotion] *= factor
-
-        event = EmotionEvent(
-            goal_relevance=0.55,
-            expectedness=0.7,
-            controllability=0.8,
-            self_attribution=0.2,
-            agent_benevolence=0.5,
-        )
-        self.appraise_event(
-            event,
-            weight=0.65,
-            valence_bias=0.05,
-            arousal_bias=0.04,
-            source="공놀이",
-            category="positive",
-            details="공을 차며 즐거움과 각성도가 상승하고 부정 감정이 완화",
-            state_before=state_before,
-        )
-        self._emotion_hold_until = max(
-            self._emotion_hold_until,
-            time.monotonic() + 2.0,
-        )
+        self.on_interaction('ball_kicked', source='공놀이')
 
     def on_external_emotion(self, label: str, confidence: float) -> bool:
         """사용자 감정 인식 결과를 캐릭터의 OCC 상태에 반영합니다."""

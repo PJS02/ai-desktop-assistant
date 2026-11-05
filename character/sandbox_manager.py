@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import random
 import time
 from app_logging import log_event, new_trace_id
-from .reactions import react, reaction_mood
+from .reactions import experience
 
 from PyQt6.QtCore import QPoint, QRect, QTimer, Qt
 from PyQt6.QtGui import QColor, QPainter, QRadialGradient
@@ -137,9 +137,7 @@ class BallWidget(QWidget):
             accepted = self.manager.can_interact_with_ball(self)
             log_event('sandbox.ball.drag_released', '공을 놓았습니다.', category='캐릭터 상태',
                       trace_id=self.log_trace_id, position=[self.x(), self.y()],
-                      velocity=[self.x_velocity, self.y_velocity], mood_applied=accepted)
-            if accepted:
-                self.manager.character_widget.mood_system.on_ball_play()
+                      velocity=[self.x_velocity, self.y_velocity], mood_applied=False)
             event.accept()
 
     def _update_physics(self):
@@ -193,12 +191,10 @@ class BallWidget(QWidget):
                   category='캐릭터 상태', trace_id=self.log_trace_id,
                   position=[self.x(), self.y()], kick_direction=kick_direction,
                   velocity=[self.x_velocity, self.y_velocity])
-        before = reaction_mood(character)
-        if not getattr(self, '_hand_play', False):
-            character.mood_system.on_ball_play()
+        experience(character, "ball_kicked", session=self.log_trace_id,
+                   event_id=f'{self.log_trace_id}:kick:{now}')
         character.update_action(character.mood_system.decide_emotion())
         self.manager.start_interaction_cooldown(self)
-        react(character, "ball_kicked", before=before, source="ball")
 
     def closeEvent(self, event):
         character = self.manager.character_widget
@@ -225,8 +221,9 @@ class BallWidget(QWidget):
             self.manager.ball = None
             if (reactions := getattr(character, 'reactions', None)) is not None:
                 reactions.clear("ball")
-        if removed_during_play:
-            react(character, "ball_removed")
+        experience(character, 'ball_removed' if removed_during_play else 'ball_cancel',
+                   session=self.log_trace_id, event_id=f'{self.log_trace_id}:end',
+                   reaction=removed_during_play)
         super().closeEvent(event)
 
 
@@ -306,7 +303,8 @@ class SandboxManager:
     def _enable_ball_interaction(self) -> None:
         if self.ball is not None:
             self.ball.interaction_enabled = True
-            react(self.character_widget, "ball_ready", source="ball")
+            experience(self.character_widget, "ball_ready", session=self.ball.log_trace_id,
+                       event_id=f'{self.ball.log_trace_id}:ready')
             log_event('sandbox.ball.ready', '공 놀이 준비가 끝났습니다.', category='캐릭터 상태',
                       trace_id=self.ball.log_trace_id)
 

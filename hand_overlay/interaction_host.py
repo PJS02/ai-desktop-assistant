@@ -1,4 +1,4 @@
-"""Connect hand contacts to character movement and the desktop ball, without mood effects."""
+"""Connect confirmed hand contacts to character movement, emotion and the ball."""
 import math
 import time
 
@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled, new_trace_id
-from character.reactions import react, reaction_mood
+from character.reactions import react, reaction_mood, experience
 from .interactions import Box, HandInteractionEngine
 
 
@@ -167,8 +167,8 @@ class CharacterHandActions:
         c._mark_character_interaction()
         if mode == 'palm':
             reactions = getattr(c, 'reactions', None)
-            if reactions is None or not reactions.safe():
-                react(c, "palm")
+            if reactions is None or not reactions.safe(rescued=True):
+                experience(c, "palm")
         log_event('hand_interaction.hold.started', '손으로 대상 잡기 시작',
                   category='캐릭터 상태', mode=mode)
         self.move_hold(mode, point)
@@ -222,7 +222,14 @@ class CharacterHandActions:
         c = self.character
         before = reaction_mood(c)
         c._mark_character_interaction()
-        react(c, "pet", before=before, sustain=True)
+        if c.mood_system.should_refuse_pet():
+            experience(c, 'pet_refused', elapsed=elapsed, source='손 접촉 거절')
+            return
+        sample = getattr(self, 'sample_id', None)
+        reward = c.mood_system.on_pet(speed, elapsed, source='손으로 쓰다듬기',
+                                      event_id=None if sample is None else str(sample))
+        if reward > 0:
+            react(c, "pet", before=before, sustain=True)
         if self.feedback.pulse('pet'):
             log_throttled('hand_interaction.head.petted', '손으로 머리 쓰다듬기 인식', interval=2,
                           category='캐릭터 상태')
@@ -239,7 +246,7 @@ class CharacterHandActions:
         c.animation_controller.idle.stop()
         c.is_moving = c._ball_chasing = False
         # A small nudge plus the existing damped horizontal physics. Never
-        # emulate a mouse click: that would change mood and start a drag.
+        # emulate a mouse click: it would start an unrelated click/drag event.
         c.move(c.x() + direction * max(3, round(body.width * .04)), c.y())
         c._clamp_position_to_screen()
         c._physics_position_x = None
@@ -249,9 +256,9 @@ class CharacterHandActions:
         c._mark_character_interaction()
         self.feedback.pulse('poke', point)
         if repeated:
-            react(c, "poke_discomfort" if before[0] < -.24 else "poke_play", before=before)
+            experience(c, "poke_discomfort" if before[0] < -.24 else "poke_play")
         else:
-            react(c, "poke_start", before=before, follow="poke_play" if before[0] >= 0 else None)
+            experience(c, "poke_start", follow="poke_play" if before[0] >= 0 else None)
         log_event('hand_interaction.cheek.poked', '손끝으로 볼 콕 찌르기', category='캐릭터 상태')
 
 
@@ -275,6 +282,7 @@ class HandInteractionController(QObject):
 
     def update(self):
         try:
+            self.actions.sample_id = (self.overlay._session, self.overlay._sequence)
             previous = self.engine.active
             self.engine.update(self.overlay.displayed_hands(), self._clock(),
                                (self.overlay._session, self.overlay._sequence))

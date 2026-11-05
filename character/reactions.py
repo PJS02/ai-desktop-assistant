@@ -38,6 +38,9 @@ EVENTS = {
     "ball_removed": Appraisal(-.40, -.33, .44, .64),
     "file_received": Appraisal(.59, -.06, .45, .82, 2, attribution="help"),
     "files_returned": Appraisal(-.60, -.30, .48, .76, 3),
+    "files_completed": Appraisal(.42, -.20, .4, .76, 3),
+    "files_dropped": Appraisal(-.60, -.30, .48, .76, 3),
+    "contact_ignored": Appraisal(-.68, .58, .54, .76, 3, attribution="blame"),
     "fall_start": Appraisal(-.34, .8, .70, .22, 5, sudden=True),
     "fall_risk": Appraisal(-.65, .68, .62, .65, 5, prospect="threat"),
     "safe_landing": Appraisal(.52, -.40, .65, .73, 5, prospect="safe"),
@@ -121,6 +124,26 @@ def react(host, event, **options):
     return False
 
 
+def experience(host, event, *, source=None, event_id=None, reaction=True,
+               follow=None, sustain=False, **context):
+    """Record the real event once, then show its independently gated face."""
+    if getattr(host, '_character_closing', False):
+        return {'applied': False, 'reaction': None}
+    before = reaction_mood(host)
+    handler = getattr(getattr(host, 'mood_system', None), 'on_interaction', None)
+    result = handler(event, source=source, event_id=event_id, **context) if handler else {}
+    if not isinstance(result, dict):
+        result = {}
+    face_event = result.get('reaction', event)
+    if face_event == 'files_returned':
+        face_event = 'files_completed'
+    if reaction and face_event in EVENTS and not result.get('duplicate'):
+        react(host, face_event, before=before,
+              strength=context.get('strength', 1.), source=context.get('reaction_source'),
+              follow=follow, sustain=sustain)
+    return result
+
+
 class Reactions(QObject):
     """One temporary face. A newer event owns its timeout and any follow-up."""
 
@@ -184,6 +207,7 @@ class Reactions(QObject):
         if distance < .38 or getattr(self.host, '_hand_throw_active', False):
             return
         strength = min(1.8, .65 + distance * .6)
+        result = experience(self.host, 'fall_risk', distance=distance, reaction=False)
         self.threat = self.threat or distance >= .65
         if self.source == "fall":
             if self.event == "fall_risk" and self._timer.remainingTime() < 250:
@@ -191,12 +215,15 @@ class Reactions(QObject):
             return
         if sudden:
             self.play("fall_start", source="fall", strength=strength,
-                      follow="fall_risk" if self.threat else None)
+                      follow="fall_risk" if self.threat else None, before=result.get('before'))
         elif self.threat:
-            self.play("fall_risk", source="fall", strength=strength)
+            self.play("fall_risk", source="fall", strength=strength, before=result.get('before'))
 
-    def safe(self):
+    def safe(self, *, rescued=False):
         was_threat = self.threat
         self.threat = False
         self.clear("fall")
-        return was_threat and self.play("safe_landing")
+        result = experience(self.host, 'safe_landing', rescued=rescued, reaction=False)
+        if result.get('reaction') is None:
+            return False
+        return (was_threat or result.get('applied', False)) and self.play("safe_landing", before=result.get('before'))

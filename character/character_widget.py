@@ -24,7 +24,7 @@ from .autonomous_needs import AutonomousNeeds
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .rig_state import RigAnimator
-from .reactions import Reactions, choose_face, react, reaction_mood
+from .reactions import Reactions, choose_face, react, reaction_mood, experience
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
@@ -1272,7 +1272,7 @@ class CharacterWidget(QLabel):
             was_resting = self.current_action == "sleep"
             self.update_action(self.mood_system.decide_emotion())
             if was_resting:
-                react(self, "wake", follow="wake_settle")
+                experience(self, "wake", follow="wake_settle")
 
     def _run_autonomous_behavior(self, event_name: str) -> bool:
         """Run a short visible action after the idle-only selector picks an intent."""
@@ -1315,7 +1315,7 @@ class CharacterWidget(QLabel):
         was_resting = self.current_action == "sleep"
         self.update_action(self.mood_system.decide_emotion())
         if was_resting:
-            react(self, "wake", follow="wake_settle")
+            experience(self, "wake", follow="wake_settle")
 
     def update_mood(self):
         if self.is_dragging or self.is_moving:
@@ -1856,8 +1856,8 @@ class CharacterWidget(QLabel):
             return
 
         if self.mood_system.should_refuse_pet():
+            experience(self, 'pet_refused', elapsed=elapsed)
             if not self._pet_refusal_session_logged:
-                react(self, "pet_refused", source="mouse_pet")
                 print("[쓰다듬기 거부] 감정이 너무 나빠 접촉을 거부함")
                 self._pet_refusal_session_logged = True
             return
@@ -1963,6 +1963,8 @@ class CharacterWidget(QLabel):
             self._hand_throw_active = True
             if (reactions := getattr(self, 'reactions', None)) is not None:
                 reactions.cancel()
+            experience(self, 'throw', speed=math.hypot(vx, vy) / max(1, self._physics_body_rect().height()),
+                       reaction=False, event_id=getattr(self, '_drag_trace_id', None))
             if self.rig_view is not None:
                 self.sprite_animator.set_motion_emotion('dizzy_plain')
         if was_dragging:
@@ -2003,6 +2005,8 @@ class CharacterWidget(QLabel):
         self.velocity_x = self.velocity_y = 0.
         if self.rig_view is not None:
             self.sprite_animator.set_motion_emotion()
+        if (reactions := getattr(self, 'reactions', None)) is not None:
+            reactions.safe()
     
     # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
     def _play_game_cue(self, cue):
@@ -2048,7 +2052,9 @@ class CharacterWidget(QLabel):
             self.rps_game.cue_requested.connect(self._play_game_cue)
             self.rps_game.cue_stopped.connect(self._stop_game_voice)
             self.rps_game.cue_stopped.connect(lambda: self.reactions.clear("rps"))
-            self.rps_game.result_revealed.connect(lambda event: react(self, event, source="rps"))
+            self.rps_game.emotion_event.connect(self._apply_game_emotion)
+            self.rps_game.result_revealed.connect(lambda event: react(
+                self, event, source="rps", before=getattr(self, '_game_reaction_before', reaction_mood(self))))
         self._mark_character_interaction()
         self.rps_game.start_game()
         self.dialogue_system.update_dialogue_position()
@@ -2062,6 +2068,12 @@ class CharacterWidget(QLabel):
     def _cham_game_active(self):
         return bool(getattr(getattr(self, 'cham_game', None), 'is_active', False))
 
+    def _apply_game_emotion(self, event, context):
+        if self._character_closing:
+            return
+        self._game_reaction_before = reaction_mood(self)
+        self.mood_system.on_interaction(event, **context)
+
     def show_cham_game(self):
         if self.is_dragging or self.is_jumping or not self.on_ground:
             self.dialogue_system.show_dialogue('착지한 뒤 참참참을 시작해주세요.', duration=2500)
@@ -2073,9 +2085,10 @@ class CharacterWidget(QLabel):
                                              pose_callback=self._apply_cham_pose)
             self.cham_game.cue_requested.connect(self._play_game_cue)
             self.cham_game.cue_stopped.connect(self._stop_game_voice)
+            self.cham_game.emotion_event.connect(self._apply_game_emotion)
             if self.rig_view is not None:
                 self.cham_game.reaction_face = lambda event, strength: choose_face(
-                    event, reaction_mood(self), strength=strength
+                    event, getattr(self, '_game_reaction_before', reaction_mood(self)), strength=strength
                 )
         if self.cham_game.is_active:
             self.cham_game.close()
@@ -2408,14 +2421,14 @@ class CharacterWidget(QLabel):
         
         if mime_data.hasUrls():
             urls = mime_data.urls()
-            before = reaction_mood(self)
-            acquired = False
+            acquired = 0
             for url in urls:
                 file_path = url.toLocalFile()
                 if file_path:
-                    acquired = self.acquire_item(file_path) or acquired
+                    acquired += int(self.acquire_item(file_path, appraise=False))
             if acquired:
-                react(self, "file_received", before=before)
+                experience(self, "file_received", count=acquired,
+                           event_id=new_trace_id('file-received'))
             event.acceptProposedAction()
 
     def _restore_held_items(self):
@@ -2433,7 +2446,7 @@ class CharacterWidget(QLabel):
             log_event('character.items.restored', '보관 아이템 목록을 복구했습니다.',
                       category='캐릭터 상태', held_item_count=len(self.held_items))
 
-    def acquire_item(self, file_path):
+    def acquire_item(self, file_path, *, appraise=True):
         """파일/폴더를 획득했을 때 - 캐릭터 폴더로 이동 (여러 개 가능)"""
         try:
             file_path = Path(file_path)
@@ -2459,10 +2472,8 @@ class CharacterWidget(QLabel):
             # 리스트에 추가
             self.held_items.append(str(dest_path))
             
-            # 첫 번째 아이템이면 감정 변화
-            if len(self.held_items) == 1:
-                self.mood_system.on_item_acquired()
-                print(f"\n✨ [아이템 획득 시작]")
+            if appraise:
+                experience(self, 'file_received', count=1, event_id=new_trace_id('file-received'))
             
             print(f"   - {item_name} (총 {len(self.held_items)}개)")
             print(f"   위치: {dest_path}")
@@ -2483,7 +2494,7 @@ class CharacterWidget(QLabel):
             print(f"[오류] 아이템 획득 실패: {e}")
             return False
 
-    def release_items_to_desktop(self):
+    def release_items_to_desktop(self, *, forced=False):
         """들고있던 아이템을 바탕화면으로 순차적 반환 (1초 간격)"""
         if not self.held_items:
             return
@@ -2492,6 +2503,9 @@ class CharacterWidget(QLabel):
         
         # 반환 대기 리스트 설정
         self._remaining_items_to_release = list(self.held_items)
+        self._return_event_id = new_trace_id('files-returned')
+        self._return_forced = forced
+        self._return_completed = 0
         
         print(f"\n[아이템 반환 시작] {len(self._remaining_items_to_release)}개 아이템")
         print(f"   캐릭터 위치: ({self.x()}, {self.y()})")
@@ -2515,7 +2529,12 @@ class CharacterWidget(QLabel):
             # 반환 도중 새로 받은 아이템은 보관 목록에 남겨 둔다.
             if not self.held_items:
                 self.held_items_icons = {}
-                self.mood_system.on_item_dropped()
+            return_id = getattr(self, '_return_event_id', None)
+            if return_id and getattr(self, '_return_completed', 0):
+                self._return_event_id = None
+                experience(self, 'files_returned', event_id=return_id,
+                           count=self._return_completed,
+                           forced=getattr(self, '_return_forced', False))
             
             print(f"\n[모든 아이템 반환 완료]")
             log_event('mood.snapshot', '아이템 반환 후 감정 상태', category='캐릭터 상태', reason='items_released',
@@ -2557,6 +2576,7 @@ class CharacterWidget(QLabel):
             # 바탕화면으로 이동
             shutil.move(str(held_item_path), str(dest_path))
             self._remaining_items_to_release.pop(0)
+            self._return_completed = getattr(self, '_return_completed', 0) + 1
             
             # held_items에서도 제거
             self.held_items.remove(item_path)
@@ -2571,9 +2591,7 @@ class CharacterWidget(QLabel):
             # 아이콘 업데이트 (제거된 아이템을 반영)
             self.render()
             if not self._remaining_items_to_release:
-                before = reaction_mood(self)
                 self._release_single_item()
-                react(self, "files_returned", before=before)
             
         except Exception as e:
             if self._release_timer is not None:
@@ -2738,7 +2756,7 @@ class CharacterWidget(QLabel):
             # 3초 이상 드래그하면 아이템 반환 시작
             if self.drag_time >= 3.0 and self.held_items and not self._remaining_items_to_release:
                 print(f"[드래그 중 3초 도달] drag_time={self.drag_time:.1f}초 - 아이템 반환 시작")
-                self.release_items_to_desktop()
+                self.release_items_to_desktop(forced=True)
             
             self.mood_system.apply_drag_displeasure(self.drag_time)
             # hovering 애니메이션은 draq 시작 시에만 로드됨
@@ -3156,6 +3174,8 @@ class CharacterWidget(QLabel):
         if (landing_surface is not None and self.velocity_y >= 0
                 and (throwing or current_y + body_bottom <= landing_surface.y_level)
                 and new_y + body_bottom >= landing_surface.y_level):
+            if not self.is_jumping and self.velocity_y >= 18.:
+                experience(self, 'impact', reaction=False)
             new_y = landing_surface.y_level - body_bottom
             if throwing and self.velocity_y >= 3.:
                 self.velocity_y *= -self.bounce_damping

@@ -76,6 +76,7 @@ class RpsGameOverlay(QWidget):
     cue_requested = pyqtSignal(str)
     cue_stopped = pyqtSignal()
     result_revealed = pyqtSignal(str)
+    emotion_event = pyqtSignal(str, dict)
     CAPTURE_SECONDS = 5.0
     REVEAL_SECONDS = 0.65
     RESULT_SECONDS = 4.0
@@ -168,6 +169,7 @@ class RpsGameOverlay(QWidget):
         self.cue_stopped.emit()
         self._last_cue = None
         if self.session:
+            self._report_emotion('game_cancel', 'cancel')
             log_event('game.rps.ended', '이전 가위바위보 판을 재시작합니다.',
                       category='캐릭터 상태', trace_id=self.session, reason='restarted', state=self.state)
         self.timer.stop()
@@ -195,7 +197,20 @@ class RpsGameOverlay(QWidget):
         if not self._command(f"rps_begin {self.session}"):
             self.finish_without_result("사용자 인식 프로그램을 연결하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.")
             return
+        self._report_emotion('game_start', 'expect')
         self.timer.start()
+
+    def _report_emotion(self, event, phase, **context):
+        if self.session:
+            game = '참참참' if hasattr(self, 'round_number') else '가위바위보'
+            label = {'game_start': '기대', 'game_win': '승리', 'game_loss': '패배',
+                     'game_draw': '무승부', 'game_disappointed': '역전패', 'game_cancel': '종료'}[event]
+            self.emotion_event.emit(event, {
+                'event_id': f'{self.session}:{getattr(self, "round_number", 0)}:{phase}',
+                'session': self.session,
+                'source': f'{game} {label}',
+                **context,
+            })
 
     def _begin_capture(self):
         capture_at = self.deadline
@@ -266,9 +281,11 @@ class RpsGameOverlay(QWidget):
                                 "무승부!": "무승부!"}[self.result])
             self.hint.setText(f"사용자 기준 · 나 {HANDS[self.player]} / 캐릭터 {HANDS[self.opponent]}\n"
                               "다시 하기·종료는 캐릭터 메뉴에서")
-            self.result_revealed.emit({
+            event = {
                 "당신의 승리!": "game_loss", "캐릭터의 승리!": "game_win", "무승부!": "game_draw",
-            }[self.result])
+            }[self.result]
+            self._report_emotion(event, 'result')
+            self.result_revealed.emit(event)
         elif self.state in {"result", "error"} and now >= self.deadline:
             self.close()
             return
@@ -300,6 +317,7 @@ class RpsGameOverlay(QWidget):
         self.update_position()
 
     def finish_without_result(self, message, *, reason='connection_failed'):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         log_event('game.rps.no_result', '가위바위보 판정을 완료하지 못했습니다.',
                   category='캐릭터 상태', level='WARNING', trace_id=self.session,
@@ -340,6 +358,7 @@ class RpsGameOverlay(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         if self.session:
             log_event('game.rps.ended', '가위바위보 판을 종료합니다.', category='캐릭터 상태',

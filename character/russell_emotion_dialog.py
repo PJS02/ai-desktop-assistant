@@ -916,16 +916,29 @@ class RussellEmotionDialog(QDialog):
                  "influence": "인식 반영 계수", "valence_bias": "사건의 V 추가 보정", "arousal_bias": "사건의 A 추가 보정",
                  "negative_retention": "부정 성분 유지율", "positive_retention": "긍정 성분 유지율",
                  "bias_retention": "사건 좌표 보정 유지율",
-                 "progress": "드래그 진행 비율", "step": "이번 누적량", "valence": "입력 V", "arousal": "입력 A"}
+                 "progress": "드래그 진행 비율", "step": "이번 누적량", "valence": "입력 V", "arousal": "입력 A",
+                 "event": "평가한 사건", "event_id": "사건 식별자", "session": "상호작용 묶음",
+                 "requested_occ": "기본 감정 변화량(강도·포화 보정 전)", "actual_occ": "이번 실제 반영량",
+                 "dose": "품질·반복을 고려한 반영량", "strength": "사건 강도",
+                 "speed": "움직임 속도", "elapsed": "접촉 시간(초)", "distance": "낙하 거리(캐릭터 높이 기준)",
+                 "count": "전달·반환 성공 개수", "round": "라운드 결과", "final": "최종 결과",
+                 "earned": "성취 근거 확인", "rescued": "손바닥으로 구조", "forced": "강제 반환",
+                 "expected_win": "사전에 승리를 기대함", "success": "작업 성공"}
         if not inputs:
             lines.append("별도 입력값 없음")
         for key, value in inputs.items():
-            text = f"{value:.4f}" if isinstance(value, (int, float)) else json.dumps(value, ensure_ascii=False)
+            if key in ('requested_occ', 'actual_occ') and isinstance(value, dict):
+                text = ' · '.join(f'{self.OCC_NAMES.get(name, name)} {amount * 100:+.2f}%p'
+                                  for name, amount in value.items()) or '직접 증감 없음'
+            elif isinstance(value, bool):
+                text = '예' if value else '아니오'
+            else:
+                text = f"{value:.4f}" if isinstance(value, (int, float)) else json.dumps(value, ensure_ascii=False)
             limits = item.get("input_ranges", {}).get(key, {})
             if limits and limits["min"] != limits["max"]:
                 text += f" (구간 범위 {limits['min']:.4f}~{limits['max']:.4f})"
             lines.append(f"{names.get(key, key)}: {text}")
-        if item.get("source") == "쓰다듬기" and item.get("sample_count", 1) > 1:
+        if item.get("source") in ("쓰다듬기", "손으로 쓰다듬기") and item.get("sample_count", 1) > 1:
             lines.append(f"구간 누적 보상량: {item.get('adjusted_weight', 0):.4f} · 실제 성분 변화는 위 증감량 참조")
         position = self.detail_view.verticalScrollBar().value()
         text = "\n".join(lines)
