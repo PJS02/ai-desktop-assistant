@@ -4,7 +4,6 @@ from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrati
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
 from .dialogue_styles import normalize_dialogue_style
-from .reactions import react, reaction_mood
 from PyQt6.QtCore import QRect
 from typing import Optional, List
 import threading
@@ -423,8 +422,7 @@ class DialogueSystem(QObject):
         turn = {'role': 'user', 'text': text, 'source': source,
                 'state': 'queued', 'turn_id': len(self.conversation_history),
                 'trace_id': trace_id, 'log_context': {**context, 'trace_id': trace_id, 'source': source},
-                'queued_at': self._time_provider(), 'retry_of': retry_of,
-                'reaction_before': reaction_mood(self.character_widget)}
+                'queued_at': self._time_provider(), 'retry_of': retry_of}
         self.conversation_history.append(turn)
         self.pending_inputs.append(turn)
         log_event('dialogue.input_accepted', '사용자 입력 접수', category='대화·AI',
@@ -497,28 +495,25 @@ class DialogueSystem(QObject):
         except Exception as exc:
             log_event('dialogue.request_preparation_failed', '대화 요청 준비 실패', category='대화·AI',
                       level='ERROR', trace_id=turn['trace_id'], error=str(exc))
-            self.ai_response_ready.emit((generation, "미안해요, 지금은 대화할 수 없어요. 다시 시도해 주세요.", True, None))
+            self.ai_response_ready.emit((generation, "미안해요, 지금은 대화할 수 없어요. 다시 시도해 주세요.", True))
             return
 
         def get_ai_response():
             failed = False
-            appraisal = {}
             try:
                 raw_response = self._call_ai(prompt, config, log_context=context)
                 failed = self._is_error_response(raw_response)
                 log_event('dialogue.model_text_received', '대화 모델 텍스트 전체', category='대화·AI',
                           level='ERROR' if failed else 'INFO', trace_id=turn['trace_id'],
                           raw_response=raw_response, failed=failed)
-                response_text = self._process_gemini_response(
-                    raw_response, log_context=context, user_input=turn['text'], appraisal=appraisal
-                )
+                response_text = self._process_gemini_response(raw_response, log_context=context)
             except Exception as exc:
                 log_event('dialogue.response_failed', '대화 AI 응답 처리 실패', category='대화·AI',
                           level='ERROR', trace_id=turn['trace_id'], error=str(exc))
                 failed = True
                 response_text = "미안해요, 지금은 대화할 수 없어요. 다시 시도해 주세요."
             if not self._closed:
-                self.ai_response_ready.emit((generation, response_text, failed, appraisal.get('reaction')))
+                self.ai_response_ready.emit((generation, response_text, failed))
             else:
                 log_event('dialogue.response_discarded', '종료 후 늦은 응답 폐기', category='대화·AI',
                           trace_id=turn['trace_id'], reason='shutdown', generation=generation,
@@ -563,11 +558,7 @@ class DialogueSystem(QObject):
 {user_input}
 
 지침을 따르면서 사용자에게 자연스럽고 친근한 대답을 해주세요.
-답변은 한두 문장으로 하고 JSON 객체의 text에 넣어주세요.
-마지막 사용자 입력이 캐릭터가 실제로 한 일에 대한 명시적 칭찬이면 reaction에 praised,
-캐릭터나 사용자에게 의미 있는 구체적인 좋은 결과를 직접 알리면 good_news를 넣어주세요.
-이 경우 evidence에는 그 판단의 근거가 되는 마지막 사용자 입력의 연속된 원문 일부를 넣어주세요.
-그 외에는 reaction과 evidence를 null로 반환해주세요."""
+응답은 한두 문장으로 간단하게 해주세요."""
 
     def _call_ai(self, prompt, config, *, log_context=None):
         if self._response_provider is not None:
@@ -589,7 +580,7 @@ class DialogueSystem(QObject):
 
     @pyqtSlot(object)
     def _finish_ai_request(self, result):
-        generation, response_text, failed, reaction = result
+        generation, response_text, failed = result
         trace_id = self._request_traces.pop(generation, None)
         if self._closed or generation != self._request_generation:
             log_event('dialogue.response_discarded', '만료된 대화 응답 폐기', category='대화·AI',
@@ -615,10 +606,7 @@ class DialogueSystem(QObject):
         self._active_input = None
         self.is_ai_responding = False
         self._response_hold_until = self._time_provider() + 5.0
-        context = turn['log_context']
-        if reaction and not failed:
-            context = {**context, 'reaction': reaction, 'reaction_before': turn['reaction_before']}
-        self.show_ai_response(response_text, log_context=context, failed=failed)
+        self.show_ai_response(response_text, log_context=turn['log_context'], failed=failed)
         self._process_next_input()
 
     def retry_last_input(self):
@@ -668,8 +656,6 @@ class DialogueSystem(QObject):
             self.show_dialogue(text, duration=5000)
         else:
             self.show_dialogue(text, duration=5000, log_context=context)
-        if reason != 'ai_error' and context.get('reaction') in ('praised', 'good_news'):
-            react(self.character_widget, context['reaction'], before=context.get('reaction_before'))
         if self.current_user_dialogue is not None:
             self.current_user_dialogue.duration = 5000
             if not self._speaking and not self.current_user_dialogue.is_hovering:
@@ -779,7 +765,7 @@ class DialogueSystem(QObject):
         input_widget.show()
         self.current_input_widget = input_widget
     
-    def _process_gemini_response(self, response: str, *, log_context=None, user_input="", appraisal=None) -> str:
+    def _process_gemini_response(self, response: str, *, log_context=None) -> str:
         """Gemini 응답 처리 - 에러 또는 정상 응답을 대사로 변환"""
         context = dict(log_context or {})
         context.setdefault('trace_id', new_trace_id('normalize'))
@@ -823,13 +809,6 @@ class DialogueSystem(QObject):
                     # JSON 형식이면 'text' 또는 'response' 또는 'dialogue' 필드 찾기
                     text = response_json.get('text') or response_json.get('response') or response_json.get('dialogue')
                     if text:
-                        reaction = response_json.get('reaction')
-                        evidence = response_json.get('evidence')
-                        if (appraisal is not None and isinstance(text, str)
-                                and reaction in ('praised', 'good_news')
-                                and isinstance(evidence, str) and len(evidence.strip()) >= 3
-                                and evidence.strip() in user_input):
-                            appraisal['reaction'] = reaction
                         field = next(key for key in ('text', 'response', 'dialogue') if response_json.get(key))
                         return normalized(str(text), 'json_field', selected_field=field, fenced=bool(prefix))
                     else:

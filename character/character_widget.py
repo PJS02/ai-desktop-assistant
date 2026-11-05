@@ -17,6 +17,7 @@ from perception.receiver import QtPerceptionReceiver
 from hand_overlay.interaction_host import ContactFeedback
 from hand_overlay.interactions import PET_HEAD_HEIGHT_RATIO
 from .emotion_assets import resolve_animation_asset
+from .greetings import choose_greeting
 from .mood_system import MoodSystem
 from .emotion_delta_overlay import EmotionDeltaOverlay
 from .autonomous_needs import AutonomousNeeds
@@ -27,7 +28,6 @@ from .reactions import Reactions, choose_face, react, reaction_mood
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
-from .greetings import choose_greeting
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay

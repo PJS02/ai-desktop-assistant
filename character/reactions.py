@@ -42,8 +42,6 @@ EVENTS = {
     "fall_risk": Appraisal(-.65, .68, .62, .65, 5, prospect="threat"),
     "safe_landing": Appraisal(.52, -.40, .65, .73, 5, prospect="safe"),
     "greeting": Appraisal(.52, .14, .42, .94, 2, attribution="help"),
-    "praised": Appraisal(.52, .28, .42, .78, 2, attribution="self_credit"),
-    "good_news": Appraisal(.55, .20, .44, .80, 2),
     "game_win": Appraisal(.66, .58, .48, 1.06, 4),
     "game_earned_win": Appraisal(.69, .43, .51, 1.1, 4, attribution="self_credit"),
     "game_loss": Appraisal(-.55, -.21, .48, 1.02, 4),
