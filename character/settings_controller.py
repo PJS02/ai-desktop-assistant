@@ -5,7 +5,7 @@ from PyQt6.QtCore import QObject, QTimer
 
 from .ai_settings import load_ai_settings, save_ai_settings
 from .config_manager import (load_config, load_character_options, load_personality_traits,
-                            load_dialogue_style, save_config,
+                            load_dialogue_style, load_dialogue_options, save_config,
                             load_hand_overlay_options, save_hand_overlay_options)
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
@@ -63,10 +63,11 @@ class SettingsController(QObject):
                            'sync_bubble': tts.sync_bubble},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
-        local['dialogue'] = {'style': load_dialogue_style()}
+        local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
-        self.dialog = SettingsDialog(local, self.character)
+        self.dialog = SettingsDialog(local, self.character,
+                                     long_term_memory=self.character.dialogue_system.long_term_memory)
         self.dialog.dialogue_generation_requested.connect(self._generate_dialogue)
         self.dialog.manual_dialogue_requested.connect(self._show_manual_dialogue)
         self.dialog.manual_speech_requested.connect(self._speak_manual_dialogue)
@@ -233,8 +234,10 @@ class SettingsController(QObject):
                 elif section == 'dialogue':
                     width, height, personality = load_config()
                     save_config(width, height, personality, dialogue_style=value['style'],
+                                dialogue_options=value,
                                 trace_id=self.operation_id)
                     self.character.dialogue_system.set_bubble_style(value['style'])
+                    self.character.apply_dialogue_options(value)
                 elif section == 'ai':
                     save_ai_settings(value['api_key'], value['model'], trace_id=self.operation_id)
                     self.character._load_gemini_config()

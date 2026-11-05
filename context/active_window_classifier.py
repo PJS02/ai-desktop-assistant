@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -10,6 +11,12 @@ from urllib.request import Request, urlopen
 
 from ai.gemini_client import load_gemini_config, request_gemini
 from .rules_config import get_rules
+
+
+def _is_own_process(process):
+    # Include recognition subprocesses, while allowing unrelated Python programs.
+    own_pid = os.getpid()
+    return process.pid == own_pid or any(parent.pid == own_pid for parent in process.parents())
 
 
 def get_active_window_info():
@@ -38,6 +45,8 @@ def get_active_window_info():
 
     try:
         process = psutil.Process(pid)
+        if _is_own_process(process):
+            return None
         exe = process.name()
     except psutil.Error:
         exe = "unknown"
@@ -118,6 +127,7 @@ def capture_active_window_image():
     # 활성 창을 캡처해 이미지로 반환합니다.
     try:
         import win32gui
+        import win32process
     except ImportError as exc:
         raise RuntimeError(
             "pywin32 is required. Install with: pip install pywin32"
@@ -132,6 +142,14 @@ def capture_active_window_image():
 
     hwnd = win32gui.GetForegroundWindow()
     if not hwnd:
+        return None
+
+    import psutil
+    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+    try:
+        if _is_own_process(psutil.Process(pid)):
+            return None
+    except psutil.Error:
         return None
 
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)

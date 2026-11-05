@@ -19,8 +19,10 @@ from .tts_backend import runtime_python
 from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
 from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
+from .dialogue_options import DIALOGUE_OPTION_RANGES, normalize_dialogue_options
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
+from .memory_view import MemoryView
 
 
 class _SettingsComboBox(QComboBox):
@@ -76,7 +78,7 @@ class SettingsDialog(QDialog):
     preview_requested = pyqtSignal(bool)
     device_requested = pyqtSignal(str)
 
-    def __init__(self, local, parent=None, model_manager=None):
+    def __init__(self, local, parent=None, model_manager=None, *, long_term_memory=None):
         super().__init__(parent)
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
@@ -107,6 +109,8 @@ class SettingsDialog(QDialog):
         self._dialogue_page(local)
         self._recognition_page(local)
         self._manual_page()
+        self.memory_view = MemoryView(long_term_memory, self)
+        self.tabs.addTab(self.memory_view, '장기기억')
         self._preview_active = False
         self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
@@ -1020,6 +1024,28 @@ class SettingsDialog(QDialog):
         self.model = QLineEdit(local['ai']['model'])
         self.model.setPlaceholderText('사용할 모델 ID 입력')
         form.addRow('모델 ID', self.model)
+        options = normalize_dialogue_options(local.get('dialogue'))
+        self.auto_program_detection = QCheckBox('활성 창·프로그램 감지로 자동 대화 생성')
+        self.auto_program_detection.setChecked(options['auto_program_detection'])
+        form.addRow(self.auto_program_detection)
+        hint = QLabel('끄면 주기적인 감지와 자동 대화를 중지합니다. 직접 입력·음성 대화와 직접 조작의 대사 생성은 계속 사용할 수 있습니다.')
+        hint.setWordWrap(True)
+        form.addRow('', hint)
+        self.dialogue_inputs = {}
+        for key, label in (
+            ('activity_monitor_interval', '활성 창 감지 주기'),
+            ('auto_dialogue_cooldown', '자동 대화 최소 요청 간격'),
+            ('request_cooldown', '입력·음성 대화 최소 요청 간격'),
+        ):
+            spin = QSpinBox()
+            spin.setRange(*DIALOGUE_OPTION_RANGES[key])
+            spin.setSuffix(' 초')
+            spin.setValue(options[key])
+            self.dialogue_inputs[key] = spin
+            form.addRow(label, spin)
+            if key != 'request_cooldown':
+                spin.setEnabled(self.auto_program_detection.isChecked())
+                self.auto_program_detection.toggled.connect(spin.setEnabled)
 
     def _focus_ai_model(self):
         self.model.setFocus()
@@ -1038,8 +1064,12 @@ class SettingsDialog(QDialog):
         local['character']['emotion_delta_duration_ms'] = round(self.emotion_delta_duration.value() * 1000)
         local['character']['emotion_delta_enabled'] = self.emotion_delta_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
-        dialogue = {'style': self.dialogue_style.currentData()}
-        baseline = {'style': normalize_dialogue_style(self.local_baseline.get('dialogue', {}).get('style'))}
+        dialogue = {'style': self.dialogue_style.currentData(),
+                    'auto_program_detection': self.auto_program_detection.isChecked(),
+                    **{key: control.value() for key, control in self.dialogue_inputs.items()}}
+        saved_dialogue = self.local_baseline.get('dialogue', {})
+        baseline = {'style': normalize_dialogue_style(saved_dialogue.get('style')),
+                    **normalize_dialogue_options(saved_dialogue)}
         if dialogue != baseline:
             changed['dialogue'] = dialogue
         hand_overlay = {'enabled': self.hand_display.isChecked(),
