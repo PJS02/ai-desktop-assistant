@@ -1,0 +1,10 @@
+{
+  "candidate_limit": 10,
+  "recall_limit": 3,
+  "retrieval_mode": "top_k",
+  "similarity_hint": 0.75,
+  "duplicate_similarity_hint": 0.90,
+  "half_life_beta": 0.2,
+  "max_half_life_days": 180.0,
+  "recall_score_mode": "legacy"
+}

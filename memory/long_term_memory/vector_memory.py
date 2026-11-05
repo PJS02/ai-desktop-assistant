@@ -5,12 +5,14 @@ from __future__ import annotations
 from array import array
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from math import sqrt
+from math import log1p, sqrt
 from pathlib import Path
 import sqlite3
 from threading import RLock
 from typing import Any, Iterable
 from uuid import uuid4
+
+from .settings import MEMORY_TYPES, RETENTION_POLICIES, MemorySettings, load_memory_settings
 
 
 # 각 항목을 0~1로 정규화한 뒤 합산한다. 필요하면 이 비율만 조정한다.
@@ -26,7 +28,7 @@ RECALL_WEIGHTS = {
 FORGETTING_HALF_LIFE_DAYS = 30
 REINFORCEMENT_BOOST = 0.20
 FORGETTING_THRESHOLD = 0.15
-# E5 점수 분포는 실제 대화로 조정해야 한다. 낮은 관련성은 순위 계산 전에 제외한다.
+# 이전 상수 이름은 호환용으로 유지한다. 실행 설정은 config.json의 후보 검토 힌트로 관리한다.
 MIN_RECALL_SIMILARITY = 0.75
 MIN_DUPLICATE_SIMILARITY = 0.90
 
@@ -40,10 +42,15 @@ METADATA_COLUMNS = {
     "last_recalled_at": "TEXT",
     "strength": "REAL NOT NULL DEFAULT 1.0 CHECK (strength BETWEEN 0 AND 1)",
     "original_text": "TEXT",
+    "superseded_by": "INTEGER REFERENCES memories(id) CHECK (superseded_by IS NULL OR (typeof(superseded_by) = 'integer' AND superseded_by > 0 AND superseded_by != id))",
+    "superseded_at": "TEXT",
+    "memory_type": "TEXT NOT NULL DEFAULT 'unknown' CHECK (memory_type IN ('profile', 'temporary', 'schedule', 'event', 'unknown'))",
+    "retention_policy": "TEXT NOT NULL DEFAULT 'standard' CHECK (retention_policy IN ('standard', 'persistent'))",
+    "decay_half_life_days": "REAL CHECK (decay_half_life_days IS NULL OR decay_half_life_days > 0)",
 }
 
 # 기존 DB에서만 제거한다. 원문·벡터·나머지 메타데이터는 그대로 보존한다.
-REMOVED_COLUMNS = ("memory_type", "source", "embedding_model")
+REMOVED_COLUMNS = ("source", "embedding_model")
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,10 @@ class MemorySearchResult:
     last_recalled_at: str | None = None
     strength: float = 1.0
     recall_score: float = 0.0
+    memory_type: str = "unknown"
+    retention_policy: str = "standard"
+    decay_half_life_days: float | None = None
+    search_strength: float | None = None
 
 
 class LongTermMemory:
@@ -72,7 +83,9 @@ class LongTermMemory:
         database_path: str | Path = "data/long_term_memory.sqlite3",
         model_name: str = "intfloat/multilingual-e5-small",
         embedder: Any | None = None,
+        settings: MemorySettings | None = None,
     ):
+        self.settings = settings if settings is not None else load_memory_settings()
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_name = model_name
@@ -90,7 +103,11 @@ class LongTermMemory:
             )"""
         )
         self._connection.commit()
-        self._upgrade_schema()
+        try:
+            self._upgrade_schema()
+        except Exception:
+            self._connection.close()
+            raise
 
     def _upgrade_schema(self) -> None:
         """기존 기억을 보존하면서 필요한 컬럼을 추가하고 불필요한 컬럼을 제거한다."""
@@ -134,9 +151,11 @@ class LongTermMemory:
         self, text: str, *, importance: int | None = None, speaker: str = "unknown",
         conversation_id: str | None = None,
         emotional_intensity: int | None = None,
+        memory_type: str = "unknown", retention_policy: str = "standard",
     ) -> None:
         """원문과 임베딩에 중요도·발화자 등 메타데이터를 함께 저장한다."""
-        self._save_messages([(speaker, text)], importance, conversation_id, emotional_intensity)
+        self._save_messages([(speaker, text)], importance, conversation_id, emotional_intensity,
+                            memory_type=memory_type, retention_policy=retention_policy)
 
     def remember_dialogue(
         self, user_text: str, assistant_text: str, *, importance: int,
@@ -153,20 +172,39 @@ class LongTermMemory:
     def remember_fact(
         self, text: str, *, original_text: str, importance: int,
         emotional_intensity: int | None = None, duplicate_memory_id: int | None = None,
+        superseded_memory_ids: Iterable[int] = (),
+        memory_type: str = "unknown", retention_policy: str = "standard",
     ) -> int | None:
-        """핵심 사실을 저장하거나 같은 사실로 확인된 기존 기억을 보강한다."""
-        self._validate_metadata(importance, emotional_intensity)
+        """핵심 사실을 저장·보강하거나 명확히 정정된 사용자 기억의 이력을 남긴다."""
+        self._validate_metadata(importance, emotional_intensity, memory_type, retention_policy)
         if type(importance) is not int:
             raise ValueError("importance must be an integer from 0 to 10")
         if duplicate_memory_id is not None and (type(duplicate_memory_id) is not int or duplicate_memory_id < 1):
             raise ValueError("duplicate_memory_id must be a positive integer")
+        superseded_ids = tuple(superseded_memory_ids)
+        if len(superseded_ids) > 3 or any(type(item) is not int or item < 1 for item in superseded_ids):
+            raise ValueError("superseded_memory_ids must contain at most three positive integers")
+        if superseded_ids and duplicate_memory_id is not None:
+            raise ValueError("A correction cannot also be a semantic duplicate")
+        superseded_ids = sorted(set(superseded_ids))
         text = text.strip()
         if not text or not original_text.strip():
             return None
         with self._lock:
+            for memory_id in superseded_ids:
+                old = self._read_memory(memory_id)
+                successor = self._connection.execute(
+                    "SELECT superseded_by FROM memories WHERE id = ?", (memory_id,),
+                ).fetchone()[0]
+                if old.speaker != "user" or successor is not None:
+                    raise ValueError("Only current user memories can be superseded")
+                # 정정 관계는 호출자가 LLM으로 확인한다. 유사도는 최종 판정 조건이 아니다.
+                # 새 정정의 평가가 낮아도 이미 중요한 정보의 현재 상태는 유지한다.
+                importance = max(importance, old.importance or 0)
             # 같은 핵심 문장은 망각 여부와 무관하게 기존 행을 재사용한다.
             rows = self._connection.execute(
-                "SELECT id, text FROM memories WHERE speaker IN ('user', 'conversation')"
+                """SELECT id, text FROM memories
+                   WHERE speaker IN ('user', 'conversation') AND superseded_by IS NULL"""
             ).fetchall()
             normalized = " ".join(text.split())
             matched_id = next((memory_id for memory_id, saved_text in rows
@@ -175,14 +213,12 @@ class LongTermMemory:
                 # shortcut: 의미 중복은 프롬프트 후보 안에서만 확인한다. 누락이 많아지면 후보 범위를 확장한다.
                 existing = self._read_memory(duplicate_memory_id)
                 if existing.speaker in ("user", "conversation"):
-                    blob, dimension = self._connection.execute(
-                        "SELECT embedding, dimension FROM memories WHERE id = ?", (duplicate_memory_id,),
-                    ).fetchone()
-                    vector = self._embed(f"passage: {text}")
-                    saved_vector = list(array("f", blob))
+                    successor = self._connection.execute(
+                        "SELECT superseded_by FROM memories WHERE id = ?", (duplicate_memory_id,),
+                    ).fetchone()[0]
                     # LLM이 같은 사실이라고 판정한 경우만 이 경로로 들어온다.
                     # 유사도만으로는 부정·반대 의미의 문장을 합치지 않는다.
-                    if len(vector) == dimension == len(saved_vector) and self._cosine(vector, saved_vector) >= MIN_DUPLICATE_SIMILARITY:
+                    if successor is None:
                         matched_id = duplicate_memory_id
 
             if matched_id is not None:
@@ -191,28 +227,58 @@ class LongTermMemory:
                     existing = self._read_memory(matched_id)
                     current = replace(existing, strength=self._current_strength(existing, now))
                     self._reinforce_memory(current, now)
+                    new_importance = max(existing.importance or 0, importance)
+                    new_emotion = max(existing.emotional_intensity or 0, emotional_intensity or 0)
+                    new_type = (memory_type if existing.memory_type == "unknown" and existing.retention_policy != "persistent"
+                                else existing.memory_type)
+                    new_policy = "persistent" if "persistent" in (existing.retention_policy, retention_policy) else "standard"
+                    if new_type not in ("profile", "unknown"):
+                        new_policy = "standard"
                     # 기존 원문·벡터·생성 시각은 보존하고 평가값은 낮추지 않는다.
                     self._connection.execute(
-                        "UPDATE memories SET importance = ?, emotional_intensity = ? WHERE id = ?",
-                        (max(existing.importance or 0, importance),
-                         max(existing.emotional_intensity or 0, emotional_intensity or 0), matched_id),
+                        """UPDATE memories SET importance = ?, emotional_intensity = ?, memory_type = ?,
+                           retention_policy = ?, decay_half_life_days = ? WHERE id = ?""",
+                        (new_importance, new_emotion, new_type, new_policy,
+                         self._effective_half_life(new_importance, new_emotion, existing.recall_count + 1), matched_id),
                     )
+                    self._supersede_memories(superseded_ids, matched_id, now)
                 return matched_id
-            if importance < 7:
+            if importance < 7 and not superseded_ids:
                 return None
             return self._save_messages(
                 [("user", text)], importance, uuid4().hex, emotional_intensity, original_text=original_text,
+                superseded_ids=superseded_ids,
+                memory_type=memory_type, retention_policy=retention_policy,
             )[0]
 
+    def _supersede_memories(self, memory_ids, replacement_id, now):
+        """호출한 저장 트랜잭션 안에서만 대체 이력을 기록한다."""
+        for memory_id in memory_ids:
+            if memory_id == replacement_id:
+                continue
+            changed = self._connection.execute(
+                """UPDATE memories SET superseded_by = ?, superseded_at = ?
+                   WHERE id = ? AND superseded_by IS NULL AND speaker = 'user'""",
+                (replacement_id, now.isoformat(), memory_id),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("The memory was already superseded; correction cancelled")
+
     @staticmethod
-    def _validate_metadata(importance, emotional_intensity) -> None:
+    def _validate_metadata(importance, emotional_intensity, memory_type="unknown", retention_policy="standard") -> None:
         if importance is not None and (type(importance) is not int or not 0 <= importance <= 10):
             raise ValueError("importance must be an integer from 0 to 10 or None")
         if emotional_intensity is not None and (type(emotional_intensity) is not int or not 0 <= emotional_intensity <= 10):
             raise ValueError("emotional_intensity must be an integer from 0 to 10 or None")
+        if memory_type not in MEMORY_TYPES or retention_policy not in RETENTION_POLICIES:
+            raise ValueError("Invalid memory type or retention policy")
+        if retention_policy == "persistent" and memory_type not in ("profile", "unknown"):
+            raise ValueError("Temporary, schedule and event memories cannot be persistent")
 
-    def _save_messages(self, messages, importance, conversation_id, emotional_intensity, original_text=None) -> list[int]:
-        self._validate_metadata(importance, emotional_intensity)
+    def _save_messages(self, messages, importance, conversation_id, emotional_intensity,
+                       original_text=None, *, superseded_ids=(), memory_type="unknown",
+                       retention_policy="standard") -> list[int]:
+        self._validate_metadata(importance, emotional_intensity, memory_type, retention_policy)
         if any(speaker not in ("user", "assistant", "conversation", "unknown") for speaker, _ in messages):
             raise ValueError("unknown speaker")
 
@@ -225,38 +291,54 @@ class LongTermMemory:
                     continue
                 vector = self._embed(f"passage: {text}")
                 rows.append((text, array("f", vector).tobytes(), len(vector), created_at,
-                             importance, speaker, conversation_id, emotional_intensity, original_text))
+                             importance, speaker, conversation_id, emotional_intensity, original_text,
+                             memory_type, retention_policy, self._effective_half_life(importance, emotional_intensity, 0)))
             # 두 발화 중 임베딩·저장이 실패하면 일부만 남기지 않는다.
             with self._connection:
-                return [self._connection.execute(
+                saved_ids = [self._connection.execute(
                     """INSERT INTO memories
                     (text, embedding, dimension, created_at, importance, speaker,
-                     conversation_id, emotional_intensity, original_text)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", row,
+                     conversation_id, emotional_intensity, original_text, memory_type, retention_policy, decay_half_life_days)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", row,
                 ).lastrowid for row in rows]
+                if superseded_ids:
+                    self._supersede_memories(superseded_ids, saved_ids[0], datetime.now(timezone.utc))
+                return saved_ids
 
     def count(self) -> int:
         """저장된 기억 수를 반환한다. 비어 있으면 모델을 불러오지 않는다."""
         with self._lock:
             return self._connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
 
-    def search(self, query: str, limit: int = 3) -> list[MemorySearchResult]:
-        """관련성·강도 기준을 통과한 기억만 반환한다. 검색만으로 강화하지 않는다."""
+    def search(self, query: str, limit: int | None = None) -> list[MemorySearchResult]:
+        """회상 점수 상위 답변용 후보를 반환한다. 의미 관련성 검증이나 강화는 하지 않는다."""
+        limit = self.settings.recall_limit if limit is None else limit
+        if limit < 1:
+            return []
+        return sorted(self.search_candidates(query), key=lambda item: item.recall_score, reverse=True)[:limit]
+
+    def search_candidates(self, query: str, limit: int | None = None) -> list[MemorySearchResult]:
+        """유사도 Top-K 후보. 의미 관련성과 사실 관계의 최종 판단은 LLM이 수행한다."""
+        limit = self.settings.candidate_limit if limit is None else limit
         if limit < 1 or not query.strip():
             return []
         with self._lock:
             rows = self._connection.execute(
                 """SELECT text, embedding, dimension, created_at, id, importance, speaker,
                           conversation_id, emotional_intensity,
-                          recall_count, last_recalled_at, strength FROM memories""",
+                          recall_count, last_recalled_at, strength, memory_type, retention_policy,
+                          decay_half_life_days FROM memories
+                   WHERE superseded_by IS NULL""",
             ).fetchall()
             now = datetime.now(timezone.utc)
             candidates = []
             for text, blob, dimension, created_at, *metadata in rows:
-                memory = MemorySearchResult(text, 0.0, created_at, *metadata)
+                memory = self._result_from_row((text, 0.0, created_at, *metadata))
                 strength = self._current_strength(memory, now)
-                if strength >= FORGETTING_THRESHOLD:
-                    candidates.append((replace(memory, strength=strength), blob, dimension))
+                protected = memory.memory_type == "profile" or memory.retention_policy == "persistent"
+                if memory.strength > 0 and (protected or strength >= FORGETTING_THRESHOLD):
+                    search_strength = max(strength, FORGETTING_THRESHOLD) if protected else strength
+                    candidates.append((replace(memory, strength=strength, search_strength=search_strength), blob, dimension))
             if not candidates:
                 return []
             query_vector = self._embed(f"query: {query.strip()}")
@@ -266,10 +348,11 @@ class LongTermMemory:
                 vector = list(array("f", blob))
                 if len(vector) == dimension == len(query_vector):
                     result = replace(memory, score=self._cosine(query_vector, vector))
-                    if result.score >= MIN_RECALL_SIMILARITY:
-                        results.append((self._recall_score(result, now), result))
-            selected = sorted(results, key=lambda item: item[0], reverse=True)[:limit]
-            return [replace(result, recall_score=score) for score, result in selected]
+                    if self.settings.retrieval_mode == "top_k" or result.score >= self.settings.similarity_hint:
+                        results.append(result)
+            selected = sorted(results, key=lambda item: (-item.score, item.memory_id))[:limit]
+            return [replace(result, recall_score=self._recall_score(result, now, self.settings.recall_score_mode))
+                    for result in selected]
 
     def get_strength(self, memory_id: int) -> float:
         """시간 경과를 반영한 현재 기억 강도를 조회한다. 조회만으로 강화하지 않는다."""
@@ -277,7 +360,7 @@ class LongTermMemory:
             return self._current_strength(self._read_memory(memory_id), datetime.now(timezone.utc))
 
     def reinforce(self, memory_id: int) -> float:
-        """기억을 직접 회상해 강화한다. 자동 망각된 기억도 복구할 수 있다."""
+        """자동 망각된 기억은 복구할 수 있지만 대체된 과거 기억은 강화하지 않는다."""
         with self._lock, self._connection:
             now = datetime.now(timezone.utc)
             memory = self._read_memory(memory_id)
@@ -293,21 +376,39 @@ class LongTermMemory:
     def _read_memory(self, memory_id: int) -> MemorySearchResult:
         row = self._connection.execute(
             """SELECT text, 0.0, created_at, id, importance, speaker, conversation_id,
-                      emotional_intensity, recall_count, last_recalled_at, strength
+                      emotional_intensity, recall_count, last_recalled_at, strength,
+                      memory_type, retention_policy, decay_half_life_days
                FROM memories WHERE id = ?""", (memory_id,),
         ).fetchone()
         if row is None:
             raise KeyError(f"Memory {memory_id} does not exist")
-        return MemorySearchResult(*row)
+        return self._result_from_row(row)
+
+    @staticmethod
+    def _result_from_row(row):
+        # 기존 DB의 미지원 유형은 원래 컬럼 값을 바꾸지 않고 unknown으로 취급한다.
+        return MemorySearchResult(*row[:11],
+                                  memory_type=row[11] if row[11] in MEMORY_TYPES else "unknown",
+                                  retention_policy=row[12], decay_half_life_days=row[13])
+
+    def _effective_half_life(self, importance, emotional_intensity, recall_count):
+        base = FORGETTING_HALF_LIFE_DAYS * (1 + (importance or 0) / 10 + (emotional_intensity or 0) / 10)
+        return min(self.settings.max_half_life_days, base * (1 + self.settings.half_life_beta * log1p(recall_count)))
 
     def _reinforce_memory(self, memory: MemorySearchResult, now: datetime) -> MemorySearchResult:
         # DB strength는 이 시각에서의 강도다. 다음 조회는 last_recalled_at부터 감쇠한다.
         reinforced = replace(memory, strength=min(1.0, memory.strength + REINFORCEMENT_BOOST),
-                             recall_count=memory.recall_count + 1, last_recalled_at=now.isoformat())
-        self._connection.execute(
-            "UPDATE memories SET strength = ?, recall_count = ?, last_recalled_at = ? WHERE id = ?",
-            (reinforced.strength, reinforced.recall_count, reinforced.last_recalled_at, memory.memory_id),
+                             recall_count=memory.recall_count + 1, last_recalled_at=now.isoformat(),
+                             decay_half_life_days=self._effective_half_life(
+                                 memory.importance, memory.emotional_intensity, memory.recall_count + 1))
+        changed = self._connection.execute(
+            """UPDATE memories SET strength = ?, recall_count = ?, last_recalled_at = ?, decay_half_life_days = ?
+               WHERE id = ? AND superseded_by IS NULL""",
+            (reinforced.strength, reinforced.recall_count, reinforced.last_recalled_at,
+             reinforced.decay_half_life_days, memory.memory_id),
         )
+        if changed.rowcount != 1:
+            raise ValueError("Superseded memories cannot be reinforced")
         return reinforced
 
     @staticmethod
@@ -324,10 +425,13 @@ class LongTermMemory:
         half_life = FORGETTING_HALF_LIFE_DAYS * (
             1 + (memory.importance or 0) / 10 + (memory.emotional_intensity or 0) / 10
         )
+        # NULL은 기존 방식으로 시작한 구간이다. 다음 강화 전까지 반감기를 소급 변경하지 않는다.
+        if memory.decay_half_life_days is not None:
+            half_life = memory.decay_half_life_days
         return memory.strength * 0.5 ** (days / half_life)
 
     @staticmethod
-    def _recall_score(memory: MemorySearchResult, now: datetime) -> float:
+    def _recall_score(memory: MemorySearchResult, now: datetime, mode: str = "legacy") -> float:
         """저장 중요도를 바꾸지 않고 현재 질문에 대한 회상 점수를 계산한다."""
         try:
             created_at = datetime.fromisoformat(memory.created_at)
@@ -347,7 +451,13 @@ class LongTermMemory:
             # 반복 회상 보너스는 점점 작아지며 1을 넘지 않는다.
             "frequency": memory.recall_count / (memory.recall_count + 5),
         }
-        return sum(RECALL_WEIGHTS[name] * factor for name, factor in factors.items()) * memory.strength
+        if mode not in ("legacy", "strength_only"):
+            raise ValueError("Unknown recall score mode")
+        strength = memory.strength if memory.search_strength is None else memory.search_strength
+        if mode == "strength_only":
+            return strength / 0.90 * sum(RECALL_WEIGHTS[name] * factor for name, factor in factors.items()
+                                        if name != "recency")
+        return sum(RECALL_WEIGHTS[name] * factor for name, factor in factors.items()) * strength
 
     def close(self) -> None:
         """SQLite 연결을 닫는다."""

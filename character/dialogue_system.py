@@ -18,7 +18,7 @@ from memory.short_term_memory import ConversationMemory
 from memory.long_term_memory import LongTermMemory
 from memory.long_term_memory.dialogue_memory import (
     DIALOGUE_RESPONSE_SCHEMA, DIALOGUE_SYSTEM_INSTRUCTION,
-    parse_dialogue_response, apply_dialogue_memory,
+    parse_dialogue_response, apply_dialogue_memory, build_memory_context, validate_memory_references,
 )
 
 
@@ -445,21 +445,14 @@ class DialogueSystem(QObject):
             failed = False
             try:
                 # E5 로딩·검색·저장은 Qt 스레드를 막지 않도록 이 작업 스레드에서 실행한다.
-                recalled_memories = []
+                candidates = []
                 if self.long_term_memory.count():
                     recall_query = f"{turn['text']}\n최근 대화 문맥:\n{recent_context[-1000:]}"
-                    recalled_memories = self.long_term_memory.search(recall_query)
-                long_term_context = "\n".join(
-                    f"- [ID={item.memory_id}, 발화자={item.speaker}, 중요도={item.importance}, 회상점수={item.recall_score:.3f}] {item.text}"
-                    for item in recalled_memories
-                )
+                    candidates = self.long_term_memory.search_candidates(recall_query)
+                long_term_context, recalled_memories = build_memory_context(candidates, self.long_term_memory.settings)
                 memory_prompt = prompt + f"""
 
-【 장기 기억 】
-아래 내용은 과거에 저장된 관련 기억입니다. 사실처럼 단정하지 말고 도움이 될 때만 참고하세요.
-user는 사용자 발화, assistant는 AI 답변, conversation은 과거의 혼합 기록입니다.
-AI 답변을 사용자가 직접 말한 사실로 해석하지 마세요.
-{long_term_context or '(관련 장기 기억이 없습니다)'}"""
+{long_term_context}"""
                 raw_response = self._call_ai(memory_prompt, config, log_context=context)
                 failed = self._is_error_response(raw_response)
                 log_event('dialogue.model_text_received', '대화 모델 텍스트 전체', category='대화·AI',
@@ -467,10 +460,16 @@ AI 답변을 사용자가 직접 말한 사실로 해석하지 마세요.
                           raw_response=raw_response, failed=failed)
                 response_text = self._process_gemini_response(raw_response, log_context=context)
                 metadata = parse_dialogue_response(raw_response)
+                if metadata and not validate_memory_references(metadata, recalled_memories, candidates):
+                    failed = True
+                    metadata = None
+                    response_text = "기억 참조를 확인하지 못했어요. 다시 말씀해 주세요."
+                    log_event('dialogue.memory_references_rejected', '제공 범위를 벗어난 기억 참조 거부',
+                              category='오류', level='ERROR', trace_id=turn['trace_id'])
                 if metadata and not failed and not self._closed and generation == self._request_generation:
                     self.conversation_memory.add("assistant", response_text)
                     try:
-                        apply_dialogue_memory(self.long_term_memory, metadata, recalled_memories, turn['text'])
+                        apply_dialogue_memory(self.long_term_memory, metadata, recalled_memories, turn['text'], candidates=candidates)
                     except Exception as exc:
                         log_event('dialogue.memory_failed', '장기기억 저장 실패', category='오류',
                                   level='ERROR', trace_id=turn['trace_id'], error=str(exc))
@@ -522,7 +521,11 @@ AI 답변을 사용자가 직접 말한 사실로 해석하지 마세요.
 지침을 따르면서 사용자에게 자연스럽고 친근한 대답을 해주세요.
 응답은 반드시 아래 JSON 형식만 사용하세요.
 {{"text": "사용자에게 보여줄 한두 문장 답변", "importance": 0~10 정수, "emotional_intensity": 0~10 정수,
-"used_memory_ids": [], "memory_summary": "사용자 입력의 핵심 기억 또는 빈 문자열", "duplicate_memory_id": 0}}
+"used_memory_ids": [], "memory_summary": "사용자 입력의 핵심 기억 또는 빈 문자열", "duplicate_memory_id": 0,
+"superseded_memory_ids": [], "relevant_memory_ids": [], "memory_type": "unknown", "retention_policy": "standard"}}
+
+명확한 사용자 정보 수정은 새 사실을 memory_summary에 넣고 대체할 제공 기억의 ID를 superseded_memory_ids에 넣으세요.
+같은 대상의 현재 사실을 분명하게 정정한 경우에만 대체하며, 일시적인 감정·다른 시점의 사건·불확실한 추측은 대체하지 마세요.
 
 emotional_intensity는 이 대화가 캐릭터에게 얼마나 감정적인 기억인지 별도로 평가하세요.
 캐릭터의 성격과 현재 감정 상태를 고려해 기쁨, 슬픔, 두려움, 애착 등 감정 반응의 강도를 0~10 정수로 표현하세요.

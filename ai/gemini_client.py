@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app_logging import log_event, new_trace_id, register_secret
+from context.screen_privacy import ScreenPrivacyError, redact_screen
 
 
 AI_DIR = Path(__file__).resolve().parent
@@ -91,6 +92,16 @@ def request_gemini(
                   level="WARNING", trace_id=trace_id, reason="missing_api_key")
         return ""
 
+    if image is not None:
+        try:
+            image, prompt, system_instruction = redact_screen(image, prompt, system_instruction)
+        except ScreenPrivacyError:
+            log_event("gemini.privacy_blocked", "화면 개인정보 보호 실패로 요청 차단", category="대화·AI",
+                      level="ERROR", trace_id=trace_id, source=context.get("source"))
+            return "[gemini error] 화면 개인정보 보호 처리 실패: 요청을 전송하지 않았습니다."
+        log_event("gemini.screen_redacted", "활성 창 개인정보 마스킹 완료", category="대화·AI",
+                  trace_id=trace_id, width=image.width, height=image.height)
+
     model = config.get("model") or "gemma-3-4b-it"
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     parts = [{"text": prompt}]
@@ -105,8 +116,12 @@ def request_gemini(
     if system_instruction:
         payload["system_instruction"] = {"parts": [{"text": system_instruction}]}
 
-    log_event("gemini.request", "Gemini 실제 요청 본문", category="대화·AI",
-              trace_id=trace_id, model=model, payload=payload,
+    log_payload = dict(payload)
+    log_payload["contents"] = [{"parts": [
+        {"inlineData": {"mimeType": "image/png", "data": "[IMAGE OMITTED]"}}
+        if "inlineData" in part else part for part in parts]}]
+    log_event("gemini.request", "Gemini 요청 본문 (이미지 데이터 제외)", category="대화·AI",
+              trace_id=trace_id, model=model, payload=log_payload,
               source=context.get("source"), timeout_seconds=30)
     request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), method="POST")
     request.add_header("Content-Type", "application/json")

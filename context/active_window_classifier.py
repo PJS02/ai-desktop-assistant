@@ -119,14 +119,14 @@ def capture_active_window_image():
     try:
         import win32gui
     except ImportError as exc:
-        raise SystemExit(
+        raise RuntimeError(
             "pywin32 is required. Install with: pip install pywin32"
         ) from exc
 
     try:
         from PIL import ImageGrab
     except ImportError as exc:
-        raise SystemExit(
+        raise RuntimeError(
             "pillow is required. Install with: pip install pillow"
         ) from exc
 
@@ -138,7 +138,7 @@ def capture_active_window_image():
     if right <= left or bottom <= top:
         return None
 
-    return ImageGrab.grab(bbox=(left, top, right, bottom))
+    return ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
 
 
 def start_input_listener(trigger):
@@ -263,6 +263,9 @@ def generate_dialogue_json(start_server=False):
         }
 
     image = capture_active_window_image()
+    if image is None:
+        return {"dialogue": "", "error": "screen_capture_unavailable", "category": category,
+                "process": info["process"] if info else "", "title": info["title"] if info else "", "url": url}
     prompt = build_gemini_prompt(info, category, url)
     response = request_gemini(
         prompt,
@@ -459,6 +462,9 @@ def main():
 
         if gemini_config.get("api_key"):
             image = capture_active_window_image()
+            if image is None:
+                print(f"[{timestamp}] gemini | (screen capture unavailable; request blocked)")
+                break
             prompt = build_gemini_prompt(info, category, url)
             response = request_gemini(
                 prompt,

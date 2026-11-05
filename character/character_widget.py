@@ -33,6 +33,7 @@ from .taskbar_visibility import TaskbarVisibilityGuard
 try:
     from context.active_window_classifier import (
         get_active_window_info,
+        capture_active_window_image,
         extract_dialogue,
         build_gemini_prompt,
         build_response_schema,
@@ -1014,12 +1015,17 @@ class CharacterWidget(QLabel):
                 f"{tone_instruction}\n"
                 f"\n위의 감정 상태와 말투 지침을 고려하여 활동에 대한 자연스러운 한두 문장의 반응을 생성하세요."
             )
-            log_event('dialogue.automatic_prompt', '활동 기반 Gemini 요청', category='대화·AI', trace_id=context['trace_id'], activity=info, activity_category=category, prompt=prompt, generation=generation, input_epoch=input_epoch)
+            image = capture_active_window_image()
+            if image is None:
+                log_event('dialogue.automatic_no_window', '활성 창 캡처 불가: 요청 차단', category='대화·AI', trace_id=context['trace_id'])
+                return
+            log_event('dialogue.automatic_prompt', '활동 기반 화면 요청 준비', category='대화·AI', trace_id=context['trace_id'], activity_category=category, generation=generation, input_epoch=input_epoch)
             
             request_time = time.time()
             response = request_gemini(
                 prompt,
                 config,
+                image=image,
                 response_schema=build_response_schema(),
                 system_instruction=build_system_instruction(),
                 log_context=context,
