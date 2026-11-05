@@ -1,4 +1,4 @@
-"""Local OCR/PII filtering. Only the returned image may leave this process."""
+"""Local OCR/PII filtering. Only the returned image may reach external APIs."""
 
 from __future__ import annotations
 
@@ -97,8 +97,9 @@ def _redact_text(text, known_values):
 def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None):
     """Return a masked RGB image and scrubbed request text, or raise safely.
 
-    Models are initialized lazily and serialized because Paddle predictors are
-    shared by the dialogue and activity worker threads. No images/text are saved.
+    Models are initialized lazily and serialized across request threads. Paddle
+    runs in a child process so CPU inference cannot hold the GUI's GIL.
+    No images/text are saved.
     Optional preview diagnostics stay in caller-owned memory and are never logged.
     """
     global _ocr
@@ -110,14 +111,9 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
         with _lock:
             _get_analyzer()
             if _ocr is None:
-                from paddleocr import PaddleOCR
+                from .ocr_worker import OCRWorker
 
-                _ocr = PaddleOCR(
-                    lang="korean", ocr_version="PP-OCRv5", device="cpu",
-                    enable_mkldnn=False,  # Windows oneDNN/PIR inference is unsupported on some Paddle versions.
-                    use_doc_orientation_classify=False, use_doc_unwarping=False,
-                    use_textline_orientation=False, text_rec_score_thresh=0.0,
-                )
+                _ocr = OCRWorker()
             pixels = np.array(image.convert("RGB"), copy=True)
             height, width = pixels.shape[:2]
             if not height or not width:
