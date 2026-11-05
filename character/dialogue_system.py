@@ -185,9 +185,10 @@ class DialogueSystem(QObject):
             previous._log_close_reason = 'replaced'
             previous.close()
         
-        # 새 말풍선 생성
-        bubble = (UserDialogueBubble(text, duration) if user
-                  else DialogueBubble(text, duration, style=self.bubble_style))
+        # Owned tool windows stay above the character when Windows raises it.
+        bubble = (UserDialogueBubble(text, duration, parent=self.character_widget) if user
+                  else DialogueBubble(text, duration, parent=self.character_widget,
+                                      style=self.bubble_style))
         bubble._log_context = dict(log_context or {})
         bubble.dialogue_closed.connect(lambda: self._on_bubble_closed(bubble))
         

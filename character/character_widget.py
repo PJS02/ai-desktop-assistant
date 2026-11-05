@@ -488,6 +488,11 @@ class CharacterWidget(QLabel):
         overlay = getattr(self, 'hand_overlay', None)
         if restored and overlay is not None:
             overlay.raise_above_character()
+        dialogue = getattr(self, 'dialogue_system', None)
+        if restored and dialogue is not None:
+            for bubble in (dialogue.current_dialogue, dialogue.current_user_dialogue):
+                if bubble is not None and bubble.isVisible():
+                    bubble.raise_()
         return restored
     
     def _initialize_character_renderer(self):
