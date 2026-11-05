@@ -20,6 +20,7 @@ from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAME
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
+from .game_rules import DEFAULT_GAME_RULES, normalize_game_rules, running_process_names
 
 
 class _SettingsComboBox(QComboBox):
@@ -81,6 +82,7 @@ class SettingsDialog(QDialog):
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
         local['voice'].setdefault('sync_bubble', False)
+        local['game_rules'] = normalize_game_rules(local.get('game_rules'))
         self.setWindowTitle('설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
         self.resize(700, 640)
@@ -107,6 +109,7 @@ class SettingsDialog(QDialog):
         self._recognition_page(local)
         self._ai_page(local)
         self._manual_page()
+        self._game_rules_page(local)
         self._preview_active = False
         self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
@@ -139,7 +142,16 @@ class SettingsDialog(QDialog):
             QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: border; width: 16px; border-left: 1px solid #dce2ea; background: #f6f8fb; }
             QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
             QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
-            QPushButton { padding: 8px 15px; }
+            QCheckBox { color: #202936; background: transparent; spacing: 8px; }
+            QCheckBox:disabled { color: #68778b; }
+            QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #607085; border-radius: 3px; background: #ffffff; }
+            QCheckBox::indicator:checked { background: #2463b6; border: 3px solid #b7cfee; }
+            QCheckBox::indicator:disabled { background: #e3e8f0; border-color: #9aa7b8; }
+            QPlainTextEdit { background: #ffffff; color: #202936; border: 1px solid #dce2ea; selection-background-color: #2463b6; selection-color: #ffffff; }
+            QPushButton { padding: 8px 15px; background: #ffffff; color: #202936; border: 1px solid #cbd5e1; border-radius: 5px; }
+            QPushButton:hover { background: #eef4fd; border-color: #2463b6; }
+            QPushButton:pressed, QPushButton:checked { background: #e8f1fd; color: #174b91; border-color: #2463b6; }
+            QPushButton:disabled { background: #edf0f5; color: #68778b; border-color: #dce2ea; }
             QPushButton#emotionButton { background: white; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
             QPushButton#emotionButton:checked { background: #e8f1fd; color: #2463b6; border: 2px solid #2463b6; font-weight: 600; }
             QLabel { color: #202936; }
@@ -226,12 +238,22 @@ class SettingsDialog(QDialog):
         for key in ('size_percent', 'movement_range_extra_percent'):
             self.character_inputs[key].valueChanged.connect(self._describe_movement_range)
         self._describe_movement_range()
-        self.show_hitboxes = QCheckBox('히트박스·인식한 창 표시')
+        self.show_hitboxes = QCheckBox('충돌 박스 표시 (개발자용)')
+        self.show_hitboxes.setToolTip('충돌 박스, 좌표, 활성 창 정보를 함께 켜거나 끕니다. 적용 버튼을 누르면 저장됩니다.')
         self.show_hitboxes.setChecked(local['character']['show_hitboxes'])
         form.addRow(self.show_hitboxes)
-        overlay_hint = QLabel('캐릭터의 표시 영역, 겹치는 창 영역과 인식한 창 이름을 표시합니다.')
+        overlay_hint = QLabel('켜면 충돌 박스, 좌표, 활성 창 정보를 표시합니다.\n'
+                             '끄면 개발자 표시만 숨기며, 충돌 판정은 유지됩니다. 적용 버튼을 눌러 저장하세요.')
         overlay_hint.setWordWrap(True)
         form.addRow('', overlay_hint)
+        self.window_occlusion = QCheckBox('다른 창 뒤에 숨기 · 오래 가려지면 찢고 나오기')
+        self.window_occlusion.setChecked(local['character'].get('window_occlusion', True))
+        self.window_occlusion.setToolTip('앞쪽 창에 가려진 채 8초가 지나면 종이를 찢는 효과로 나온 뒤 창이나 작업 표시줄 위를 걷습니다.')
+        form.addRow(self.window_occlusion)
+        self.game_spectator_enabled = QCheckBox('게임 활동에 반응하기 (관람·응원)')
+        self.game_spectator_enabled.setChecked(local['character'].get('game_spectator', True))
+        self.game_spectator_enabled.setToolTip('기존 STEAM/GAME/UNITY 분류를 사용합니다. 평소 이동과 자율활동을 유지하면서 가끔 팝콘을 먹거나 응원합니다.')
+        form.addRow(self.game_spectator_enabled)
         self.resolution_preset = self._combo([
             ('사용자 정의', None), ('720p · 1280 × 720', (1280, 720)),
             ('1080p · 1920 × 1080', (1920, 1080)), ('1440p · 2560 × 1440', (2560, 1440)),
@@ -853,6 +875,76 @@ class SettingsDialog(QDialog):
         self.model.setPlaceholderText('사용할 모델 ID 입력')
         form.addRow('모델 ID', self.model)
 
+    def _game_rules_page(self, local):
+        _, _, form = self._page('게임 목록', '게임으로 인식할 프로그램을 편집하세요. 한 줄에 하나씩 입력하고 적용을 눌러 저장합니다.')
+        self.game_rules_tab = self.tabs.widget(self.tabs.count()-1)
+        self.game_processes = QPlainTextEdit()
+        self.game_processes.setPlaceholderText('MyGame.exe\n실행 파일 이름을 정확히 입력하세요.')
+        self.game_processes.setPlainText('\n'.join(local['game_rules']['included_processes']))
+        self.game_processes.setMinimumHeight(90)
+        self.game_processes.setMaximumHeight(130)
+        self.game_processes.setAccessibleName('게임으로 등록한 실행 파일 목록')
+        form.addRow('등록한 게임', self.game_processes)
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        self.game_running_processes = _SettingsComboBox()
+        line.addWidget(self.game_running_processes, 1)
+        add = QPushButton('목록에 추가')
+        add.clicked.connect(self._add_running_game)
+        line.addWidget(add)
+        refresh = QPushButton('새로고침')
+        refresh.clicked.connect(self._refresh_game_processes)
+        line.addWidget(refresh)
+        form.addRow('실행 중인 앱', row)
+        self.game_rules_hint = QLabel('게임 실행 파일 이름으로 정확히 일치시킵니다. 삭제하려면 해당 줄을 지우세요.')
+        self.game_rules_hint.setWordWrap(True)
+        form.addRow('', self.game_rules_hint)
+        self.game_keywords = QPlainTextEdit()
+        self.game_keywords.setPlainText('\n'.join(local['game_rules']['keywords']))
+        self.game_keywords.setMinimumHeight(75)
+        self.game_keywords.setMaximumHeight(110)
+        self.game_keywords.setAccessibleName('게임 분류 키워드')
+        form.addRow('기본 키워드', self.game_keywords)
+        reset = QPushButton('키워드 기본값 복원')
+        reset.clicked.connect(lambda: self.game_keywords.setPlainText('\n'.join(DEFAULT_GAME_RULES['keywords'])))
+        form.addRow('', reset)
+        self.game_excluded_processes = QPlainTextEdit()
+        self.game_excluded_processes.setPlaceholderText('게임으로 잘못 인식한 프로그램.exe')
+        self.game_excluded_processes.setPlainText('\n'.join(local['game_rules']['excluded_processes']))
+        self.game_excluded_processes.setMinimumHeight(75)
+        self.game_excluded_processes.setMaximumHeight(110)
+        self.game_excluded_processes.setAccessibleName('게임 분류에서 제외할 실행 파일 목록')
+        form.addRow('제외할 앱', self.game_excluded_processes)
+        hint = QLabel('제외 목록이 등록 목록·키워드보다 우선합니다. 게임 관람 동작은 캐릭터 탭의 게임 활동 반응 설정을 따릅니다.')
+        hint.setWordWrap(True)
+        form.addRow('', hint)
+        self._refresh_game_processes()
+
+    def _refresh_game_processes(self):
+        selected = self.game_running_processes.currentData()
+        self.game_running_processes.clear()
+        self.game_running_processes.addItem('실행 중인 프로그램 선택', None)
+        try:
+            for name in running_process_names():
+                self.game_running_processes.addItem(name, name)
+        except OSError:
+            self.game_rules_hint.setText('실행 중인 앱을 읽지 못했습니다. 위 목록에 실행 파일 이름을 직접 입력할 수 있습니다.')
+        index = self.game_running_processes.findData(selected)
+        if index >= 0:
+            self.game_running_processes.setCurrentIndex(index)
+
+    def _add_running_game(self):
+        process = self.game_running_processes.currentData()
+        if not process:
+            self.game_rules_hint.setText('추가할 프로그램을 선택하세요.')
+            return
+        values = self.game_processes.toPlainText().splitlines()
+        if process not in {name.strip().lower() for name in values}:
+            values.append(process)
+            self.game_processes.setPlainText('\n'.join(values))
+        self.game_rules_hint.setText(f'{process}을(를) 추가했습니다. 적용을 눌러 저장하세요.')
+
     def changes(self):
         local = {'character': {'width': self.width.value(), 'height': self.height.value(),
                                'personality': self.personality.currentData(),
@@ -863,7 +955,16 @@ class SettingsDialog(QDialog):
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
+        local['character']['window_occlusion'] = self.window_occlusion.isChecked()
+        local['character']['game_spectator'] = self.game_spectator_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
+        game_rules = normalize_game_rules({
+            'included_processes': self.game_processes.toPlainText().splitlines(),
+            'keywords': self.game_keywords.toPlainText().splitlines(),
+            'excluded_processes': self.game_excluded_processes.toPlainText().splitlines(),
+        })
+        if game_rules != self.local_baseline['game_rules']:
+            changed['game_rules'] = game_rules
         dialogue = {'style': self.dialogue_style.currentData()}
         baseline = {'style': normalize_dialogue_style(self.local_baseline.get('dialogue', {}).get('style'))}
         if dialogue != baseline:
@@ -884,7 +985,13 @@ class SettingsDialog(QDialog):
     def submit(self, close):
         if self.pending:
             return
-        changes = self.changes()
+        try:
+            changes = self.changes()
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            self.tabs.setCurrentWidget(self.game_rules_tab)
+            self.game_processes.setFocus()
+            return
         if 'ai' in changes['local'] and changes['local']['ai']['api_key'] and not changes['local']['ai']['model']:
             self.status.setText('API 키를 사용하려면 모델 ID를 입력하세요.')
             self.tabs.setCurrentIndex(3)

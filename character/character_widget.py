@@ -28,6 +28,11 @@ from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
 from .automatic_actions import AutomaticActions
+from .hide_and_seek import HideAndSeek
+from .dialogue_persona import character_voice
+from .window_presence import WindowPresence
+from .game_spectator import GameSpectator
+from .game_detection import activity_category, game_context_instruction
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
@@ -147,6 +152,8 @@ class CharacterWidget(QLabel):
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.show_debug = options['show_hitboxes']
+        self.window_occlusion = options['window_occlusion']
+        self.game_spectator_enabled = options['game_spectator']
 
         # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
         self._show_perception_console_callback = on_show_perception_console
@@ -316,6 +323,8 @@ class CharacterWidget(QLabel):
         
         # 지면 Y좌표 = 화면 맨 아래 (커스텀 해상도 사용)
         ground_y = self._screen_origin.y() + screen_height
+        if screen is not None:
+            ground_y = min(ground_y, screen.availableGeometry().bottom()+1)
         
         # 기본 ground surface 추가 (화면 전체 너비)
         ground_surface = Surface("ground", ground_y, x_min=self._screen_origin.x(),
@@ -410,6 +419,9 @@ class CharacterWidget(QLabel):
         self._greeting_retry_timer.timeout.connect(self._try_user_greeting)
         self.manual_control = ManualControl(self, self)
         self.automatic_actions = AutomaticActions(self, self)
+        self.hide_and_seek = HideAndSeek(self)
+        self.window_presence = WindowPresence(self)
+        self.game_spectator = GameSpectator(self)
         self.dialogue_system.ai_motion_changed.connect(self.automatic_actions.set_ai_state)
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
@@ -560,6 +572,8 @@ class CharacterWidget(QLabel):
             self.rig_view.set_overlay_pixmap(overlay)
 
     def _play_rig_action(self, action):
+        if getattr(getattr(self, "game_spectator", None), "is_active", False):
+            return
         if self.rig_view is None or self.is_dragging or not self.on_ground:
             return
         self._move_timer.stop()
@@ -639,6 +653,8 @@ class CharacterWidget(QLabel):
         for surface in getattr(self, 'surfaces', ()):
             if surface.name == 'ground':
                 surface.y_level = geometry.y() + geometry.height()
+                if screen is not None:
+                    surface.y_level = min(surface.y_level, screen.availableGeometry().bottom()+1)
                 surface.x_min = geometry.x()
                 surface.x_max = geometry.x() + geometry.width()
         return geometry
@@ -703,6 +719,10 @@ class CharacterWidget(QLabel):
             self._greeting_retry_timer.start()
 
     def _try_user_greeting(self):
+        if getattr(getattr(self, "game_spectator", None), "is_active", False):
+            return
+        if getattr(getattr(self, 'window_presence', None), 'blocks_physics', False):
+            return False
         deadline = self._pending_user_greeting_until
         if deadline is None:
             return False
@@ -748,6 +768,12 @@ class CharacterWidget(QLabel):
                 log_event('dialogue.automatic_cancelled', '앱 종료로 자동 응답 무효화', category='대화·AI', trace_id=context.get('trace_id'))
             getattr(self, '_automatic_log_contexts', {}).clear()
         self._character_closing = True
+        if hasattr(self, "game_spectator"):
+            self.game_spectator.shutdown()
+        if hasattr(self, "window_presence"):
+            self.window_presence.shutdown()
+        if hasattr(self, 'hide_and_seek'):
+            self.hide_and_seek.cancel()
         self._automatic_request_generation = getattr(self, '_automatic_request_generation', 0) + 1
         self._automatic_request_active = False
         if hasattr(self, 'manual_control'):
@@ -922,6 +948,10 @@ class CharacterWidget(QLabel):
 
     def _body_contains(self, position):
         """All pointer interactions use the same local box as physics/debug."""
+        if not self.mask().isEmpty() and not self.mask().contains(position):
+            return False
+        if self.rig_view is not None:
+            return self.rig_view.scene_contains(position, self._physics_body_rect())
         return self._physics_body_rect().contains(position)
 
     def _refresh_body_hover(self, position=None):
@@ -942,6 +972,9 @@ class CharacterWidget(QLabel):
         Only an established, unmoved surface may compensate for pose changes.
         New windows, lost support and flight remain entirely under gravity.
         """
+        if (getattr(getattr(self, 'hide_and_seek', None), 'is_active', False)
+                or getattr(getattr(self, 'window_presence', None), 'blocks_physics', False)):
+            return
         if (not getattr(self, 'on_ground', False) or getattr(self, 'is_dragging', False)
                 or getattr(self, 'is_jumping', False) or getattr(self, '_character_closing', False)
                 or getattr(self, 'velocity_y', 0) != 0):
@@ -983,6 +1016,7 @@ class CharacterWidget(QLabel):
         valid_surfaces = [
             surface for surface in self.surfaces
             if surface.y_level >= foot_y
+            and (not hasattr(self, "window_presence") or self.window_presence.surface_visible(surface, left, right))
             and right > surface.x_min and left < surface.x_max
         ]
         return min(valid_surfaces, key=lambda surface: surface.y_level, default=None)
@@ -1000,6 +1034,10 @@ class CharacterWidget(QLabel):
             print(f"[오류] Gemini 설정 로드 실패: {e}")
     
     def _on_activity_monitor(self, *, manual=False):
+        if not manual and getattr(getattr(self, "game_spectator", None), "is_active", False):
+            return False
+        if not manual and getattr(getattr(self, 'window_presence', None), 'blocks_physics', False):
+            return False
         """Start ambient work only when the user conversation has released the UI."""
         reason = ('context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
                   else 'closing' if getattr(self, '_character_closing', False)
@@ -1021,6 +1059,8 @@ class CharacterWidget(QLabel):
         epoch = self.dialogue_system.user_input_epoch
         emotion = self.mood_system.get_emotion_description_for_prompt()
         tone = self.mood_system.get_emotion_tone_instructions()
+        voice_config = dict(self.gemini_config)
+        voice_config['character_voice'] = character_voice(self.personality_system)
         self._automatic_request_active = True
         context = {'trace_id': new_trace_id('ambient'), 'source': 'manual_generation' if manual else 'activity',
                    'generation': generation, 'input_epoch': epoch}
@@ -1031,7 +1071,7 @@ class CharacterWidget(QLabel):
         try:
             thread = threading.Thread(
                 target=self._check_active_window_async,
-                args=(generation, epoch, dict(self.gemini_config), emotion, tone, context),
+                args=(generation, epoch, voice_config, emotion, tone, context),
                 daemon=True, name=f'character-activity-{generation}')
             if manual:
                 self._mark_character_interaction()
@@ -1066,20 +1106,12 @@ class CharacterWidget(QLabel):
             title = info.get('title', '')
             
             # 활동 카테고리 결정
-            category = "unknown"
-            if 'chrome' in process or 'firefox' in process or 'edge' in process:
-                category = "web"
-            elif 'vscode' in process or 'code' in process:
-                category = "development"
-            elif 'game' in process or 'steam' in process or 'unity' in process:
-                category = "game"
-            elif 'discord' in process or 'slack' in process or 'telegram' in process:
-                category = "communication"
-            else:
-                category = "work"
-            
-            # 감정 정보가 포함된 향상된 프롬프트 생성
+            category = activity_category(process)
+            game_instruction = game_context_instruction() if category == 'game' else ''
+
+            # Game context is explicit about the limits of process-only detection.
             prompt = (
+                f"{config.get('character_voice', '')}\n\n{game_instruction}\n"
                 f"입력 정보:\n"
                 f"- 활동 분류: {category}\n"
                 f"- 프로세스: {process}\n"
@@ -1104,7 +1136,7 @@ class CharacterWidget(QLabel):
                 config,
                 image=image,
                 response_schema=build_response_schema(),
-                system_instruction=build_system_instruction(),
+                system_instruction=build_system_instruction(config.get('character_voice')),
                 log_context=context,
             )
             failed = DialogueSystem._is_error_response(response)
@@ -1199,6 +1231,15 @@ class CharacterWidget(QLabel):
         self.idle_counter = 0
 
     def _cancel_autonomous_behavior(self) -> None:
+        if getattr(getattr(self, "game_spectator", None), "is_active", False):
+            self.game_spectator.stop()
+            return
+        if getattr(getattr(self, 'window_presence', None), 'is_active', False):
+            self.window_presence.cancel()
+            return
+        if getattr(getattr(self, 'hide_and_seek', None), 'is_active', False):
+            self.hide_and_seek.cancel()
+            return
         if not getattr(self, "_autonomous_behavior_active", False):
             return
         self._autonomous_behavior_active = False
@@ -1211,7 +1252,11 @@ class CharacterWidget(QLabel):
 
     def _run_autonomous_behavior(self, event_name: str) -> bool:
         """Run a short visible action after the idle-only selector picks an intent."""
+        if self.game_spectator.try_activity(event_name):
+            return True
         if event_name == "self_play":
+            if random.random() < .45 and self.hide_and_seek.start():
+                return True
             was_jumping = self.is_jumping
             self.jump()
             return self.is_jumping and not was_jumping
@@ -1276,6 +1321,10 @@ class CharacterWidget(QLabel):
         self.update_action(mood)
 
     def _maybe_run_autonomous_event(self, idle_seconds: float) -> None:
+        if getattr(getattr(self, "game_spectator", None), "is_active", False):
+            return
+        if getattr(getattr(self, "window_presence", None), "blocks_physics", False):
+            return
         """상호작용이 없을 때 낮은 빈도로 캐릭터 혼자 이벤트를 발생시킨다."""
         if self._manual_control_active():
             return
@@ -1354,6 +1403,10 @@ class CharacterWidget(QLabel):
 
     def update_action(self, mood):
         """Russell 기반 17개 감정을 애니메이션에 매핑"""
+        if (getattr(getattr(self, 'hide_and_seek', None), 'is_active', False)
+                or getattr(getattr(self, 'window_presence', None), 'blocks_physics', False)
+                or getattr(getattr(self, 'game_spectator', None), 'is_active', False)):
+            return
         if CharacterWidget._cham_game_active(self):
             return
         if self.rig_view is not None:
@@ -1659,6 +1712,10 @@ class CharacterWidget(QLabel):
         if not self._refresh_body_hover(event.position().toPoint()):
             event.ignore()
             return
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.hide_and_seek.discover()):
+            event.accept()
+            return
         hand_interactions = getattr(self, 'hand_interactions', None)
         if hand_interactions is not None:
             hand_interactions.cancel('mouse_input')
@@ -1687,6 +1744,8 @@ class CharacterWidget(QLabel):
 
             self.is_dragging = True
             self.drag_time = 0
+            self._drag_sample_at = time.monotonic()
+            self._rough_drag_seconds = 0.0
             self._drag_trace_id = new_trace_id('drag')
             self._drag_start_position = (self.x(), self.y())
             log_event('character.drag_started', '드래그 시작', category='캐릭터 상태', trace_id=self._drag_trace_id, position=self._drag_start_position)
@@ -1704,6 +1763,10 @@ class CharacterWidget(QLabel):
             self.update_render("hovering")
 
     def mouseMoveEvent(self, event):
+        if self.hide_and_seek.is_active:
+            self._refresh_body_hover(event.position().toPoint())
+            event.accept()
+            return
         if self.is_dragging and self.drag_pos:
             current_pos = event.globalPosition().toPoint()
             delta = current_pos - self.drag_pos
@@ -1716,9 +1779,18 @@ class CharacterWidget(QLabel):
             self._drag_velocity_x = delta.x()
             self._drag_velocity_y = delta.y()
             
-            # 빠른 드래그 감지 (100px 이상) → on_drag_hard 트리거
-            if drag_distance > 100:
+            # Only sustained very fast movement counts as rough handling.
+            now = time.monotonic()
+            sample_seconds = max(0.001, now - self._drag_sample_at)
+            self._drag_sample_at = now
+            speed = drag_distance / sample_seconds
+            if drag_distance >= 20 and speed >= 2500:
+                self._rough_drag_seconds += min(sample_seconds, 0.05)
+            else:
+                self._rough_drag_seconds = max(0.0, self._rough_drag_seconds - sample_seconds * 2)
+            if self._rough_drag_seconds >= 0.15:
                 self.mood_system.on_drag_hard()
+                self._rough_drag_seconds = 0.0
                 print(f"[on_drag_hard 트리거] 속도={drag_distance:.1f}px, vx={delta.x():.1f}, vy={delta.y():.1f}")
             
             # 캐릭터를 이동하되, 화면 범위 내로 제한
@@ -1985,6 +2057,12 @@ class CharacterWidget(QLabel):
         log_action.triggered.connect(self.show_log_window)
         settings_action = menu.addAction("설정")
         settings_action.triggered.connect(self.show_settings)
+        hide_action = menu.addAction('숨바꼭질 하기')
+        hide_action.setToolTip('캐릭터를 창 위나 양옆에 두면 가장자리에서 얼굴을 빼꼼 내밀어요.')
+        hide_action.triggered.connect(self.show_hide_and_seek)
+        if self.hide_and_seek.is_active:
+            stop_hide_action = menu.addAction('숨바꼭질 그만하기')
+            stop_hide_action.triggered.connect(self.hide_and_seek.cancel)
         console_action = menu.addAction("사용자인식 콘솔")
         console_action.triggered.connect(self.show_perception_console)
         show_action = menu.addAction("감정 판단 근거 보기")
@@ -2035,7 +2113,15 @@ class CharacterWidget(QLabel):
             self.set_pixmap_with_flip(self.current_pixmap)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, running_speed=None, personality_traits=None, trace_id=None):
+    def show_hide_and_seek(self):
+        if self.hide_and_seek.is_active:
+            return
+        self._mark_character_interaction()
+        if not self.hide_and_seek.start(manual=True):
+            self.dialogue_system.show_dialogue(
+                self.hide_and_seek.failure_reason or '지금은 숨바꼭질을 시작하기 어려워.', duration=3000)
+
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, running_speed=None, personality_traits=None, window_occlusion=None, game_spectator=None, trace_id=None):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
         same_width = self.custom_screen_width == requested_width
@@ -2053,6 +2139,8 @@ class CharacterWidget(QLabel):
             'jump_height': self.jump_height if jump_height is None else jump_height,
             'running_speed': self.running_speed if running_speed is None else running_speed,
             'show_hitboxes': self.show_debug if show_hitboxes is None else show_hitboxes,
+            'window_occlusion': self.window_occlusion if window_occlusion is None else window_occlusion,
+            'game_spectator': self.game_spectator_enabled if game_spectator is None else game_spectator,
             'movement_range_extra_percent': (self.movement_range_extra_percent
                                             if movement_range_extra_percent is None else movement_range_extra_percent),
             'boredom_minutes': (self.autonomous_needs.boredom_minutes
@@ -2070,6 +2158,12 @@ class CharacterWidget(QLabel):
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.autonomous_needs.set_boredom_minutes(options['boredom_minutes'])
         self.set_show_hitboxes(options['show_hitboxes'])
+        self.window_occlusion = options['window_occlusion']
+        self.game_spectator_enabled = options['game_spectator']
+        if not self.game_spectator_enabled:
+            self.game_spectator.stop()
+        if not self.window_occlusion:
+            self.window_presence.cancel()
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)
         bounds_changed = not (same_width and same_height)
         self.custom_screen_width, self.custom_screen_height = requested_width, requested_height
@@ -2552,11 +2646,15 @@ class CharacterWidget(QLabel):
                 print(f"[드래그 중 3초 도달] drag_time={self.drag_time:.1f}초 - 아이템 반환 시작")
                 self.release_items_to_desktop()
             
-            self.mood_system.apply_drag_displeasure(self.drag_time)
+            # Holding and ordinary repositioning do not affect displeasure.
             # hovering 애니메이션은 draq 시작 시에만 로드됨
     
     # 캐릭터 랜덤 이동
     def random_move(self):
+        if getattr(getattr(self, "game_spectator", None), "is_active", False):
+            return
+        if getattr(getattr(self, "window_presence", None), "blocks_physics", False):
+            return
         if CharacterWidget._cham_game_active(self):
             return
         if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
@@ -2843,6 +2941,10 @@ class CharacterWidget(QLabel):
         Legacy velocities are pixels per 1/60 second and gravity is pixels per
         reference frame squared. Fractional positions survive between callbacks.
         """
+        if (getattr(getattr(self, 'hide_and_seek', None), 'is_active', False)
+                or getattr(getattr(self, 'window_presence', None), 'blocks_physics', False)):
+            self._gravity_last_time = time.monotonic()
+            return
         if dt is None:
             if hasattr(self, '_gravity_last_time'):
                 now = time.monotonic()
@@ -2904,6 +3006,8 @@ class CharacterWidget(QLabel):
         if (self.on_ground and not self.is_jumping and self.velocity_y >= 0
                 and standing is not None
                 and standing in getattr(self, 'surfaces', [standing])
+                and (not hasattr(self, 'window_presence') or self.window_presence.surface_visible(
+                    standing, current_x+body.x(), current_x+body.x()+body.width()))
                 and standing.y_level == previous_level
                 and abs(current_y + previous_bottom - standing.y_level) <= 1
                 and current_x + body.x() + body.width() > standing.x_min

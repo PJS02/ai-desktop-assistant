@@ -376,6 +376,9 @@ class PreparationOverlay(QWidget):
         super().hideEvent(event)
 
     def reposition(self):
+        if getattr(getattr(self.character, 'window_presence', None), 'blocks_physics', False):
+            self.hide()
+            return
         if self._completed or not self.character.isVisible():
             self.hide()
             self.follow_timer.stop()

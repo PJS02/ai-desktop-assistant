@@ -263,6 +263,54 @@
         p.armNear = 8 + 4 * s; p.elbowNear = 31 + 8 * Math.sin(breathe - 0.4);
         p.wristNear = 3 * Math.sin(breathe - 0.8);
         break;
+      case 'spectate': {
+        const t=((time%9)+9)%9;
+        const eat=smoothstep((t-1.1)/1.0)*(1-smoothstep((t-3.3)/1.1));
+        p.snackGesture=eat;
+        p.headAngle=-2+1.1*Math.sin(time*1.2);
+        p.lean=.7*Math.sin(time*.8);
+        p.armNear=12;p.elbowNear=65+35*eat;p.wristNear=-5;
+        p.armFar=-14;p.elbowFar=48;p.wristFar=5;
+        p.bodyY=-1.1*(1-c);
+        break;
+      }
+      case 'break_out': {
+        const push=smoothstep(time/.6)*(1-smoothstep((time-1.1)/.8));
+        p.idleGesture=.45;
+        p.armNear=push*30;p.armFar=-push*27;
+        p.elbowNear=8+push*45;p.elbowFar=6+push*42;
+        p.wristNear=-push*8;p.wristFar=push*7;
+        p.lean=-push*2;p.headAngle=push*(-4+Math.sin(time*4));
+        p.bodyY+=push*2;
+        break;
+      }
+      case 'peek_left':
+      case 'peek_right': {
+        // Opposite lean for each edge: the head emerges before the shoulders.
+        const direction=emotion==='peek_right'?-1:1;
+        const enter=smoothstep(time/.7);
+        p.idleGesture=.35;
+        p.lean=direction*enter*(12+1.2*Math.sin(time*1.6));
+        p.headAngle=-direction*enter*(5+1.5*Math.sin(time*1.6-.5));
+        p.armNear=enter*18;p.elbowNear=8+enter*38;
+        p.armFar=-enter*12;p.elbowFar=6+enter*31;
+        p.wristNear=-enter*4;p.wristFar=enter*3;
+        p.bodyY+=enter*.7*Math.sin(time*1.8);
+        break;
+      }
+      case 'peek': {
+        // Gentle asymmetry and a delayed head follow keep the peek inquisitive.
+        const enter=smoothstep(time/.7);
+        p.idleGesture=.55;
+        p.lean=enter*(2.4+1.0*Math.sin(time*1.8));
+        p.headAngle=enter*(-6+1.8*Math.sin(time*1.8-.55));
+        p.bodyY+=enter*(2+.8*Math.sin(time*2.1));
+        p.armNear=enter*14;p.elbowNear=8+enter*26;
+        p.armFar=-enter*10;p.elbowFar=6+enter*20;
+        p.wristNear=enter*(-4+1.2*Math.sin(time*2-.4));
+        p.wristFar=enter*3;
+        break;
+      }
       case 'thinking':
         p.exprThinking=1;p.thinkGesture=1;
         p.headAngle = -4 + 0.5 * s; p.armNear = 12; p.elbowNear = 100; p.wristNear = -5+1.5*s;
