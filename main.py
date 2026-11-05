@@ -28,11 +28,6 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from dotenv import load_dotenv
 
-# True: 활성 창·프로그램을 주기적으로 감지하고 자동 대화를 생성합니다.
-# False: 자동 감지를 끄고 사용자가 입력한 대화만 처리합니다.
-AUTO_PROGRAM_DETECTION = False
-
-
 load_dotenv()
 register_environment_secrets()
 
@@ -341,7 +336,8 @@ def main():
 
     from character.character_widget import CharacterWidget
     from character.config_manager import (load_config, load_character_options,
-                                          load_hand_overlay_options, load_personality_traits)
+                                          load_hand_overlay_options, load_personality_traits,
+                                          load_dialogue_options)
     from character.settings_controller import SettingsController
     from hand_overlay.controller import HandOverlayController
     from hand_overlay.interaction_host import HandInteractionController
@@ -364,7 +360,7 @@ def main():
         screen_width=width,
         screen_height=height,
         personality_preset=personality,
-        auto_program_detection=AUTO_PROGRAM_DETECTION,
+        dialogue_options=load_dialogue_options(),
         personality_traits=load_personality_traits(),
         on_show_perception_console=mediapipe_manager.show_console,
         on_show_log_window=log_window.show_and_raise,

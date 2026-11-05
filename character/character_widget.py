@@ -29,6 +29,7 @@ from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
 from .automatic_actions import AutomaticActions
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
+from .dialogue_options import normalize_dialogue_options
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 
@@ -130,7 +131,7 @@ class CharacterWidget(QLabel):
         screen_width=None,
         screen_height=None,
         personality_preset=None,
-        auto_program_detection=True,
+        auto_program_detection=None,
         on_show_perception_console=None,
         on_show_log_window=None,
         on_close_log_window=None,
@@ -138,6 +139,7 @@ class CharacterWidget(QLabel):
         on_show_settings=None,
         character_options=None,
         personality_traits=None,
+        dialogue_options=None,
     ):
         super().__init__()
         options = normalize_character_options(character_options)
@@ -372,21 +374,13 @@ class CharacterWidget(QLabel):
         self.last_dialogue_time = 0  # 마지막 대사 시간
         self.dialogue_cooldown = 5  # 수동 대화 쿨다운: 5초
         self.last_auto_dialogue_time = 0  # 마지막 자동 대사 시간
-        self.auto_dialogue_cooldown = 20  # 자동 감지 쿨다운: 20초 (API 제한 방지)
         
         # Gemini 설정 파일 로드
         self._load_gemini_config()
 
-        if HAS_CONTEXT and auto_program_detection:
-            
-            # 활성 창 모니터링 타이머 (30초마다 체크, 120초 쿨다운으로 최대 2분마다 요청)
-            self._activity_monitor_timer = QTimer()
-            self._activity_monitor_timer.timeout.connect(self._on_activity_monitor)
-            self._activity_monitor_timer.start(30000)  # 30초마다 체크
-            
-            print("[자동 대사 생성 시스템 초기화 완료]")
-        else:
-            print("[자동 대사 생성 시스템 비활성화]")
+        # 활성 창 모니터링 타이머: 감지 여부와 주기는 저장된 설정을 적용한다.
+        self._activity_monitor_timer = QTimer(self)
+        self._activity_monitor_timer.timeout.connect(self._on_activity_monitor)
         
         
         
@@ -394,6 +388,10 @@ class CharacterWidget(QLabel):
         self.dialogue_system = DialogueSystem(self)
         self._automatic_request_generation = 0
         self._automatic_request_active = False
+        dialogue_options = normalize_dialogue_options(dialogue_options)
+        if auto_program_detection is not None:
+            dialogue_options['auto_program_detection'] = auto_program_detection
+        self.apply_dialogue_options(dialogue_options)
         print("[대화 시스템 초기화 완료]")
         
         # 신호 연결
@@ -988,6 +986,21 @@ class CharacterWidget(QLabel):
         return min(valid_surfaces, key=lambda surface: surface.y_level, default=None)
 
     # ====== 자동 대사 생성 시스템 ======
+    def apply_dialogue_options(self, options):
+        options = normalize_dialogue_options(options, strict=True)
+        self.auto_program_detection = options['auto_program_detection']
+        self.auto_dialogue_cooldown = options['auto_dialogue_cooldown']
+        interval = options['activity_monitor_interval'] * 1000
+        if self._activity_monitor_timer.interval() != interval:
+            self._activity_monitor_timer.setInterval(interval)
+        if HAS_CONTEXT and self.auto_program_detection:
+            if not self._activity_monitor_timer.isActive():
+                self._activity_monitor_timer.start()
+        else:
+            self._activity_monitor_timer.stop()
+        self.dialogue_system.request_cooldown = options['request_cooldown']
+        self.dialogue_system._process_next_input()
+
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
         try:
@@ -1001,7 +1014,8 @@ class CharacterWidget(QLabel):
     
     def _on_activity_monitor(self, *, manual=False):
         """Start ambient work only when the user conversation has released the UI."""
-        reason = ('context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
+        reason = ('detection_disabled' if not manual and not getattr(self, 'auto_program_detection', True)
+                  else 'context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
                   else 'closing' if getattr(self, '_character_closing', False)
                   else 'sleeping' if not manual and getattr(self, '_automatic_pose', None) == 'sleep'
                   else 'conversation_busy' if (self.dialogue_system.is_conversation_busy(include_hold=False)
@@ -1142,6 +1156,10 @@ class CharacterWidget(QLabel):
             self.last_auto_dialogue_time = request_time
         if info:
             self.last_detected_activity = info
+        if context.get('source') != 'manual_generation' and not getattr(self, 'auto_program_detection', True):
+            log_event('dialogue.automatic_discarded', '자동 감지가 꺼져 응답을 표시하지 않습니다.',
+                      category='대화·AI', trace_id=context.get('trace_id'), reason='detection_disabled')
+            return
         if text:
             options = {'allow_during_hold': True} if context.get('source') == 'manual_generation' else {}
             shown = _with_log_context(self.dialogue_system.show_automatic_response, text, expected_input_epoch=epoch,

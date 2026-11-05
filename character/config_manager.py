@@ -4,6 +4,7 @@ from pathlib import Path
 from app_logging import log_event
 from .motion_options import normalize_character_options
 from .dialogue_styles import normalize_dialogue_style
+from .dialogue_options import normalize_dialogue_options
 from .hand_overlay_options import normalize_hand_overlay_options
 from .personality_system import BigFivePersonality, PersonalitySystem
 
@@ -88,6 +89,16 @@ def load_hand_overlay_options():
         return normalize_hand_overlay_options()
 
 
+def load_dialogue_options():
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
+        return normalize_dialogue_options(data.get('dialogue', {}))
+    except (OSError, ValueError, AttributeError) as exc:
+        log_event('settings.dialogue.fallback', '대화 설정을 기본값으로 복구했습니다.',
+                  level='WARNING', path=str(CONFIG_FILE), error=str(exc))
+        return normalize_dialogue_options()
+
+
 def save_hand_overlay_options(options, *, trace_id=None):
     """Save hand settings atomically while preserving the other config sections."""
     values = normalize_hand_overlay_options(options, strict=True)
@@ -108,7 +119,7 @@ def save_hand_overlay_options(options, *, trace_id=None):
 
 
 def save_config(width, height, personality=PersonalitySystem.DEFAULT_PRESET, character_options=None,
-                dialogue_style=None, personality_traits=None, *, trace_id=None):
+                dialogue_style=None, personality_traits=None, *, trace_id=None, dialogue_options=None):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -123,10 +134,13 @@ def save_config(width, height, personality=PersonalitySystem.DEFAULT_PRESET, cha
             merged.update(BigFivePersonality.from_dict(personality_traits, strict=True).to_dict())
             config['personality_traits'] = merged
             config['personality_traits_version'] = 2
-        if dialogue_style is not None:
+        if dialogue_style is not None or dialogue_options is not None:
             dialogue = config.get('dialogue', {})
             dialogue = dialogue.copy() if isinstance(dialogue, dict) else {}
-            dialogue['style'] = normalize_dialogue_style(dialogue_style, strict=True)
+            if dialogue_style is not None:
+                dialogue['style'] = normalize_dialogue_style(dialogue_style, strict=True)
+            if dialogue_options is not None:
+                dialogue.update(normalize_dialogue_options(dialogue_options, strict=True))
             config['dialogue'] = dialogue
         if character_options is not None:
             saved_options = config.get('character_options', {})
