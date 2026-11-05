@@ -164,6 +164,35 @@ class GeminiTransportTests(unittest.TestCase):
         self.assertEqual(send.call_args.kwargs["log_context"]["trace_id"], "snapshot-test")
         fake.automatic_response_ready.emit.assert_called_once()
 
+    def test_automatic_worker_preserves_failure_status_after_normalization(self):
+        fake = SimpleNamespace(_character_closing=False,
+                               dialogue_system=SimpleNamespace(_process_gemini_response=lambda raw: "Please try again"),
+                               automatic_response_ready=Mock())
+        for response in ("[gemini error] HTTP Error 503: Service Unavailable",
+                         "[gemini error] screen privacy processing failed"):
+            with self.subTest(response=response), patch(
+                    "character.character_widget.get_active_window_info",
+                    return_value={"process": "code.exe", "title": "test"}), patch(
+                    "character.character_widget.capture_active_window_image", return_value=Mock()), patch(
+                    "character.character_widget.request_gemini", return_value=response):
+                CharacterWidget._check_active_window_async(fake, 1, 2, self.config, "calm", "friendly")
+                result = fake.automatic_response_ready.emit.call_args.args[0]
+                self.assertEqual(result[2], "Please try again")
+                self.assertTrue(result[-1])
+
+    def test_manual_generation_reports_capture_failure_without_sending(self):
+        fake = SimpleNamespace(_character_closing=False, automatic_response_ready=Mock())
+        with patch("character.character_widget.get_active_window_info",
+                   return_value={"process": "code.exe", "title": "test"}), patch(
+                "character.character_widget.capture_active_window_image", return_value=None), patch(
+                "character.character_widget.request_gemini") as send:
+            CharacterWidget._check_active_window_async(fake, 1, 2, self.config, "calm", "friendly",
+                                                       {"source": "manual_generation", "trace_id": "capture-test"})
+        send.assert_not_called()
+        result = fake.automatic_response_ready.emit.call_args.args[0]
+        self.assertTrue(result[2])
+        self.assertTrue(result[-1])
+
 
 class QueuedMemoryTests(unittest.TestCase):
     @classmethod
@@ -181,6 +210,7 @@ class QueuedMemoryTests(unittest.TestCase):
                 "character.dialogue_system.load_dialogue_style", return_value="default"):
             self.dialogue = DialogueSystem(character, tts=Mock(), time_provider=lambda: self.now[0])
         self.dialogue.show_dialogue = Mock()
+        self.dialogue.show_user_dialogue = Mock()
         self.dialogue.show_ai_response = Mock()
         self.dialogue.gemini_config = {"api_key": "first-key", "model": "test-model"}
         self.addCleanup(self.memory.close)
@@ -241,6 +271,39 @@ class QueuedMemoryTests(unittest.TestCase):
         self.assertEqual([item.role for item in self.dialogue.conversation_memory.recent()], ["user"])
         with closing(sqlite3.connect(self.memory.database_path)) as connection:
             self.assertEqual(connection.execute("SELECT recall_count FROM memories").fetchall(), [(0,)])
+
+    def test_memory_reply_waits_for_voice_playback_and_keeps_next_turn_queued(self):
+        self.dialogue.show_ai_response = lambda *args, **kwargs: DialogueSystem.show_ai_response(
+            self.dialogue, *args, **kwargs)
+        self.dialogue.tts.sync_bubble = True
+        self.dialogue.tts.enabled = True
+        self.dialogue.tts.speak.side_effect = lambda text: self.dialogue._on_tts_busy_changed(True)
+        self.dialogue._response_provider = lambda *_: memory_response(importance=8, memory_summary="cats preference")
+        self.dialogue.ask_ai("cats first")
+        self.pump_until(lambda: not self.dialogue.is_ai_responding)
+        self.assertEqual(self.memory.count(), 1)
+        self.dialogue.show_user_dialogue.assert_called_once()
+        self.dialogue.show_dialogue.assert_not_called()
+        self.dialogue.submit_speech("cats second")
+        self.now[0] += 11
+        self.dialogue._process_next_input()
+        self.assertEqual(len(self.dialogue.pending_inputs), 1)
+        self.dialogue._on_tts_speaking_changed(True)
+        self.dialogue.show_dialogue.assert_called_once()
+        self.assertEqual(self.dialogue.show_dialogue.call_args.args[0], "cats reply")
+        self.assertEqual([item.content for item in self.dialogue.conversation_memory.recent()],
+                         ["cats first", "cats reply"])
+
+    def test_failed_memory_request_displays_notice_without_voice(self):
+        self.dialogue.show_ai_response = lambda *args, **kwargs: DialogueSystem.show_ai_response(
+            self.dialogue, *args, **kwargs)
+        self.dialogue._response_provider = lambda *_: "[gemini error] HTTP Error 503: Service Unavailable"
+        self.dialogue.ask_ai("cats question")
+        self.pump_until(lambda: not self.dialogue.is_ai_responding)
+        self.assertEqual(self.dialogue.conversation_history[0]["state"], "failed")
+        self.dialogue.show_dialogue.assert_called_once()
+        self.dialogue.tts.speak.assert_not_called()
+        self.assertEqual(self.memory.count(), 0)
 
     def test_worker_applies_correction_and_displays_reply_without_reinforcing_old_fact(self):
         self.memory.remember_fact("I like cats", original_text="cats original", importance=8)

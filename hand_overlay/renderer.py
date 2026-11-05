@@ -116,6 +116,7 @@ class DesktopHandWindow(QWidget):
         self._screen = None
         self._capacity = (0, 0)
         self._surface = None
+        self._overlay_owner = None
         if os.name == "nt":
             from .native_surface import LayeredSurface
             self._surface = LayeredSurface()
@@ -133,6 +134,29 @@ class DesktopHandWindow(QWidget):
         if self._surface is not None:
             return (int(self._surface.hwnd),) if self._surface.hwnd else ()
         return (int(self.winId()),)
+
+    def set_overlay_owner(self, owner):
+        """The hand remains a desktop popup; ownership only fixes stacking."""
+        self._overlay_owner = owner
+        self._sync_overlay_owner()
+
+    def _sync_overlay_owner(self):
+        if self._overlay_owner is None:
+            return
+        if self._surface is not None:
+            self._surface.set_owner(int(self._overlay_owner.winId()))
+        else:
+            self.winId()
+            self._overlay_owner.winId()
+            handle, owner_handle = self.windowHandle(), self._overlay_owner.windowHandle()
+            if handle.transientParent() != owner_handle:
+                handle.setTransientParent(owner_handle)
+
+    def raise_above_owner(self):
+        if self._surface is not None:
+            self._surface.raise_above_owner()
+        else:
+            self.raise_()
 
     def show_hand(self, hand: Hand, screen, aspect: float, scale: float, numbers: bool,
                   smooth_motion: bool = True, range_percent: float = 100):
@@ -184,6 +208,7 @@ class DesktopHandWindow(QWidget):
         draw_hand(painter, self.hand, self.points, self.numbers)
         painter.end()
         self._image = image
+        self._sync_overlay_owner()
         if self._surface:
             self._surface.present(image, geometry, self._screen)
         else:

@@ -25,6 +25,7 @@ from app.device_settings import (
 )
 from app.project_version import __version__
 from app.settings_bridge import SettingsBridge
+from app.preview_stream import PreviewPublisher
 from bridge.interaction_event_client import InteractionEventClient
 from recognition import holistic_tracker as core
 from recognition.emotion_recognizer import EmotionRecognizer
@@ -119,6 +120,10 @@ class HolisticGuiApp(SettingsBridge):
         self.hand_overlay_sequence = 0
         self.hand_overlay_image_size = (1280, 720)
         self.current_photo = None
+        self.preview_publisher = PreviewPublisher()
+        self.enlarged_preview = None
+        self.enlarged_video = None
+        self.last_preview_frame = None
         self.frame_index = 0
         self.camera_candidates = []
         self.active_camera_candidate = None
@@ -127,6 +132,7 @@ class HolisticGuiApp(SettingsBridge):
         self.restart_camera_after_discovery = False
         self.rps_session = None
         self.rps_previous_mode = None
+        self.cham_session = self.cham_previous_mode = self.cham_sample = None
         self.rps_sample = None
         saved_recognition = self.device_settings.get("recognition", {})
         saved_recognition = saved_recognition if isinstance(saved_recognition, dict) else {}
@@ -207,6 +213,9 @@ class HolisticGuiApp(SettingsBridge):
         self.info_overlay_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "info_overlay", True)
         )
+        self.cham_overlay_var = tk.BooleanVar(
+            value=self.saved_bool(saved_recognition, "cham_overlay", True)
+        )
         self.emotion_var = tk.BooleanVar(
             value=self.saved_bool(saved_recognition, "emotion", background_mode)
         )
@@ -221,6 +230,7 @@ class HolisticGuiApp(SettingsBridge):
         self.stt = RealtimeSTT()
         self.stt.speech_session = self.speech_session
 
+        log_event('recognition.tracker.loading', 'MediaPipe 모델을 불러오는 중', category='사용자 인식')
         self.holistic = core.mp_holistic.Holistic(
             static_image_mode=False,
             model_complexity=2,
@@ -230,6 +240,7 @@ class HolisticGuiApp(SettingsBridge):
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
+        log_event('recognition.tracker.configured', 'MediaPipe 준비 완료', category='사용자 인식')
         self.emotion_recognizer = None
         self.load_emotion_model()
         self.event_client = InteractionEventClient()
@@ -313,6 +324,12 @@ class HolisticGuiApp(SettingsBridge):
                 self.show_console()
             elif command == "hide":
                 self.hide_console()
+            elif command in ('preview 1', 'preview 0'):
+                self.preview_publisher.set_enabled(command.endswith('1'))
+            elif command.startswith("cham_begin "):
+                self.begin_cham_game(command.split(" ", 1)[1])
+            elif command.startswith("cham_end "):
+                self.end_cham_game(command.split(" ", 1)[1])
             elif command.startswith("rps_begin "):
                 self.begin_rps_game(command.split(" ", 1)[1])
             elif command.startswith("rps_end "):
@@ -332,6 +349,8 @@ class HolisticGuiApp(SettingsBridge):
         self.root.after(100, self.poll_control_commands)
 
     def begin_rps_game(self, session):
+        if getattr(self, 'cham_session', None):
+            self.end_cham_game(self.cham_session)
         # 임시 게임 모드는 저장된 사용자 모드를 덮어쓰지 않는다.
         if self.rps_session is None:
             self.rps_previous_mode = self.active_mode
@@ -367,6 +386,7 @@ class HolisticGuiApp(SettingsBridge):
 
     def hide_console(self):
         """GUI만 숨기고 카메라와 인식 루프는 계속 실행한다."""
+        self.close_enlarged_preview()
         self.root.withdraw()
 
     def build_ui(self):
@@ -523,6 +543,7 @@ class HolisticGuiApp(SettingsBridge):
         self.make_toggle(toggle_frame, LABEL_MARKER_ONLY, self.marker_only_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_MIRROR, self.mirror_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_INFO_OVERLAY, self.info_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
+        self.make_toggle(toggle_frame, '참참참 방향 표시', self.cham_overlay_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.make_toggle(toggle_frame, LABEL_EMOTION, self.emotion_var, self.save_recognition_settings).pack(fill="x", pady=(0, 8))
         self.emotion_model_menu = tk.OptionMenu(
             toggle_frame,
@@ -626,15 +647,18 @@ class HolisticGuiApp(SettingsBridge):
         self.make_info_label(control_panel, self.always_attention_status_var).pack(fill="x", padx=18, pady=(0, 10))
         self.make_info_label(control_panel, self.status_var).pack(fill="x", padx=18)
 
+        video_header = tk.Frame(video_panel, bg="#0b0f13")
+        video_header.pack(fill="x", pady=(0, 12))
         video_title = tk.Label(
-            video_panel,
+            video_header,
             text="Recognition Screen",
             bg="#0b0f13",
             fg="#f4f7fb",
             font=("Malgun Gothic", 18, "bold"),
             anchor="w",
         )
-        video_title.pack(fill="x", pady=(0, 12))
+        video_title.pack(side="left", fill="x", expand=True)
+        tk.Button(video_header, text="크게 보기", command=self.show_enlarged_preview).pack(side="right")
 
         self.video_label = tk.Label(
             video_panel,
@@ -1125,11 +1149,13 @@ class HolisticGuiApp(SettingsBridge):
     def save_recognition_settings(self):
         """모드와 화면·인식 토글을 변경 즉시 로컬 설정에 저장한다."""
         self.device_settings["recognition"] = {
-            "mode": self.rps_previous_mode if self.rps_session else self.active_mode,
+            "mode": (self.rps_previous_mode if self.rps_session else
+                     self.cham_previous_mode if getattr(self, "cham_session", None) else self.active_mode),
             "tracking": bool(self.tracking_var.get()),
             "marker_only": bool(self.marker_only_var.get()),
             "mirror": bool(self.mirror_var.get()),
             "info_overlay": bool(self.info_overlay_var.get()),
+            "cham_overlay": bool(self.cham_overlay_var.get()),
             "emotion": bool(self.emotion_var.get()),
             "emotion_model": EMOTION_MODEL_OPTIONS[self.emotion_model_var.get()],
             "always_recognition": bool(self.always_recognition_var.get()),
@@ -1152,8 +1178,8 @@ class HolisticGuiApp(SettingsBridge):
         return 'saved'
 
     def set_mode(self, mode_key):
-        if self.rps_session is not None:
-            self.status_var.set("가위바위보 게임을 닫으면 모드를 변경할 수 있습니다.")
+        if self.rps_session or getattr(self, "cham_session", None):
+            self.status_var.set("게임을 닫으면 모드를 변경할 수 있습니다.")
             return
         if self.active_mode == mode_key:
             self.active_mode = None
@@ -1202,6 +1228,7 @@ class HolisticGuiApp(SettingsBridge):
             log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
         self.pending_frame = None
         self.pending_frame_captured_at = None
+        self.rps_sample = self.cham_sample = None
         if getattr(self, 'hand_overlay_enabled', False):
             self.send_hand_overlay_clear()
 
@@ -1213,6 +1240,7 @@ class HolisticGuiApp(SettingsBridge):
             self.hand_overlay_session = uuid.uuid4().hex
             self.hand_overlay_sequence = 0
             self.hand_overlay_enabled = True
+            log_event('hand_overlay.model.ready', 'MediaPipe 손 추적 준비 완료', category='사용자 인식')
             if self.cap is None:
                 self.send_hand_overlay_clear()
         else:
@@ -1267,6 +1295,7 @@ class HolisticGuiApp(SettingsBridge):
 
         if not has_frame or frame_bgr is None:
             log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
+            self.show_placeholder("Camera unavailable")
             self.status_var.set("\ud504\ub808\uc784\uc744 \uc77d\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
             self.release_camera()
             self.root.after(30, self.update_frame)
@@ -1321,9 +1350,11 @@ class HolisticGuiApp(SettingsBridge):
             # STT 이벤트 재전송이나 카메라 중단 시 과거 손으로 판정하지 않게 한다.
             self.rps_sample = {
                 "session": self.rps_session,
-                "captured_at": time.time(),
+                "captured_at": captured_at,
                 "hands": dict(self.mode_result.get("result") or {}),
             }
+        if self.cham_session is not None:
+            self.cham_sample = self.build_cham_sample(frame_record, captured_at)
         self.apply_emotion_overlay(annotated)
         self.send_recognition_state()
         self.render_frame(annotated)
@@ -1465,6 +1496,7 @@ class HolisticGuiApp(SettingsBridge):
             },
             "mode": self.mode_result,
             "rps_game": self.rps_sample,
+            "cham_game": getattr(self, "cham_sample", None),
             "speech": {
                 "latest_text": self.latest_speech_text,
                 "sequence": self.speech_sequence,
@@ -1703,6 +1735,8 @@ class HolisticGuiApp(SettingsBridge):
             },
         }
         self._log_mode_result()
+        if frame_bgr is None or not self.cham_overlay_var.get():
+            return
         cv2.putText(
             frame_bgr,
             f"Cham Cham Cham: {direction}",
@@ -2214,12 +2248,49 @@ class HolisticGuiApp(SettingsBridge):
                     cv2.line(frame_bgr, previous, point, AIR_DRAWING_COLORS[side], 3, cv2.LINE_AA)
                 previous = point
 
+    def show_enlarged_preview(self):
+        if self.enlarged_preview is None:
+            self.enlarged_preview = tk.Toplevel(self.root)
+            self.enlarged_preview.title("카메라 미리보기 · 크게 보기")
+            self.enlarged_preview.geometry("1000x750")
+            self.enlarged_preview.minsize(480, 360)
+            self.enlarged_preview.pack_propagate(False)
+            self.enlarged_preview.protocol("WM_DELETE_WINDOW", self.close_enlarged_preview)
+            self.enlarged_video = tk.Label(self.enlarged_preview, bg="#05080c", fg="white",
+                                          text="카메라 화면을 기다리는 중…")
+            self.enlarged_video.pack(fill="both", expand=True)
+            self.enlarged_video.bind("<Configure>", self.render_enlarged_preview)
+        self.enlarged_preview.lift()
+
+    def close_enlarged_preview(self):
+        if getattr(self, "enlarged_preview", None) is not None:
+            window = self.enlarged_preview
+            self.enlarged_preview = self.enlarged_video = None
+            window.destroy()
+
+    def render_enlarged_preview(self, _event=None):
+        label, frame = self.enlarged_video, self.last_preview_frame
+        if label is not None and frame is not None:
+            resized = self.fit_frame(frame, max(1, label.winfo_width()), max(1, label.winfo_height()))
+            label.photo = ImageTk.PhotoImage(image=Image.fromarray(resized))
+            label.configure(image=label.photo)
+
     def render_frame(self, frame_bgr):
+        if self.preview_publisher.ready():
+            self.preview_publisher.offer(frame_bgr, {
+                'result': self.result_var.get(), 'emotion': self.build_emotion_state(),
+                'speech': self.latest_speech_text, 'stt': self.stt_status_var.get(),
+            })
+        if self.background_mode and not self.root.winfo_viewable() and self.cap is not None:
+            self.last_preview_frame = None
+            return
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         resized = self.fit_frame(frame_rgb, DISPLAY_WIDTH, DISPLAY_HEIGHT)
         image = Image.fromarray(resized)
         self.current_photo = ImageTk.PhotoImage(image=image)
         self.video_label.configure(image=self.current_photo)
+        self.last_preview_frame = frame_rgb
+        self.render_enlarged_preview()
 
     def fit_frame(self, frame_rgb, max_width, max_height):
         height, width = frame_rgb.shape[:2]
@@ -2233,6 +2304,7 @@ class HolisticGuiApp(SettingsBridge):
             return
         self.is_shutting_down = True
         log_event('recognition.shutdown.started', '사용자 인식 종료 시작', category='사용자 인식')
+        self.preview_publisher.close()
         self.event_client.stop()
         self.stt.stop()
         self.release_camera()

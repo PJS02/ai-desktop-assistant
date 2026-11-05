@@ -1,0 +1,66 @@
+{
+  "tool": "built-in image_gen",
+  "created_on": "2026-10-28",
+  "intent": "edit",
+  "transparent_background": true,
+  "runtime_usage": "Registered ocular skin patches only; original head artwork remains outside the patch.",
+  "assets": {
+    "front": {
+      "file": "eyeless-front.png",
+      "source": "../anxious-gaze-front-clean-v2.png",
+      "source_sha256": "6de0da77e99bf27a6ae9c58b13c5250d0f71ec514eb009a18993cdbd20ed2593",
+      "output_sha256": "bf76dc7de5df5c00d41864f1745351f6530064f704a7646a4aaa79dc05856b76",
+      "size": [
+        1254,
+        1254
+      ],
+      "generated_to_atlas": [
+        0.24032749309789936,
+        -5.283161279016087e-05,
+        5.283161279016087e-05,
+        0.24032749309789936,
+        22.792527311315375,
+        14.530086656549335
+      ],
+      "prompt": "Use case: precise-object-edit. Asset type: transparent 2D character head texture used for a desktop animation rig.\nEdit target: the attached front-facing mint-haired anime chibi head PNG.\nPrimary request: remove BOTH entire eyes, including the white sclera, iris remnants, upper eyelashes, lower eyelid lines, eye highlights and eye shadows. Replace the eye areas with professionally hand-painted natural continuous facial skin, retaining the original soft cream skin, subtle warm cheek blush, shading and tiny nose. This is an EYELESS facial base for separately animated spiral marks; DO NOT draw spirals or any new eyes.\nConstraints: preserve the exact head pose, direction, face shape, hair strands that overlap the face, eyebrows, mint hair, black accessories, ahoge, clothing and original alpha silhouette. Preserve the absence of mouth in this input. Keep the original composition, framing, scale and alignment, no added margins, no zoom, no rotation, no rearrangement. The edited eye regions must blend seamlessly into nearby skin with no oval patches, no flat blur, no eraser marks, no white circles, no residual eyelashes or lids. Preserve genuinely transparent background. The only change is smooth natural skin in place of the two eyes."
+    },
+    "left": {
+      "file": "eyeless-left.png",
+      "source": "../anxious-gaze-left-clean-v2.png",
+      "source_sha256": "6c366156752d15a3646b80d9e0a19a4cb4ffd42ae1a096f50392baf4835383ea",
+      "output_sha256": "20d1ee49006ffc28a3cd32a7453662efd6bf362c67e3dae5d436c5056d45e79e",
+      "size": [
+        1247,
+        1261
+      ],
+      "generated_to_atlas": [
+        0.25076212230589506,
+        0.00019783712971753025,
+        1.6647375526608092e-05,
+        0.2554225100479038,
+        26.14172886699133,
+        8.483471997754364
+      ],
+      "prompt": "Use case: precise-object-edit. Asset type: transparent 2D character head texture used for a desktop animation rig.\nEdit target: the attached left-facing mint-haired anime chibi head PNG.\nPrimary request: remove BOTH entire eyes, including the white sclera, iris remnants, upper eyelashes, lower eyelid lines, eye highlights and eye shadows. Replace the eye areas with professionally hand-painted natural continuous facial skin, retaining the original soft cream skin, subtle warm cheek blush, shading and tiny nose. This is an EYELESS facial base for separately animated spiral marks; DO NOT draw spirals or any new eyes.\nConstraints: preserve the exact head pose, direction, face shape, hair strands that overlap the face, eyebrows, mint hair, black accessories, ahoge, clothing and original alpha silhouette. Preserve the absence of mouth in this input. Keep the original composition, framing, scale and alignment, no added margins, no zoom, no rotation, no rearrangement. The edited eye regions must blend seamlessly into nearby skin with no oval patches, no flat blur, no eraser marks, no white circles, no residual eyelashes or lids. Preserve genuinely transparent background. The only change is smooth natural skin in place of the two eyes."
+    },
+    "right": {
+      "file": "eyeless-right.png",
+      "source": "../anxious-gaze-right-clean-v2.png",
+      "source_sha256": "9850244246171fc8d06d9ba9ffbaa401d50a07da5bf6e347b3dca0abab80d7bc",
+      "output_sha256": "0f50c363161fffa29301633045b5f0f9c0daf562ac78af8454fc8f70c74813e2",
+      "size": [
+        1207,
+        1303
+      ],
+      "generated_to_atlas": [
+        0.2387190573575371,
+        -0.00011638645697619922,
+        0.00028950605235447354,
+        0.24238873753196258,
+        28.024047361706664,
+        6.656067270793535
+      ],
+      "prompt": "Use case: precise-object-edit. Asset type: transparent 2D character head texture used for a desktop animation rig.\nEdit target: the attached right-facing mint-haired anime chibi head PNG.\nPrimary request: remove BOTH entire eyes, including the white sclera, iris remnants, upper eyelashes, lower eyelid lines, eye highlights and eye shadows. Replace the eye areas with professionally hand-painted natural continuous facial skin, retaining the original soft cream skin, subtle warm cheek blush, shading and tiny nose. This is an EYELESS facial base for separately animated spiral marks; DO NOT draw spirals or any new eyes.\nConstraints: preserve the exact head pose, direction, face shape, hair strands that overlap the face, eyebrows, mint hair, black accessories, ahoge, clothing and original alpha silhouette. Preserve the absence of mouth in this input. Keep the original composition, framing, scale and alignment, no added margins, no zoom, no rotation, no rearrangement. The edited eye regions must blend seamlessly into nearby skin with no oval patches, no flat blur, no eraser marks, no white circles, no residual eyelashes or lids. Preserve genuinely transparent background. The only change is smooth natural skin in place of the two eyes."
+    }
+  }
+}

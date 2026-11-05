@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 from app_logging import log_event, new_trace_id
+from .tts_models import ENGINE_NAMES, ModelStore
+from .tts_backend import LocalVoiceBackend, SynthesisCancelled, runtime_python
 
 
 _VOICE_IDS = tuple(f"F{index}" for index in range(1, 6)) + tuple(
@@ -25,7 +27,8 @@ class VoiceInfo:
 
 def available_voices() -> list[VoiceInfo]:
     """Supertonic 3 모델에 포함된 기본 목소리 목록."""
-    return [VoiceInfo(voice_id, f"Supertonic 3 · {voice_id}") for voice_id in _VOICE_IDS]
+    return ([VoiceInfo(voice_id, f"Supertonic 3 · {voice_id}") for voice_id in _VOICE_IDS]
+            + [VoiceInfo(voice_id, name) for voice_id, name in ENGINE_NAMES.items()])
 
 
 def _prepare_text(text: str) -> str:
@@ -53,19 +56,23 @@ class SupertonicTTS(QObject):
     audio_ready = pyqtSignal(int, bytes, int)  # 요청 번호, 16비트 PCM, 샘플레이트
     speaking_changed = pyqtSignal(bool)  # 실제 오디오 재생 상태 (합성 대기 제외)
     busy_changed = pyqtSignal(bool)  # synthesis or playback; ordered dialogue waits for both
+    sync_bubble_changed = pyqtSignal(bool)
     request_finished = pyqtSignal(int)
 
     def __init__(self, settings=None, model_factory=None):
         super().__init__()
         self._settings = settings if settings is not None else QSettings("PJS02", "AIDesktopAssistant")
         self._enabled = self._settings.value("tts/enabled", True, type=bool)
+        self._sync_bubble = self._settings.value('tts/sync_bubble', False, type=bool)
         saved_voice = self._settings.value("tts/voice_id", "F1", type=str)
-        self._voice_id = saved_voice if saved_voice in _VOICE_IDS else "F1"
+        self._voice_id = saved_voice if saved_voice in (*_VOICE_IDS, *ENGINE_NAMES) else "F1"
         self._model_factory = model_factory or self._create_model
         self._commands: queue.Queue[tuple[str, int, str, str]] = queue.Queue(maxsize=1)
         self._thread: threading.Thread | None = None
         self._generation = 0
         self._closed = False
+        self._preload_enabled = False
+        self._custom_backend = LocalVoiceBackend()
         self._audio_sink: QAudioSink | None = None
         self._audio_buffer: QBuffer | None = None
         self._speaking = False
@@ -76,6 +83,11 @@ class SupertonicTTS(QObject):
         self._playback_started_at = None
         self.audio_ready.connect(self._play_audio)
         self.request_finished.connect(self._finish_request, Qt.ConnectionType.QueuedConnection)
+        self._log_configuration()
+
+    def _log_configuration(self):
+        log_event('tts.configuration', '음성 출력 준비 설정', category='대화·AI',
+                  enabled=self._enabled, voice_id=self._voice_id)
 
     @property
     def enabled(self) -> bool:
@@ -89,9 +101,24 @@ class SupertonicTTS(QObject):
     def busy(self) -> bool:
         return self._busy
 
+    @property
+    def sync_bubble(self) -> bool:
+        return self._sync_bubble
+
+    def set_sync_bubble(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self._settings.setValue('tts/sync_bubble', enabled)
+        if enabled != self._sync_bubble:
+            self._sync_bubble = enabled
+            self.sync_bubble_changed.emit(enabled)
+
     def set_enabled(self, enabled: bool) -> None:
+        if enabled and self._voice_id in ENGINE_NAMES:
+            self._validate_custom_voice(self._voice_id)
+        was_enabled = self._enabled
         self._enabled = bool(enabled)
         self._settings.setValue("tts/enabled", self._enabled)
+        self._log_configuration()
         if not self._enabled:
             self._cancel_request(self._generation, 'disabled')
             self._generation += 1
@@ -99,12 +126,31 @@ class SupertonicTTS(QObject):
             self._set_busy(False)
             if self._thread is not None:
                 self._enqueue("stop", self._generation, "", "")
+        elif not was_enabled and self._preload_enabled:
+            self.prepare()
 
     def set_voice(self, voice_id: str) -> None:
-        if voice_id not in _VOICE_IDS:
-            raise ValueError(f"Unknown Supertonic 3 voice: {voice_id}")
+        if voice_id not in (*_VOICE_IDS, *ENGINE_NAMES):
+            raise ValueError(f"Unknown TTS voice: {voice_id}")
+        if self._enabled and voice_id in ENGINE_NAMES:
+            self._validate_custom_voice(voice_id)
+        changed = voice_id != self._voice_id
+        if changed:
+            self._cancel_request(self._generation, 'voice_changed')
+            self._generation += 1
+            self._stop_playback(reason='voice_changed')
+            self._set_busy(False)
         self._voice_id = voice_id
         self._settings.setValue("tts/voice_id", voice_id)
+        self._log_configuration()
+        if changed and self._preload_enabled:
+            self.prepare()
+
+    @staticmethod
+    def _validate_custom_voice(voice_id):
+        if not ModelStore().installed(voice_id):
+            raise ValueError('설정 → 음성에서 모델을 먼저 다운로드해 주세요.')
+        runtime_python()
 
     def sync_settings(self):
         self._settings.sync()
@@ -113,10 +159,23 @@ class SupertonicTTS(QObject):
                           status=str(self._settings.status()))
             raise OSError('음성 설정을 저장하지 못했습니다.')
         self._log_tts('tts.settings_saved', '음성 설정 저장 확인', enabled=self._enabled,
-                      voice_id=self._voice_id)
+                      voice_id=self._voice_id, sync_bubble=self._sync_bubble)
 
     def speak(self, text: str) -> None:
         self.speak_with_context(text, {})
+
+    def prepare(self) -> None:
+        """Startup warmup shares the synthesis worker and never plays audio."""
+        self._preload_enabled = True
+        if self._closed or not self._enabled or self._busy:
+            return
+        self._start_worker()
+        self._enqueue('prepare', self._generation, '', self._voice_id)
+
+    def _start_worker(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._run, daemon=True, name="supertonic-tts")
+            self._thread.start()
 
     def speak_with_context(self, text: str, context=None) -> None:
         """Keep speak(text) compatible while correlating actual synthesis and playback."""
@@ -139,9 +198,7 @@ class SupertonicTTS(QObject):
                       language=_language_for(prepared))
         self._set_busy(True)
         self._stop_playback(reason='replaced')
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._run, daemon=True, name="supertonic-tts")
-            self._thread.start()
+        self._start_worker()
         self._enqueue("speak", self._generation, prepared, self._voice_id)
 
     def close(self) -> None:
@@ -152,6 +209,8 @@ class SupertonicTTS(QObject):
         self._generation += 1
         self._stop_playback(reason='shutdown')
         self._set_busy(False)
+        if self._custom_backend is not None:
+            self._custom_backend.close()
         if self._thread is not None:
             self._enqueue("close", self._generation, "", "")
             self._thread.join(timeout=2.0)
@@ -178,19 +237,15 @@ class SupertonicTTS(QObject):
         return TTS(model="supertonic-3", auto_download=True)
 
     def _run(self) -> None:
-        started = time.monotonic()
-        self._log_tts('tts.model_loading', 'Supertonic 3 모델 로딩 시작', model='supertonic-3')
+        model, styles = None, {}
         try:
-            model = self._model_factory()
-            self._log_tts('tts.model_ready', 'Supertonic 3 모델 준비 완료', model='supertonic-3',
-                          elapsed_ms=round((time.monotonic() - started) * 1000, 2),
-                          sample_rate=model.sample_rate)
-            styles = {}
             while True:
                 command, generation, text, voice_id = self._commands.get()
                 if command == "close":
                     return
-                if command == "stop" or generation != self._generation or self._closed:
+                if (command == "stop" or self._closed or not self._enabled
+                        or voice_id != self._voice_id
+                        or (command == 'speak' and generation != self._generation)):
                     if command == 'speak':
                         self._log_tts('tts.synthesis_discarded', '만료된 합성 요청 생략',
                                       generation=generation, reason='shutdown' if self._closed else 'generation_mismatch')
@@ -199,40 +254,72 @@ class SupertonicTTS(QObject):
                 context = dict(self._request_contexts.get(generation, {}))
                 synthesis_started = time.monotonic()
                 try:
-                    self._log_tts('tts.synthesis_started', '음성 합성 시작', generation=generation,
-                                  context=context, text=text, voice_id=voice_id, language=_language_for(text))
-                    if voice_id not in styles:
-                        styles[voice_id] = model.get_voice_style(voice_id)
-                    wav, _ = model.synthesize(
-                        text,
-                        voice_style=styles[voice_id],
-                        lang=_language_for(text),
-                    )
+                    # A same-voice utterance arriving during warmup reuses that
+                    # load instead of cancelling and restarting the model.
+                    cancelled = lambda: self._closed or not self._enabled or voice_id != self._voice_id
+                    if command == 'prepare' and voice_id in ENGINE_NAMES:
+                        self._custom_backend.prepare(voice_id, cancelled)
+                        continue
+                    if command == 'speak':
+                        self._log_tts('tts.synthesis_started', '음성 합성 시작', generation=generation,
+                                      context=context, text=text, voice_id=voice_id, language=_language_for(text))
+                    if voice_id in ENGINE_NAMES:
+                        pcm, sample_rate = self._custom_backend.synthesize(text, voice_id,
+                            lambda: generation != self._generation or self._closed or not self._enabled)
+                    else:
+                        if self._custom_backend is not None:
+                            self._custom_backend.stop()
+                        if model is None:
+                            started = time.monotonic()
+                            self._log_tts('tts.model_loading', 'Supertonic 3 모델 로딩 시작', model='supertonic-3')
+                            try:
+                                model = self._model_factory()
+                                styles[voice_id] = model.get_voice_style(voice_id)
+                            except Exception as exc:
+                                model = None
+                                self._log_tts('tts.model_failed', '음성 모델 준비 실패',
+                                              level='ERROR', model='supertonic-3', error=str(exc))
+                                raise
+                            self._log_tts('tts.model_ready', 'Supertonic 3 모델 준비 완료', model='supertonic-3',
+                                          elapsed_ms=round((time.monotonic() - started) * 1000, 2),
+                                          sample_rate=model.sample_rate)
+                        if voice_id not in styles:
+                            styles[voice_id] = model.get_voice_style(voice_id)
+                        if cancelled():
+                            continue
+                        if command == 'prepare':
+                            continue
+                        wav, _ = model.synthesize(text, voice_style=styles[voice_id], lang=_language_for(text))
+                        import numpy as np
+                        samples = np.asarray(wav).reshape(-1)
+                        pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+                        sample_rate = model.sample_rate
                     if generation != self._generation or self._closed or not self._enabled:
                         self._log_tts('tts.synthesis_discarded', '완료된 이전 음성 합성 폐기',
                                       generation=generation, context=context,
                                       reason='shutdown' if self._closed else 'disabled' if not self._enabled else 'generation_mismatch')
                         self._request_contexts.pop(generation, None)
                         continue
-                    import numpy as np
-
-                    samples = np.asarray(wav).reshape(-1)
-                    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
                     self._log_tts('tts.synthesis_completed', '음성 합성 완료', generation=generation,
                                   context=context, elapsed_ms=round((time.monotonic() - synthesis_started) * 1000, 2),
-                                  pcm_bytes=len(pcm), sample_rate=model.sample_rate,
-                                  audio_seconds=len(samples) / model.sample_rate)
-                    self.audio_ready.emit(generation, pcm, model.sample_rate)
+                                  pcm_bytes=len(pcm), sample_rate=sample_rate,
+                                  audio_seconds=len(pcm) / 2 / sample_rate)
+                    self.audio_ready.emit(generation, pcm, sample_rate)
+                except SynthesisCancelled:
+                    if command == 'speak':
+                        self._request_contexts.pop(generation, None)
                 except Exception as exc:
-                    self._log_tts('tts.synthesis_failed', '음성 합성 실패', generation=generation,
-                                  context=context, level='ERROR', error=str(exc),
-                                  elapsed_ms=round((time.monotonic() - synthesis_started) * 1000, 2))
-                    self.request_finished.emit(generation)
+                    if command == 'speak':
+                        self._log_tts('tts.synthesis_failed', '음성 합성 실패', generation=generation,
+                                      context=context, level='ERROR', error=str(exc),
+                                      elapsed_ms=round((time.monotonic() - synthesis_started) * 1000, 2))
+                        self.request_finished.emit(generation)
         except Exception as exc:
-            self._log_tts('tts.model_failed', 'Supertonic 3 모델 로딩 실패',
-                          level='ERROR', error=str(exc), model='supertonic-3',
-                          elapsed_ms=round((time.monotonic() - started) * 1000, 2))
+            self._log_tts('tts.worker_failed', '음성 작업 처리 실패', level='ERROR', error=str(exc))
             self.request_finished.emit(self._generation)
+        finally:
+            if self._custom_backend is not None:
+                self._custom_backend.close()
 
     def _play_audio(self, generation: int, pcm: bytes, sample_rate: int) -> None:
         if self._closed or not self._enabled or generation != self._generation:
@@ -317,7 +404,7 @@ class SupertonicTTS(QObject):
             and state == QAudio.State.ActiveState
             and sink.error() == QAudio.Error.NoError
         )
-        if state in (QAudio.State.IdleState, QAudio.State.StoppedState):
+        if error != QAudio.Error.NoError or state in (QAudio.State.IdleState, QAudio.State.StoppedState):
             self._set_busy(False)
 
     def _finish_request(self, generation):

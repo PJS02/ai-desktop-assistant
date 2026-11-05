@@ -37,6 +37,8 @@ class EmotionEvent:
     self_attribution: float = 0.0
     # 타인 의도: [-1, 1], 긍정은 감사(+), 부정은 분노(-)
     agent_benevolence: float = 0.0
+    # True only for a possible future event; current event producers describe outcomes.
+    is_prospect: bool = False
 
 
 @dataclass
@@ -174,6 +176,8 @@ class MoodSystem:
 
         # 강한 상호작용 직후 감정이 즉시 사라지지 않도록 유지하는 시각
         self._emotion_hold_until = 0.0
+        self._last_drag_displeasure_elapsed = 0.0
+        self._last_hard_drag_at = 0.0
         self._manual_russell_override = False
         self._event_valence_bias = 0.0
         self._event_arousal_bias = 0.0
@@ -217,6 +221,14 @@ class MoodSystem:
         if distance > 1.0:
             self.russell.valence /= distance
             self.russell.arousal /= distance
+
+    def _add_occ_intensity(self, emotion: OccEmotionToMood, amount: float) -> float:
+        """Accumulate an OCC signal with diminishing returns near its ceiling."""
+        current = self.occ_intensities[emotion]
+        amount = max(0.0, float(amount))
+        increment = min(1.0 - current, amount * (1.0 - current) ** 1.5)
+        self.occ_intensities[emotion] = current + increment
+        return increment
 
     # ========================
     # 이벤트에 대한 반응
@@ -293,18 +305,9 @@ class MoodSystem:
         comfort = math.exp(-((movement_speed - 140.0) / 180.0) ** 2)
         amount = elapsed_seconds * comfort
 
-        self.occ_intensities[OccEmotionToMood.JOY] = min(
-            1.0,
-            self.occ_intensities[OccEmotionToMood.JOY] + 0.90 * amount,
-        )
-        self.occ_intensities[OccEmotionToMood.GRATITUDE] = min(
-            1.0,
-            self.occ_intensities[OccEmotionToMood.GRATITUDE] + 0.30 * amount,
-        )
-        self.occ_intensities[OccEmotionToMood.SATISFACTION] = min(
-            1.0,
-            self.occ_intensities[OccEmotionToMood.SATISFACTION] + 0.16 * amount,
-        )
+        self._add_occ_intensity(OccEmotionToMood.JOY, 0.90 * amount)
+        self._add_occ_intensity(OccEmotionToMood.GRATITUDE, 0.30 * amount)
+        self._add_occ_intensity(OccEmotionToMood.SATISFACTION, 0.16 * amount)
         for emotion in (
             OccEmotionToMood.DISTRESS,
             OccEmotionToMood.ANGER,
@@ -383,6 +386,10 @@ class MoodSystem:
 
     def on_drag_hard(self):
         """강하게/빠르게 드래그할 때 - 거친 다루기"""
+        now = time.monotonic()
+        if now - self._last_hard_drag_at < 1.0:
+            return
+        self._last_hard_drag_at = now
         event = EmotionEvent(
             goal_relevance=-0.7,      # 중간 정도 부정적
             expectedness=0.4,         # 예상 불가
@@ -599,7 +606,7 @@ class MoodSystem:
         influence = 0.35 * confidence
         for occ_emotion, weight in weights.items():
             current = self.occ_intensities[occ_emotion]
-            self.occ_intensities[occ_emotion] = min(1.0, current + influence * weight)
+            self._add_occ_intensity(occ_emotion, influence * weight)
         self._apply_occ_to_mood()
         emotion_names = {
             "happy": "사용자 웃음 감지",
@@ -634,15 +641,17 @@ class MoodSystem:
         state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
+        elapsed_seconds = max(0.0, float(elapsed_seconds))
+        previous_elapsed = self._last_drag_displeasure_elapsed
+        delta_seconds = (elapsed_seconds - previous_elapsed
+                         if elapsed_seconds >= previous_elapsed else elapsed_seconds)
+        self._last_drag_displeasure_elapsed = elapsed_seconds
+        delta_seconds = min(0.5, max(0.0, delta_seconds))
         progress = max(0.0, min(1.0, elapsed_seconds / 20.0))
-        step = 0.01 + 0.03 * progress
+        step = (0.01 + 0.03 * progress) * delta_seconds
 
-        self.occ_intensities[OccEmotionToMood.ANGER] = min(
-            1.0, self.occ_intensities[OccEmotionToMood.ANGER] + step
-        )
-        self.occ_intensities[OccEmotionToMood.DISTRESS] = min(
-            1.0, self.occ_intensities[OccEmotionToMood.DISTRESS] + step * 0.7
-        )
+        self._add_occ_intensity(OccEmotionToMood.ANGER, step)
+        self._add_occ_intensity(OccEmotionToMood.DISTRESS, step * 0.7)
 
         # OCC → Russell로 자동 변환
         self._apply_occ_to_mood()
@@ -682,46 +691,59 @@ class MoodSystem:
         base_weight = weight
         personality_factors = []
 
-        # ======== 성격 기반 가중치 조정 ========
-        # 성격이 있다면 이벤트 타입에 따라 가중치 조정
+        # Apply personality after event appraisal so each trait responds to the
+        # relevant OCC dimensions and the applied factors remain inspectable.
         if self.personality_system is not None:
-            # 긍정 이벤트 (goal_relevance > 0): 외향성에 따라 반응
-            if event.goal_relevance > 0:
-                factor = self.personality_system.get_emotion_weight_multiplier("positive")
-                weight *= factor
-                personality_factors.append(f"외향성 긍정 반응 ×{factor:.2f}")
-            # 부정 이벤트 (goal_relevance < 0): 신경증에 따라 반응
-            elif event.goal_relevance < 0:
-                factor = self.personality_system.get_emotion_weight_multiplier("negative")
-                weight *= factor
-                personality_factors.append(f"신경증 부정 반응 ×{factor:.2f}")
-            # 자기 귀속 높음 (자책/자부 이벤트): 성실성에 따라 반응
-            if event.self_attribution > 0.5:
-                factor = self.personality_system.get_emotion_weight_multiplier("shame")
-                weight *= factor
-                personality_factors.append(f"성실성 자기귀속 ×{factor:.2f}")
+            factor, personality_factors = self.personality_system.get_event_weight_multiplier(
+                valence=event.goal_relevance,
+                self_attribution=event.self_attribution,
+                agent_benevolence=event.agent_benevolence,
+                novelty=1.0 - event.expectedness,
+            )
+            weight *= factor
         
         # OCC 감정 강도 계산
         if event.goal_relevance >= 0:
             # 긍정적 사건
-            self.occ_intensities[OccEmotionToMood.JOY] += event.goal_relevance * 0.7 * weight
-            self.occ_intensities[OccEmotionToMood.HOPE] += event.expectedness * 0.3 * weight
-            if event.expectedness >= 0.7:
-                self.occ_intensities[OccEmotionToMood.SATISFACTION] += event.expectedness * 0.4 * weight
+            if not event.is_prospect and event.expectedness < 0.7:
+                self._add_occ_intensity(OccEmotionToMood.JOY, (
+                    event.goal_relevance * (1.0 - event.expectedness) * 0.7 * weight
+                ))
+            if event.is_prospect:
+                self._add_occ_intensity(OccEmotionToMood.HOPE, (
+                    event.goal_relevance * (1.0 - event.expectedness) * 0.4 * weight
+                ))
+            if not event.is_prospect and event.expectedness >= 0.7:
+                self._add_occ_intensity(OccEmotionToMood.SATISFACTION, (
+                    event.goal_relevance * event.expectedness * 0.4 * weight
+                ))
         else:
             # 부정적 사건
-            self.occ_intensities[OccEmotionToMood.DISTRESS] += abs(event.goal_relevance) * 0.7 * weight
-            self.occ_intensities[OccEmotionToMood.FEAR] += (1.0 - event.expectedness) * 0.4 * weight
-            if event.expectedness >= 0.7:
-                self.occ_intensities[OccEmotionToMood.SHAME] += event.self_attribution * 0.3 * weight
+            self._add_occ_intensity(
+                OccEmotionToMood.DISTRESS, abs(event.goal_relevance) * 0.7 * weight
+            )
+            if event.is_prospect:
+                self._add_occ_intensity(OccEmotionToMood.FEAR, (
+                    abs(event.goal_relevance) * (1.0 - event.expectedness) * 0.4 * weight
+                ))
+            elif event.self_attribution > 0.0:
+                self._add_occ_intensity(OccEmotionToMood.SHAME, (
+                    event.self_attribution * abs(event.goal_relevance) * 0.3 * weight
+                ))
 
-        if event.self_attribution > 0.0:
-            self.occ_intensities[OccEmotionToMood.PRIDE] += event.self_attribution * 0.4 * weight
+        if event.goal_relevance > 0.0 and event.self_attribution > 0.0 and not event.is_prospect:
+            self._add_occ_intensity(OccEmotionToMood.PRIDE, (
+                event.self_attribution * event.goal_relevance * 0.4 * weight
+            ))
 
         if event.agent_benevolence > 0.0:
-            self.occ_intensities[OccEmotionToMood.GRATITUDE] += event.agent_benevolence * 0.5 * weight
+            self._add_occ_intensity(
+                OccEmotionToMood.GRATITUDE, event.agent_benevolence * 0.5 * weight
+            )
         elif event.agent_benevolence < 0.0:
-            self.occ_intensities[OccEmotionToMood.ANGER] += abs(event.agent_benevolence) * 0.5 * weight
+            self._add_occ_intensity(
+                OccEmotionToMood.ANGER, abs(event.agent_benevolence) * 0.5 * weight
+            )
 
         # OCC 강도 범위 정리
         for emotion in self.occ_intensities:

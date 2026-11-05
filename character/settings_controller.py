@@ -4,7 +4,8 @@ from inspect import signature
 from PyQt6.QtCore import QObject, QTimer
 
 from .ai_settings import load_ai_settings, save_ai_settings
-from .config_manager import (load_config, load_character_options, load_dialogue_style, save_config,
+from .config_manager import (load_config, load_character_options, load_personality_traits,
+                            load_dialogue_style, save_config,
                             load_hand_overlay_options, save_hand_overlay_options)
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
@@ -21,7 +22,15 @@ class SettingsController(QObject):
         self.applied_local = {}
         self.operation_id = None
         self._operations = {}
+        self._preview_active = False
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setInterval(100)
+        self.preview_timer.timeout.connect(self._poll_preview)
+        self.dialogue_timer = QTimer(self)
+        self.dialogue_timer.setInterval(100)
+        self.dialogue_timer.timeout.connect(self._refresh_dialogue_generation)
         manager.settings_message.connect(self.handle_message)
+        manager.process_started.connect(self._restore_preview)
         self.load_timeout = QTimer(self)
         self.load_timeout.setSingleShot(True)
         self.load_timeout.timeout.connect(self.connection_timeout)
@@ -35,6 +44,10 @@ class SettingsController(QObject):
             self.dialog.deleteLater()
         self.request_id = None
         width, height, personality = load_config()
+        personality_traits = load_personality_traits()
+        if personality_traits is None:
+            from .personality_system import PersonalitySystem
+            personality_traits = PersonalitySystem(personality).personality.to_dict()
         tts = self.character.dialogue_system.tts
         try:
             ai = load_ai_settings()
@@ -44,14 +57,24 @@ class SettingsController(QObject):
                       category='오류', level='ERROR', error=str(exc))
             ai = self.character.gemini_config
             ai_error = 'AI 설정 파일을 읽을 수 없습니다. 파일을 확인한 뒤 다시 열어 주세요.'
-        local = {'character': {'width': width, 'height': height, 'personality': personality},
-                 'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id},
+        local = {'character': {'width': width, 'height': height, 'personality': personality,
+                               'personality_traits': personality_traits},
+                 'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
+                           'sync_bubble': tts.sync_bubble},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style()}
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character)
+        self.dialog.dialogue_generation_requested.connect(self._generate_dialogue)
+        self.dialog.manual_dialogue_requested.connect(self._show_manual_dialogue)
+        self.dialog.manual_speech_requested.connect(self._speak_manual_dialogue)
+        self.dialog.manual_dialogue_hide_requested.connect(self._hide_manual_dialogue)
+        self.dialog.finished.connect(self.dialogue_timer.stop)
+        self.dialog.preview_requested.connect(self._set_preview)
+        self.dialog.device_requested.connect(self._device_command)
+        self.dialog.finished.connect(lambda _result: self._set_preview(False))
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.apply_timeout.connect(self._apply_timed_out)
         self.dialog.refresh_requested.connect(self.refresh)
@@ -66,7 +89,81 @@ class SettingsController(QObject):
             self.dialog.api_key.setEnabled(False)
             self.dialog.model.setEnabled(False)
         self.dialog.show()
+        self._refresh_dialogue_generation()
+        self.dialogue_timer.start()
         self.refresh(False)
+
+    def _refresh_dialogue_generation(self):
+        if self.dialog is None:
+            return
+        dialogue = self.character.dialogue_system
+        generating = (getattr(self.character, '_automatic_request_active', False)
+                      or dialogue.is_ai_responding)
+        self.dialog.set_dialogue_generation_state(generating, not dialogue.is_conversation_busy(include_hold=False))
+        self.dialog.set_manual_dialogue_state(
+            not generating and not dialogue.is_conversation_busy(include_hold=False, include_manual=False),
+            dialogue.manual_dialogue_active, voice_enabled=dialogue.tts.enabled,
+            speaking=dialogue.manual_dialogue_active and (dialogue._tts_busy or dialogue._speaking))
+
+    def _show_manual_dialogue(self, user_text, character_text):
+        dialogue = self.character.dialogue_system
+        if (getattr(self.character, '_automatic_request_active', False)
+                or not dialogue.show_manual_dialogue(user_text, character_text)):
+            self.dialog.status.setText('진행 중인 대화·음성 출력이 끝난 뒤 다시 표시해 주세요.')
+        else:
+            self.dialog.status.setText('입력한 말풍선을 표시했습니다. 숨기기 전까지 유지됩니다.')
+        self._refresh_dialogue_generation()
+
+    def _hide_manual_dialogue(self):
+        dialogue = self.character.dialogue_system
+        if dialogue.manual_dialogue_active:
+            dialogue.close_current_dialogue(reason='manual_display_hidden')
+            self.dialog.status.setText('직접 입력한 말풍선을 숨겼습니다.')
+        self._refresh_dialogue_generation()
+
+    def _speak_manual_dialogue(self, user_text, character_text):
+        dialogue = self.character.dialogue_system
+        if not dialogue.tts.enabled:
+            self.dialog.status.setText('음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.')
+        elif (getattr(self.character, '_automatic_request_active', False)
+              or not dialogue.speak_manual_dialogue(user_text, character_text)):
+            self.dialog.status.setText('진행 중인 대화·음성 출력이 끝난 뒤 다시 말해 주세요.')
+        else:
+            self.dialog.status.setText('입력한 캐릭터 대사를 음성으로 읽습니다.')
+        self._refresh_dialogue_generation()
+
+    def _generate_dialogue(self):
+        accepted = self.character._on_activity_monitor(manual=True)
+        self._refresh_dialogue_generation()
+        if not accepted:
+            self.dialog.status.setText('대사 생성을 시작하지 못했습니다. AI 설정과 진행 중인 대화를 확인해 주세요.')
+
+    def show_recognition(self):
+        self.show()
+        self.dialog.tabs.setCurrentIndex(2)
+        self.dialog.preview_button.setChecked(True)
+        return True
+
+    def _set_preview(self, enabled):
+        self._preview_active = bool(enabled)
+        if enabled:
+            self.preview_timer.start()
+        else:
+            self.preview_timer.stop()
+        self.manager.set_preview_enabled(enabled)
+
+    def _restore_preview(self):
+        if self._preview_active:
+            self.manager.set_preview_enabled(True)
+
+    def _poll_preview(self):
+        packet = self.manager.take_preview()
+        if packet is not None and self.dialog is not None:
+            self.dialog.show_preview_packet(packet)
+
+    def _device_command(self, operation):
+        if not self.dialog.pending:
+            self.manager.device_command(operation)
 
     def refresh(self, devices=False):
         if self.dialog.pending:
@@ -104,7 +201,9 @@ class SettingsController(QObject):
                 if section == 'character':
                     options = {key: value[key] for key in DEFAULT_CHARACTER_OPTIONS}
                     save_config(value['width'], value['height'], value['personality'],
-                                character_options=options, trace_id=self.operation_id)
+                                character_options=options,
+                                personality_traits=value['personality_traits'],
+                                trace_id=self.operation_id)
                     apply_runtime = self.character.apply_character_settings
                     runtime_options = dict(options)
                     try:
@@ -113,11 +212,18 @@ class SettingsController(QObject):
                         accepts_trace = False
                     if accepts_trace:
                         runtime_options['trace_id'] = self.operation_id
+                    runtime_options['personality_traits'] = value['personality_traits']
                     apply_runtime(value['width'], value['height'], value['personality'], **runtime_options)
                 elif section == 'voice':
                     tts = self.character.dialogue_system.tts
+                    # Turning speech off must work even if its saved model was
+                    # removed or the optional runtime is no longer available.
+                    if not value['enabled']:
+                        tts.set_enabled(False)
                     tts.set_voice(value['voice_id'])
-                    tts.set_enabled(value['enabled'])
+                    if value['enabled']:
+                        tts.set_enabled(True)
+                    tts.set_sync_bubble(value.get('sync_bubble', False))
                     tts.sync_settings()
                 elif section == 'dialogue':
                     width, height, personality = load_config()
@@ -173,6 +279,10 @@ class SettingsController(QObject):
             log_event('settings.remote.unknown', '인식 프로세스 종료로 실제 적용 결과를 알 수 없습니다.',
                       level='WARNING', trace_id=self.request_id)
         if self.dialog is None:
+            return
+        if message.get('kind') == 'device_result':
+            self.dialog.set_remote(message['state'], preserve_draft=True)
+            self.dialog.status.setText(message['message'])
             return
         if message.get('kind') == 'unavailable':
             self.load_timeout.stop()

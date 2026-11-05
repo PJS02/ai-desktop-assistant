@@ -1,0 +1,27 @@
+{
+  "version": "dizzy-v3",
+  "saved_on": "2026-10-28",
+  "kind": "source snapshot; paths are relative to directional_v5",
+  "files": [
+    {
+      "path": "dizzy-fx.js",
+      "sha256": "5765dbb7bc95d0579272c629bf8311702f10ae3a89af6a80e95fd5e239531580"
+    },
+    {
+      "path": "renderer.js",
+      "sha256": "8c548962bf2b075dc86fb8daab30686f5e7943ae10c39aa7ea2482d03b87352b"
+    },
+    {
+      "path": "studio.js",
+      "sha256": "227ad01f13a6daf4d703ffc1fed3e452d9b60ccef46106bd4beb4108c69e3f7d"
+    },
+    {
+      "path": "preview.html",
+      "sha256": "e1017def7990cc6fb6567c037fc344be6b3b3014cd2288b741a17110b9a64b26"
+    },
+    {
+      "path": "README.md",
+      "sha256": "23328c25985a01c9402e5bf4d44748bdac89648ab9d44c968a2e17a6a7ab7507"
+    }
+  ]
+}

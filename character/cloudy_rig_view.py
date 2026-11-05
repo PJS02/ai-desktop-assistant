@@ -173,7 +173,6 @@ class CloudyRigView(QOpenGLWidget):
 
     def set_debug_painter(self, callback):
         self._debug_painter = callback
-        self._character_pixel_rect = None
         self.update()
 
     def character_rect(self):
@@ -214,8 +213,8 @@ class CloudyRigView(QOpenGLWidget):
     def _measure_character_pixels(self, plan, width, height, dpr):
         """A body-only pass keeps symbols, debug text and held items out of bounds.
 
-        Only enabled diagnostics need this pass. Its single framebuffer is reused
-        until resize, and shares the resident textures and current pose meshes.
+        Physics and input need the same bounds with diagnostics on or off. The
+        framebuffer is reused until resize and shares the resident textures.
         """
         if (self._diagnostic_fbo is None
                 or self._diagnostic_fbo.width() != width or self._diagnostic_fbo.height() != height):
@@ -426,8 +425,7 @@ class CloudyRigView(QOpenGLWidget):
             program.enableAttributeArray(self._pos)
             program.enableAttributeArray(self._uv)
             self._character_pixel_rect = None
-            if self._debug_painter is not None:
-                self._measure_character_pixels(plan, width, height, dpr)
+            self._measure_character_pixels(plan, width, height, dpr)
             self._draw_commands(plan['commands'])
             program.disableAttributeArray(self._pos)
             program.disableAttributeArray(self._uv)
