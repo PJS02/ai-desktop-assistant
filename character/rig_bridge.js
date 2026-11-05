@@ -50,7 +50,13 @@
           bodyPositiveWeight: finite(uniforms.bodyPositiveWeight, 0),
           sourceClipEnabled: finite(uniforms.sourceClipEnabled, 0),
           sourceClipAxis: (uniforms.sourceClipAxis || [0, 0, 0]).slice(),
-          sourceClipBounds: (uniforms.sourceClipBounds || [0, 0]).slice()
+          sourceClipBounds: (uniforms.sourceClipBounds || [0, 0]).slice(),
+          skinOffset: (uniforms.skinOffset || [0, 0, 0]).slice(),
+          skinCenter: (uniforms.skinCenter || [0.5, 0.5]).slice(),
+          skinRadius: (uniforms.skinRadius || [1, 1]).slice(),
+          replacementSkinOffset: (uniforms.replacementSkinOffset || [0, 0, 0]).slice(),
+          replacementSkinCenter: (uniforms.replacementSkinCenter || [0.5, 0.5]).slice(),
+          replacementSkinRadius: (uniforms.replacementSkinRadius || [1, 1]).slice()
         });
       },
       result: function () { return commands; }

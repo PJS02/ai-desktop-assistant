@@ -32,14 +32,31 @@ uniform sampler2D bodyNegativeLower;uniform sampler2D bodyNegativeUpper;
 uniform float replacementAmount;uniform float bodyBlendEnabled;
 uniform float bodyPositiveWeight;uniform float sourceClipEnabled;
 uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;
-varying vec2 tex;void main(){if(sourceClipEnabled>0.5){float axial=
+uniform vec3 skinOffset;uniform vec3 replacementSkinOffset;
+uniform vec2 skinCenter;uniform vec2 skinRadius;
+uniform vec2 replacementSkinCenter;uniform vec2 replacementSkinRadius;
+varying vec2 tex;
+vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
+ if(color.a<0.001||dot(abs(offset),vec3(1.0))<0.000001)return color;
+ vec3 rgb=color.rgb/color.a;
+ float warmth=smoothstep(0.004,0.025,rgb.r-rgb.g)*smoothstep(0.012,0.045,rgb.r-rgb.b);
+ float lightness=smoothstep(0.62,0.82,min(rgb.g,rgb.b));
+ float chroma=max(rgb.r,max(rgb.g,rgb.b))-min(rgb.r,min(rgb.g,rgb.b));
+ float area=1.0-smoothstep(0.88,1.0,length((tex-center)/radius));
+ float mask=warmth*lightness*(1.0-smoothstep(0.14,0.28,chroma))*area;
+ if(mask<0.001)return color;
+ return vec4(clamp(rgb+offset*mask,0.0,1.0)*color.a,color.a);
+}
+void main(){if(sourceClipEnabled>0.5){float axial=
 dot(tex,sourceClipAxis.xy)+sourceClipAxis.z;if(axial<sourceClipBounds.x||
-axial>sourceClipBounds.y)discard;}vec4 base=texture2D(image,tex);
-if(bodyBlendEnabled>0.5){vec4 positive=base+(texture2D(replacement,tex)-base)*
+axial>sourceClipBounds.y)discard;}
+vec4 base=skinTone(texture2D(image,tex),skinOffset,skinCenter,skinRadius);
+vec4 next=skinTone(texture2D(replacement,tex),replacementSkinOffset,replacementSkinCenter,replacementSkinRadius);
+if(bodyBlendEnabled>0.5){vec4 positive=base+(next-base)*
 replacementAmount;vec4 negativeBase=texture2D(bodyNegativeLower,tex);
 vec4 negative=negativeBase+(texture2D(bodyNegativeUpper,tex)-negativeBase)*
 replacementAmount;gl_FragColor=(negative+(positive-negative)*bodyPositiveWeight)*
-opacity;}else{gl_FragColor=(base+(texture2D(replacement,tex)-base)*
+opacity;}else{gl_FragColor=(base+(next-base)*
 replacementAmount)*opacity;}}"""
 
 _GL_COLOR_BUFFER_BIT = 0x4000
@@ -204,6 +221,10 @@ class CloudyRigView(QOpenGLWidget):
                 program.setUniformValue(self._locations[name], float(command[name]))
             program.setUniformValue(self._locations['sourceClipAxis'], QVector3D(*command['sourceClipAxis']))
             program.setUniformValue(self._locations['sourceClipBounds'], QVector2D(*command['sourceClipBounds']))
+            for name in ('skinOffset', 'replacementSkinOffset'):
+                program.setUniformValue(self._locations[name], QVector3D(*command.get(name, (0, 0, 0))))
+            for name in ('skinCenter', 'replacementSkinCenter', 'skinRadius', 'replacementSkinRadius'):
+                program.setUniformValue(self._locations[name], QVector2D(*command.get(name, (.5, .5) if name.endswith('Center') else (1, 1))))
             data = command.get('vertexBytes')
             if data is None:
                 data = array('f', command['vertices']).tobytes()
@@ -312,7 +333,9 @@ class CloudyRigView(QOpenGLWidget):
             self._locations = {name: self._program.uniformLocation(name) for name in
                 ("viewport", "image", "replacement", "bodyNegativeLower", "bodyNegativeUpper",
                  "replacementAmount", "bodyBlendEnabled", "bodyPositiveWeight", "opacity",
-                 "sourceClipEnabled", "sourceClipAxis", "sourceClipBounds")}
+                 "sourceClipEnabled", "sourceClipAxis", "sourceClipBounds",
+                 "skinOffset", "skinCenter", "skinRadius", "replacementSkinOffset",
+                 "replacementSkinCenter", "replacementSkinRadius")}
             self._pos = self._program.attributeLocation("pos")
             self._uv = self._program.attributeLocation("uv")
             self.context().aboutToBeDestroyed.connect(self._cleanup_gl)

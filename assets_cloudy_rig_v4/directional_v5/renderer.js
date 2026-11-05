@@ -49,7 +49,7 @@ class Renderer{
   const compile=(type,source)=>{let s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s};
   this.program=gl.createProgram();
   gl.attachShader(this.program,compile(gl.VERTEX_SHADER,'attribute vec2 pos;attribute vec2 uv;uniform vec2 viewport;varying vec2 tex;void main(){gl_Position=vec4(pos.x/viewport.x*2.0-1.0,1.0-pos.y/viewport.y*2.0,0.0,1.0);tex=uv;}'));
-  gl.attachShader(this.program,compile(gl.FRAGMENT_SHADER,'precision mediump float;uniform sampler2D image;uniform sampler2D replacement;uniform sampler2D bodyNegativeLower;uniform sampler2D bodyNegativeUpper;uniform float replacementAmount;uniform float bodyBlendEnabled;uniform float bodyPositiveWeight;uniform float sourceClipEnabled;uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;varying vec2 tex;void main(){if(sourceClipEnabled>0.5){float axial=dot(tex,sourceClipAxis.xy)+sourceClipAxis.z;if(axial<sourceClipBounds.x||axial>sourceClipBounds.y)discard;}vec4 base=texture2D(image,tex);if(bodyBlendEnabled>0.5){vec4 positive=base+(texture2D(replacement,tex)-base)*replacementAmount;vec4 negativeBase=texture2D(bodyNegativeLower,tex);vec4 negative=negativeBase+(texture2D(bodyNegativeUpper,tex)-negativeBase)*replacementAmount;gl_FragColor=(negative+(positive-negative)*bodyPositiveWeight)*opacity;}else{gl_FragColor=(base+(texture2D(replacement,tex)-base)*replacementAmount)*opacity;}}'));
+  gl.attachShader(this.program,compile(gl.FRAGMENT_SHADER,"precision mediump float;uniform sampler2D image;uniform sampler2D replacement;uniform sampler2D bodyNegativeLower;uniform sampler2D bodyNegativeUpper;uniform float replacementAmount;uniform float bodyBlendEnabled;uniform float bodyPositiveWeight;uniform float sourceClipEnabled;uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;uniform vec3 skinOffset;uniform vec3 replacementSkinOffset;\nuniform vec2 skinCenter;uniform vec2 skinRadius;\nuniform vec2 replacementSkinCenter;uniform vec2 replacementSkinRadius;\nvarying vec2 tex;\nvec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){\n if(color.a<0.001||dot(abs(offset),vec3(1.0))<0.000001)return color;\n vec3 rgb=color.rgb/color.a;\n float warmth=smoothstep(0.004,0.025,rgb.r-rgb.g)*smoothstep(0.012,0.045,rgb.r-rgb.b);\n float lightness=smoothstep(0.62,0.82,min(rgb.g,rgb.b));\n float chroma=max(rgb.r,max(rgb.g,rgb.b))-min(rgb.r,min(rgb.g,rgb.b));\n float area=1.0-smoothstep(0.88,1.0,length((tex-center)/radius));\n float mask=warmth*lightness*(1.0-smoothstep(0.14,0.28,chroma))*area;\n if(mask<0.001)return color;\n return vec4(clamp(rgb+offset*mask,0.0,1.0)*color.a,color.a);\n}\nvoid main(){if(sourceClipEnabled>0.5){float axial=dot(tex,sourceClipAxis.xy)+sourceClipAxis.z;if(axial<sourceClipBounds.x||axial>sourceClipBounds.y)discard;}vec4 base=skinTone(texture2D(image,tex),skinOffset,skinCenter,skinRadius);vec4 next=skinTone(texture2D(replacement,tex),replacementSkinOffset,replacementSkinCenter,replacementSkinRadius);if(bodyBlendEnabled>0.5){vec4 positive=base+(next-base)*replacementAmount;vec4 negativeBase=texture2D(bodyNegativeLower,tex);vec4 negative=negativeBase+(texture2D(bodyNegativeUpper,tex)-negativeBase)*replacementAmount;gl_FragColor=(negative+(positive-negative)*bodyPositiveWeight)*opacity;}else{gl_FragColor=(base+(next-base)*replacementAmount)*opacity;}}"));
   gl.linkProgram(this.program);if(!gl.getProgramParameter(this.program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(this.program));
   gl.useProgram(this.program);this.pos=gl.getAttribLocation(this.program,'pos');this.uv=gl.getAttribLocation(this.program,'uv');this.opacity=gl.getUniformLocation(this.program,'opacity');
   gl.uniform2f(gl.getUniformLocation(this.program,'viewport'),360,540);gl.uniform1i(gl.getUniformLocation(this.program,'image'),0);
@@ -57,6 +57,7 @@ class Renderer{
   gl.uniform1i(gl.getUniformLocation(this.program,'bodyNegativeLower'),2);gl.uniform1i(gl.getUniformLocation(this.program,'bodyNegativeUpper'),3);
   this.bodyBlendEnabled=gl.getUniformLocation(this.program,'bodyBlendEnabled');this.bodyPositiveWeight=gl.getUniformLocation(this.program,'bodyPositiveWeight');
   this.sourceClipEnabled=gl.getUniformLocation(this.program,'sourceClipEnabled');this.sourceClipAxis=gl.getUniformLocation(this.program,'sourceClipAxis');this.sourceClipBounds=gl.getUniformLocation(this.program,'sourceClipBounds');
+  for(const name of ['skinOffset','skinCenter','skinRadius','replacementSkinOffset','replacementSkinCenter','replacementSkinRadius'])this[name]=gl.getUniformLocation(this.program,name);
   this.buffer=gl.createBuffer();this.images={};this.textures={};this.grids={};this.parts={...P};this.viewZoom=1;
   gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,true);
 
@@ -117,6 +118,16 @@ class Renderer{
    data.length=0;for(const value of clipped)data.push(value);
   }
   const baseTexture=this.textures[baseTextureName]||this.textures[name];
+  const tone=part=>root.CloudySkinTone?root.CloudySkinTone.forPart(part):null;
+  const baseTone=tone(this.parts[baseTextureName]||part);
+  const replacementTone=blendName&&this.textures[blendName]?tone(this.parts[blendName]):baseTone;
+  for(const [prefix,profile]of [['skin',baseTone],['replacementSkin',replacementTone]]){
+   const delta=profile?profile.delta:[0,0,0],center=profile?profile.center:[.5,.5],radius=profile?profile.radius:[1,1];
+   gl.uniform3f(this[prefix+'Offset'],delta[0],delta[1],delta[2]);
+   gl.uniform2f(this[prefix+'Center'],center[0],center[1]);
+   gl.uniform2f(this[prefix+'Radius'],radius[0],radius[1]);
+  }
+
   // A folded sleeve is two painted surfaces meeting at an opaque overlap.
   // Clipping in atlas space keeps the original ink; no elbow crossfade can
   // cancel opposing bone transforms or turn the strap into a stretched smear.
@@ -493,6 +504,14 @@ class Renderer{
    for(const rect of [[outside,top,right-outside,belowLip-top],
     [bx,belowLip,width,bottom-belowLip]]){
     this.mesh(rightJawSource,mapping,opacity,24,28,null,0,null,null,null,rect);
+   }
+  }else if(cfg.prefix==='left'&&emotion==='quiet'&&this.textures[name+'_russell_neutral']){
+   // The quiet painting left an inner jaw line beside and below the lip.
+   // These opaque patches keep the original face mesh, eyes and lips intact.
+   const rx=81,ry=242,outside=104,belowLip=257,right=136,bottom=272;
+   this.mesh(faceTexture,mapping,opacity,24,28,faceReplacement,speechBlend||genericBlend);
+   for(const rect of [[rx,ry,outside-rx,belowLip-ry],[rx,belowLip,right-rx,bottom-belowLip]]){
+    this.mesh(name+'_russell_neutral',mapping,opacity,24,28,null,0,null,null,null,rect);
    }
   }else if(jawRepair&&this.textures[jawSource]){
    const band={origin:{x:0,y:0},axis:jawRepair.axis,scale:1},jawCut=jawRepair.cut;
