@@ -6,13 +6,14 @@ from PyQt6.QtGui import QPixmap
 RIG_EMOTIONS = frozenset({
     "neutral", "happy", "excited", "proud", "relieved", "calm", "anxious",
     "hurt", "displeased", "distressed", "sad", "depressed", "tired", "angry",
-    "scared",
+    "fear", "scared", "dizzy", "dizzy_plain",
+    "pleasant", "thrilled", "quiet", "serene",
 })
 HOST_EMOTIONS = {
     "idle": "neutral", "joy": "happy", "delight": "happy",
     "excitement": "excited", "interest": "excited", "contentment": "relieved",
     "peaceful": "calm", "anger": "angry", "disgust": "displeased",
-    "fear": "scared", "anxiety": "anxious", "sadness": "sad",
+    "anxiety": "anxious", "sadness": "sad",
     "melancholy": "depressed", "despair": "distressed", "distress": "distressed",
     "pride": "proud", "relief": "relieved", "pain": "hurt", "fatigue": "tired",
     "bored": "tired",
@@ -37,14 +38,18 @@ class RigAnimator(QObject):
     frame_changed = pyqtSignal(QPixmap)
     animation_finished = pyqtSignal()
 
-    def __init__(self, view, parent=None):
+    def __init__(self, view, parent=None, *, mood_face=None):
         super().__init__(parent)
         self.view = view
+        self._mood_face = mood_face
         self.current_animation = None
         self.current_action = "idle"
         self.current_emotion = "neutral"
         self._requested_emotion = "neutral"
         self._emotion_override = None
+        self._motion_emotion = None
+        self._reaction_emotion = None
+        self._urgent_reaction = False
         self.is_looping = True
         self.is_playing = False
         self._paused = False
@@ -56,15 +61,34 @@ class RigAnimator(QObject):
         if self._released:
             return
         self._requested_emotion = rig_emotion(name)
-        emotion = self._emotion_override or self._requested_emotion
+        self._refresh_emotion()
+
+    def _refresh_emotion(self):
+        if self._released:
+            return
+        urgent = self._reaction_emotion if self._urgent_reaction else None
+        emotion = (self._motion_emotion or urgent or self._emotion_override
+                   or self._reaction_emotion or self._requested_emotion)
         if emotion != self.current_emotion:
             self.current_emotion = emotion
             self.view.set_emotion(emotion)
 
+    def set_mood_emotion(self, name):
+        self.set_emotion(self._mood_face() if self._mood_face is not None else name)
+
     def set_emotion_override(self, name=None):
         """Pin only the rendered face while continuing to receive real moods."""
         self._emotion_override = rig_emotion(name) if name else None
-        self.set_emotion(self._requested_emotion)
+        self._refresh_emotion()
+
+    def set_motion_emotion(self, name=None):
+        self._motion_emotion = rig_emotion(name) if name else None
+        self._refresh_emotion()
+
+    def set_reaction_emotion(self, name=None, *, urgent=False):
+        self._reaction_emotion = rig_emotion(name) if name else None
+        self._urgent_reaction = urgent
+        self._refresh_emotion()
 
     def set_direction(self, flipped=False, *, front=False):
         self.set_yaw(0 if front else (65 if flipped else -65))

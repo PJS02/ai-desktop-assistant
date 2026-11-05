@@ -77,7 +77,7 @@ for(const view of Object.values(views)){
 function profileFor(cfg){return cfg&&cfg.head&&cfg.head[0]===0?views[cfg.prefix]||null:null;}
 function baseFaceFor(cfg){const view=profileFor(cfg);return view?view.baseFace:null;}
 
-function createSprites(images={},parts={}){
+function createSprites(images={},parts={},options={}){
  const sprites={};
  // The old gaze paintings retain thin iris contours. Fill only the eye
  // apertures with newly drawn whites; the source lashes and skin stay intact.
@@ -96,6 +96,7 @@ function createSprites(images={},parts={}){
   sprites['fx_dizzy_whites_'+direction]=canvas;
  }
  for(const [direction,view] of Object.entries(plainViews)){
+  if(options.skipSkin)continue; // Native Qt builds pixel-dependent skin masks.
   const [x,y,w,h]=view.skinBounds;
   const canvas=document.createElement('canvas');canvas.width=w*4;canvas.height=h*4;
   const c=canvas.getContext('2d');

@@ -19,14 +19,18 @@ DISPLAY_EMOTIONS = (
     ('neutral', '중립'), ('happy', '기쁨'), ('excited', '신남'), ('proud', '자부심'),
     ('relieved', '안도'), ('calm', '차분함'), ('anxious', '불안'), ('hurt', '상처받음'),
     ('displeased', '불쾌'), ('distressed', '괴로움'), ('angry', '분노'), ('sad', '슬픔'),
-    ('scared', '두려움'), ('depressed', '우울'), ('tired', '피곤함'),
+    ('fear', '두려움'), ('scared', '놀람'), ('depressed', '우울'), ('tired', '피곤함'), ('dizzy', '어질어질'),
+    ('dizzy_plain', '어질어질2'),
+    ('pleasant', '유쾌'), ('thrilled', '흥분'), ('quiet', '조용'), ('serene', '고요한'),
 )
 DISPLAY_EMOTION_NAMES = dict(DISPLAY_EMOTIONS)
 SPRITE_DISPLAY_EMOTIONS = {
     'neutral': 'neutral', 'happy': 'happy', 'excited': 'happy', 'proud': 'happy',
     'relieved': 'happy', 'calm': 'neutral', 'anxious': 'fear', 'hurt': 'sad',
     'displeased': 'angry', 'distressed': 'sad', 'angry': 'angry', 'sad': 'sad',
-    'scared': 'fear', 'depressed': 'sad', 'tired': 'neutral',
+    'fear': 'fear', 'scared': 'fear', 'depressed': 'sad', 'tired': 'neutral', 'dizzy': 'neutral',
+    'dizzy_plain': 'neutral',
+    'pleasant': 'happy', 'thrilled': 'happy', 'quiet': 'neutral', 'serene': 'neutral',
 }
 
 
@@ -60,7 +64,7 @@ class ManualControl(QObject):
         mood = host.mood_system.decide_emotion()
         if host.rig_view is not None:
             host.sprite_animator.set_emotion_override(self.display_emotion)
-            host.sprite_animator.set_emotion(mood['emotion'])
+            host.sprite_animator.set_mood_emotion(mood['emotion'])
         elif host.is_moving and host.on_ground and not host.is_dragging:
             host.current_action = host._get_walk_animation(mood['emotion'])
             host.update_render(host.current_action)
@@ -273,7 +277,7 @@ class ManualControl(QObject):
                 host.current_action = pose
                 host.sprite_animator.play(pose, fps=24, loop=pose != 'wave')
             if pose == 'wave':
-                host._show_perception_dialogue('안녕! 👋')
+                host._show_greeting_dialogue()
             self._status(f'직접 조작 중 · {COMMAND_LABELS[pose]}')
             return
         if self.motion == 'jump' and host.on_ground:
@@ -288,7 +292,7 @@ class ManualControl(QObject):
             if not host.current_action.startswith(self.motion):
                 emotion = host.mood_system.decide_emotion()['emotion']
                 if self.motion == 'run':
-                    host.sprite_animator.set_emotion(emotion)
+                    host.sprite_animator.set_mood_emotion(emotion)
                     host.current_action = 'run'
                 else:
                     host.current_action = host._get_walk_animation(emotion)

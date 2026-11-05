@@ -16,7 +16,8 @@ from PyQt6.QtQml import QJSEngine, QJSValue
 
 DEFAULT_RIG_ROOT = Path(__file__).resolve().parents[1] / "assets_cloudy_rig_v4" / "directional_v5"
 RIG_SOURCES = (
-    "textures/parts.js", "motion.js", "limb-girth.js", "emotion-fx.js",
+    "textures/parts.js", "skin-tone.js", "motion.js", "limb-girth.js", "emotion-fx.js",
+    "dizzy-fx.js",
     "side-wave-skinning.js", "side-cuff.js", "side-cuff-roll.js",
     "side-cuff-attachment.js", "side-cuff-motion.js", "side-cuff-art.js",
     "side-cuff-fit.js", "renderer.js",
@@ -100,6 +101,8 @@ class RigPlanner:
         self.engine = QJSEngine(parent)
         self.source_hashes: dict[str, str] = {}
         self._evaluate("var window=this;var globalThis=this;"
+                       "if(!Array.prototype.flatMap)Array.prototype.flatMap=function(fn){"
+                       "return [].concat.apply([],this.map(fn));};"
                        "if(!Object.fromEntries)Object.fromEntries=function(items){var out={};"
                        "items.forEach(function(pair){out[pair[0]]=pair[1];});return out;};"
                        "if(!Array.prototype.at)Object.defineProperty(Array.prototype,'at',{"

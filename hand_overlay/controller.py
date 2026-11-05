@@ -128,7 +128,7 @@ class HandOverlayController(QObject):
         for identity, window in self._bindings.items():
             if window.isVisible() and window.hand is not None and len(window.points) == 21:
                 points = tuple((p.x() + window.x(), p.y() + window.y()) for p in window.points)
-                result.append(DisplayedHand(identity, points, window.hand.points))
+                result.append(DisplayedHand(identity, points, window.hand.points, window.hand.label))
         return tuple(result)
 
     def poll(self):

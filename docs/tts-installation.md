@@ -8,7 +8,7 @@
 2. With the app closed, run `setup_tts_runtime.cmd` once. It creates `.tts-runtime/env`, installs the
    pinned inference libraries and Korean text-processing resources, and checks
    CUDA availability. It does not replace the application's Python environment.
-3. Open **설정 → 음성**. Download the desired engine, then select its voice and apply.
+3. Open **설정 → 대화·음성 → 음성 모델 다운로드**. Download the desired engine, then select its voice and apply.
    This step downloads model files only; it does not run pip or modify drivers.
 
 Model downloads show progress, can be cancelled and retried, and verify both
@@ -40,7 +40,7 @@ confirmed preparation steps across enabled features, rather than estimating time
 tasks without intermediate progress advance when their ready event arrives.
 The bar hides three seconds after completion and returns for loading or errors.
 
-**설정 → 음성 → 말풍선과 음성 재생 동기화** controls when AI response text
+**설정 → 대화·음성 → 말풍선 표시 시점** controls when AI response text
 appears. It defaults to off (show text immediately). When on, the bubble waits
 for the audio device's actual playback-start signal, rather than synthesis
 completion. Disabled/unavailable audio and AI error notices still display text.
