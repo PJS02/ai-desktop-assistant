@@ -7,7 +7,7 @@ from app_logging import log_event
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
@@ -141,10 +141,10 @@ class SettingsDialog(QDialog):
             QLineEdit, QComboBox { min-height: 28px; padding: 3px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; }
             QComboBox QAbstractItemView { background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; border: 1px solid #cbd5e1; outline: 0; }
             QComboBox QAbstractItemView::item { min-height: 26px; padding: 4px 8px; }
-            QSpinBox { min-height: 28px; padding: 0 21px 0 6px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; }
-            QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: border; width: 16px; border-left: 1px solid #dce2ea; background: #f6f8fb; }
-            QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
-            QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
+            QSpinBox, QDoubleSpinBox { min-height: 28px; padding: 0 21px 0 6px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; }
+            QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { subcontrol-origin: border; width: 16px; border-left: 1px solid #dce2ea; background: #f6f8fb; }
+            QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
+            QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
             QPushButton { padding: 8px 15px; }
             QPushButton#emotionButton { background: white; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
             QPushButton#emotionButton:checked { background: #e8f1fd; color: #2463b6; border: 2px solid #2463b6; font-weight: 600; }
@@ -250,6 +250,21 @@ class SettingsDialog(QDialog):
             line.addWidget(spin)
             form = basic if key in ('size_percent', 'movement_speed') else movement
             form.addRow(label, row)
+        self.emotion_delta_enabled = QCheckBox('감정 변화 문구 표시')
+        self.emotion_delta_enabled.setChecked(local['character']['emotion_delta_enabled'])
+        basic.addRow(self.emotion_delta_enabled)
+        self.emotion_delta_duration = QDoubleSpinBox()
+        low, high = CHARACTER_OPTION_RANGES['emotion_delta_duration_ms']
+        self.emotion_delta_duration.setRange(low / 1000, high / 1000)
+        self.emotion_delta_duration.setDecimals(2)
+        self.emotion_delta_duration.setSingleStep(0.05)
+        self.emotion_delta_duration.setSuffix(' 초')
+        self.emotion_delta_duration.setFixedWidth(120)
+        self.emotion_delta_duration.setValue(local['character']['emotion_delta_duration_ms'] / 1000)
+        self.emotion_delta_duration.setEnabled(self.emotion_delta_enabled.isChecked())
+        self.emotion_delta_enabled.toggled.connect(self.emotion_delta_duration.setEnabled)
+        self.emotion_delta_duration.setToolTip('캐릭터 앞에 뜨는 원인과 감정 변화 문구의 표시 시간입니다. 다음 문구부터 적용됩니다.')
+        basic.addRow('감정 변화 표시 시간', self.emotion_delta_duration)
         self.movement_range_preview = QLabel()
         self.movement_range_preview.setWordWrap(True)
         movement.addRow(self.movement_range_preview)
@@ -1020,6 +1035,8 @@ class SettingsDialog(QDialog):
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
+        local['character']['emotion_delta_duration_ms'] = round(self.emotion_delta_duration.value() * 1000)
+        local['character']['emotion_delta_enabled'] = self.emotion_delta_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
         dialogue = {'style': self.dialogue_style.currentData()}
         baseline = {'style': normalize_dialogue_style(self.local_baseline.get('dialogue', {}).get('style'))}

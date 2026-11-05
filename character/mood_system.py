@@ -919,7 +919,7 @@ class MoodSystem:
 
         # A continuous input can merge into the history item. Report only this step.
         if occ_changes and category != "recovery" and self._on_occ_change is not None:
-            self._on_occ_change(occ_changes)
+            self._on_occ_change(source, occ_changes)
 
 
     def _apply_occ_to_mood(self) -> None:

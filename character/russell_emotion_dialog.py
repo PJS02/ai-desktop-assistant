@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import datetime
 from app_logging import log_event, log_throttled
 from .mood_system import OCC_EMOTION_NAMES
-from .russell_sectors import NEUTRAL_RADIUS, SECTOR_ANGLE, SECTOR_NAMES, SECTORS, russell_face
+from .russell_sectors import SECTOR_ANGLE, SECTOR_NAMES, SECTORS, russell_face
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -186,25 +186,13 @@ class RussellEmotionCanvas(QWidget):
         painter.setBrush(QColor(255, 255, 255))
         painter.drawRect(self.rect())
 
-        face = russell_face(self.valence_target, self.arousal_target)
-        neutral_radius = radius * NEUTRAL_RADIUS
-        for i, (name, _) in enumerate(SECTORS):
-            boundary = (i - 0.5) * SECTOR_ANGLE
-            if name == face:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor('#d9efea'))
-                painter.drawPie(rect, round(boundary * 16), round(SECTOR_ANGLE * 16))
-
-        painter.setPen(QPen(QColor('#cad8d9'), 1))
-        for i in range(len(SECTORS)):
-            angle = math.radians((i - 0.5) * SECTOR_ANGLE)
-            direction = QPointF(math.cos(angle), -math.sin(angle))
-            painter.drawLine(center + direction * neutral_radius, center + direction * radius)
-        painter.setBrush(QColor('#d9efea' if face == 'neutral' else '#f7faf9'))
-        painter.drawEllipse(center, neutral_radius, neutral_radius)
-        painter.setPen(QPen(QColor('#52666b'), 1.5))
+        painter.setPen(QPen(QColor(0, 0, 0), 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(center, radius, radius)
+
+        painter.setPen(QPen(QColor(0, 0, 0), 2))
+        painter.drawLine(int(center.x() - radius), int(center.y()), int(center.x() + radius), int(center.y()))
+        painter.drawLine(int(center.x()), int(center.y() - radius), int(center.x()), int(center.y() + radius))
 
         painter.setPen(QPen(QColor(0, 0, 0), 1))
         label_font = QFont("Malgun Gothic", 9)

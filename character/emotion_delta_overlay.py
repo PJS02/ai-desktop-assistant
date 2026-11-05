@@ -11,8 +11,21 @@ from PyQt6.QtWidgets import QApplication, QWidget
 from .mood_system import NEGATIVE_OCC_EMOTIONS, OCC_EMOTION_NAMES, OccEmotionToMood
 
 
+SOURCE_LABELS = {
+    "캐릭터 클릭": "클릭",
+    "캐릭터 클릭 (위로)": "클릭으로 위로",
+    "빠른 캐릭터 드래그": "거친 드래그",
+    "지속적인 캐릭터 드래그": "오래 끌기",
+    "갑작스러운 화면 변화": "화면 변화",
+    "복잡한 작업 감지": "복잡한 작업",
+    "파일 전달받음": "파일 받기",
+    "파일 놓침": "파일 반환",
+}
+
+
 @dataclass(frozen=True)
 class EmotionPopup:
+    cause: QPainterPath
     text: QPainterPath
     color: QColor
     origin: QPointF
@@ -21,9 +34,9 @@ class EmotionPopup:
 
 
 class EmotionDeltaOverlay(QWidget):
-    DURATION = 0.95
+    BASELINE = 110
 
-    def __init__(self, character):
+    def __init__(self, character, duration_ms, *, enabled=True):
         super().__init__(
             character, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus
@@ -33,12 +46,17 @@ class EmotionDeltaOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setFixedSize(230, 120)
+        self.setFixedSize(248, 170)
         self._font = QFont("Malgun Gothic")
         self._font.setPixelSize(18)
         self._font.setBold(True)
+        self._cause_font = QFont(self._font)
+        self._cause_font.setPixelSize(13)
         self._pending = {}
         self._popups = []
+        self.enabled = enabled
+        self.duration_ms = duration_ms
+        self._duration = duration_ms / 1000
         self._started = 0.0
         self._elapsed = 0.0
         self._batch = QTimer(self)
@@ -49,15 +67,21 @@ class EmotionDeltaOverlay(QWidget):
         self._animation.setInterval(16)
         self._animation.timeout.connect(self._advance)
 
-    @pyqtSlot(dict)
-    def collect(self, changes):
+    @pyqtSlot(str, dict)
+    def collect(self, source, changes):
         host = self.parentWidget()
-        if not host.isVisible() or getattr(host, '_character_closing', False):
+        if not self.enabled or not host.isVisible() or getattr(host, '_character_closing', False):
             return
         for emotion, delta in changes.items():
-            self._pending[emotion] = self._pending.get(emotion, 0.0) + delta
+            key = (source, emotion)
+            self._pending[key] = self._pending.get(key, 0.0) + delta
         if not self._batch.isActive():
             self._batch.start()
+
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+        if not enabled:
+            self.clear()
 
     def clear(self):
         self._batch.stop()
@@ -69,18 +93,19 @@ class EmotionDeltaOverlay(QWidget):
     def _show_pending(self):
         if self._animation.isActive():
             return
-        if not self.parentWidget().isVisible():
+        if not self.enabled or not self.parentWidget().isVisible():
             self.clear()
             return
         ranked = sorted(self._pending.items(), key=lambda entry: abs(entry[1]), reverse=True)
         self._pending.clear()
         lines = [
-            (emotion, round(delta * 100))
-            for emotion, delta in ranked[:2]
+            (source, emotion, round(delta * 100))
+            for (source, emotion), delta in ranked[:2]
             if abs(delta) >= 0.01 - 1e-12
         ]
         if lines:
             self._popups = self._make_popups(lines)
+            self._duration = self.duration_ms / 1000
             self._started = time.monotonic()
             self._elapsed = 0.0
             self._position()
@@ -91,12 +116,18 @@ class EmotionDeltaOverlay(QWidget):
 
     def _make_popups(self, lines):
         x = self.width() / 2 + random.uniform(-11, 11)
-        y = 76 + random.uniform(-2, 4)
+        y = self.BASELINE + random.uniform(-2, 4)
         side = random.choice((-1, 1))
-        height_gap = random.choice((-1, 1)) * random.uniform(29, 32)
+        height_gap = random.choice((-1, 1)) * random.uniform(44, 46)
         metrics = QFontMetricsF(self._font)
+        cause_metrics = QFontMetricsF(self._cause_font)
         popups = []
-        for index, (emotion, points) in enumerate(lines):
+        for index, (source, emotion, points) in enumerate(lines):
+            label = cause_metrics.elidedText(
+                SOURCE_LABELS.get(source, source), Qt.TextElideMode.ElideRight, 126
+            )
+            cause = QPainterPath()
+            cause.addText(-cause_metrics.horizontalAdvance(label) / 2, -22, self._cause_font, label)
             sign = '+' if points > 0 else '−'
             text = f'{OCC_EMOTION_NAMES[emotion]} {sign}{abs(points)}'
             path = QPainterPath()
@@ -112,12 +143,12 @@ class EmotionDeltaOverlay(QWidget):
             drift = QPointF(drift_x, -random.uniform(22, 27))
             positive_gain = points > 0 and OccEmotionToMood(emotion) not in NEGATIVE_OCC_EMOTIONS
             color = QColor('#a6f284' if positive_gain else '#ff797d')
-            popups.append(EmotionPopup(path, color, origin, drift, delay))
+            popups.append(EmotionPopup(cause, path, color, origin, drift, delay))
         return popups
 
     def _advance(self):
         self._elapsed = time.monotonic() - self._started
-        if self._elapsed >= self.DURATION + self._popups[-1].delay:
+        if self._elapsed >= self._duration + self._popups[-1].delay:
             self._animation.stop()
             self.hide()
             if not self._batch.isActive():
@@ -132,7 +163,7 @@ class EmotionDeltaOverlay(QWidget):
         screen = QApplication.screenAt(body.center()) or host.screen()
         bounds = screen.availableGeometry()
         x = body.center().x() - self.width() // 2
-        y = body.top() + round(body.height() * .60) - 76
+        y = body.top() + round(body.height() * .60) - self.BASELINE
         self.move(
             max(bounds.left(), min(x, bounds.right() + 1 - self.width())),
             max(bounds.top(), min(y, bounds.bottom() + 1 - self.height())),
@@ -144,12 +175,14 @@ class EmotionDeltaOverlay(QWidget):
         outline = QPen(QColor('#27312d'), 2.5)
         outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         for popup in self._popups:
-            phase = (self._elapsed - popup.delay) / self.DURATION
+            phase = (self._elapsed - popup.delay) / self._duration
             if not 0.0 <= phase < 1.0:
                 continue
             painter.save()
             painter.translate(popup.origin + popup.drift * (phase * (2 - phase)))
             painter.setOpacity(min(1.0, (1.0 - phase) / .40))
+            painter.strokePath(popup.cause, outline)
+            painter.fillPath(popup.cause, QColor('#f5f5ea'))
             painter.strokePath(popup.text, outline)
             painter.fillPath(popup.text, popup.color)
             painter.restore()

@@ -97,7 +97,7 @@ class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     automatic_response_ready = pyqtSignal(object)
-    occ_changed = pyqtSignal(dict)
+    occ_changed = pyqtSignal(str, dict)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -276,7 +276,8 @@ class CharacterWidget(QLabel):
 
         self.is_moving = False
         self.contact_feedback = ContactFeedback(self)
-        self.emotion_delta_overlay = EmotionDeltaOverlay(self)
+        self.emotion_delta_overlay = EmotionDeltaOverlay(
+            self, options['emotion_delta_duration_ms'], enabled=options['emotion_delta_enabled'])
         self.occ_changed.connect(self.emotion_delta_overlay.collect)
         self._pet_last_position = None
         self._pet_last_time = 0.0
@@ -2160,7 +2161,7 @@ class CharacterWidget(QLabel):
             self.set_pixmap_with_flip(self.current_pixmap)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, running_speed=None, personality_traits=None, trace_id=None):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, running_speed=None, emotion_delta_duration_ms=None, emotion_delta_enabled=None, personality_traits=None, trace_id=None):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
         same_width = self.custom_screen_width == requested_width
@@ -2182,6 +2183,10 @@ class CharacterWidget(QLabel):
                                             if movement_range_extra_percent is None else movement_range_extra_percent),
             'boredom_minutes': (self.autonomous_needs.boredom_minutes
                                 if boredom_minutes is None else boredom_minutes),
+            'emotion_delta_duration_ms': (self.emotion_delta_overlay.duration_ms
+                                         if emotion_delta_duration_ms is None else emotion_delta_duration_ms),
+            'emotion_delta_enabled': (self.emotion_delta_overlay.enabled
+                                     if emotion_delta_enabled is None else emotion_delta_enabled),
         }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
@@ -2194,6 +2199,8 @@ class CharacterWidget(QLabel):
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.autonomous_needs.set_boredom_minutes(options['boredom_minutes'])
+        self.emotion_delta_overlay.duration_ms = options['emotion_delta_duration_ms']
+        self.emotion_delta_overlay.set_enabled(options['emotion_delta_enabled'])
         self.set_show_hitboxes(options['show_hitboxes'])
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)
         bounds_changed = not (same_width and same_height)

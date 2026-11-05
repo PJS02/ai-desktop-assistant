@@ -3,10 +3,11 @@ import math
 
 DEFAULT_CHARACTER_OPTIONS = {'size_percent': 100, 'movement_speed': 80, 'running_speed': 180, 'jump_height': 225,
                              'show_hitboxes': True, 'movement_range_extra_percent': 0,
-                             'boredom_minutes': 3}
+                             'boredom_minutes': 3, 'emotion_delta_duration_ms': 950,
+                             'emotion_delta_enabled': True}
 CHARACTER_OPTION_RANGES = {'size_percent': (50, 200), 'movement_speed': (20, 400), 'running_speed': (20, 800),
                            'jump_height': (20, 500), 'movement_range_extra_percent': (-200, 200),
-                           'boredom_minutes': (0, 10)}
+                           'boredom_minutes': (0, 10), 'emotion_delta_duration_ms': (500, 5000)}
 
 
 def random_movement_scale(size_percent, extra_percent):
