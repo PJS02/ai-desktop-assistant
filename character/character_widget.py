@@ -14,12 +14,17 @@ from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIc
 from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
+from hand_overlay.interaction_host import ContactFeedback
+from hand_overlay.interactions import PET_HEAD_HEIGHT_RATIO
 from .emotion_assets import resolve_animation_asset
+from .greetings import choose_greeting
 from .mood_system import MoodSystem
+from .emotion_delta_overlay import EmotionDeltaOverlay
 from .autonomous_needs import AutonomousNeeds
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
 from .rig_state import RigAnimator
+from .reactions import Reactions, choose_face, react, reaction_mood
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
@@ -34,6 +39,7 @@ from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 
 CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
+GAME_AUDIO_DIRECTORY = Path(__file__).resolve().parent.parent / 'assets/audio/games'
 
 
 # Context 모듈 import
@@ -95,6 +101,7 @@ class CharacterWidget(QLabel):
     # 신호들
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     automatic_response_ready = pyqtSignal(object)
+    occ_changed = pyqtSignal(str, dict)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -175,7 +182,7 @@ class CharacterWidget(QLabel):
         self.personality_system = PersonalitySystem(personality_preset or PersonalitySystem.DEFAULT_PRESET)
         if personality_traits is not None:
             self.personality_system.set_traits(personality_traits, preset_name=personality_preset)
-        self.mood_system = MoodSystem(self.personality_system)  # 성격을 mood_system에 전달
+        self.mood_system = MoodSystem(self.personality_system, on_occ_change=self.occ_changed.emit)
         self.russell_dialog = None
         self.current_action = "idle"
         self.drag_pos = None
@@ -231,6 +238,7 @@ class CharacterWidget(QLabel):
         self._rig_fallback_pending = False
         self._rig_overlay_key = None
         self._character_closing = False
+        self.reactions = Reactions(self)
         self.setFixedSize(*self._scaled_character_size())
         self._initialize_character_renderer()
         
@@ -273,6 +281,10 @@ class CharacterWidget(QLabel):
         self._chase_last_time = None
 
         self.is_moving = False
+        self.contact_feedback = ContactFeedback(self)
+        self.emotion_delta_overlay = EmotionDeltaOverlay(
+            self, options['emotion_delta_duration_ms'], enabled=options['emotion_delta_enabled'])
+        self.occ_changed.connect(self.emotion_delta_overlay.collect)
         self._pet_last_position = None
         self._pet_last_time = 0.0
         self._cursor_over_character = False
@@ -348,6 +360,7 @@ class CharacterWidget(QLabel):
         self._physics_position_x = None
         self.bounce_damping = 0.6  # 경계 충돌 시 속도 감소 (0.6 = 60% 유지)
         self.friction = 0.98  # 공기 저항 (0.98 = 2% 감소)
+        self._hand_throw_active = False
         self.on_ground = False  # 시작할 때는 떨어진 상태 (중력 작동)
         
         # 중력 타이머
@@ -386,6 +399,8 @@ class CharacterWidget(QLabel):
         
         # ====== 대화 시스템 초기화 ======
         self.dialogue_system = DialogueSystem(self)
+        self._pending_game_cues = []
+        self.dialogue_system.tts.busy_changed.connect(self._on_game_voice_busy_changed)
         self._automatic_request_generation = 0
         self._automatic_request_active = False
         dialogue_options = normalize_dialogue_options(dialogue_options)
@@ -412,11 +427,9 @@ class CharacterWidget(QLabel):
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
         self.perception_controller = PerceptionController(
             mood_system=self.mood_system,
-            on_dialogue=self._show_perception_dialogue,
             on_greeting=self._request_user_greeting,
             on_speech=self.dialogue_system.submit_speech,
             on_speech_with_context=self.dialogue_system.submit_speech_with_context,
-            on_dialogue_with_context=lambda text, context: self._show_perception_dialogue(text, log_context=context),
         )
         self.dialogue_system.tts.speaking_changed.connect(self.perception_controller.set_speech_suppressed)
         self.dialogue_system.user_input_received.connect(lambda text, source: self._mark_character_interaction())
@@ -450,6 +463,11 @@ class CharacterWidget(QLabel):
         timer = getattr(self, '_taskbar_visibility_timer', None)
         if timer is not None:
             timer.stop()
+        overlay = getattr(self, 'emotion_delta_overlay', None)
+        if overlay is not None:
+            overlay.clear()
+        if (reactions := getattr(self, 'reactions', None)) is not None:
+            reactions.cancel()
         super().hideEvent(event)
 
     def _ensure_taskbar_visibility(self):
@@ -485,7 +503,9 @@ class CharacterWidget(QLabel):
                 view.set_external_physics(True)
                 view.set_debug_painter(self._paint_debug if self.show_debug else None)
                 self.rig_view = view
-                self.sprite_animator = RigAnimator(view, parent=self)
+                self.sprite_animator = RigAnimator(
+                    view, parent=self, mood_face=self.mood_system.get_display_emotion
+                )
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
                 view.failed.connect(self._queue_sprite_fallback)
                 view.pose_bounds_changed.connect(self._align_grounded_pose, Qt.ConnectionType.DirectConnection)
@@ -521,6 +541,8 @@ class CharacterWidget(QLabel):
         log_event('renderer.fallback', 'PNG 렌더러로 전환', category='캐릭터 상태', level='WARNING', reason=str(reason),
                   action=getattr(self, 'current_action', None), emotion=getattr(self, 'current_emotion', None))
         old_view = self.rig_view
+        if (reactions := getattr(self, 'reactions', None)) is not None:
+            reactions.cancel()
         self.sprite_animator.release()
         self.sprite_animator.deleteLater()
         self.rig_view = None
@@ -568,7 +590,7 @@ class CharacterWidget(QLabel):
         self.current_action = action
         self.sprite_animator.set_yaw(self._idle_rig_yaw())
         mood_emotion = self.mood_system.decide_emotion()["emotion"]
-        self.sprite_animator.set_emotion(self._get_sprite_display_emotion(mood_emotion))
+        self.sprite_animator.set_mood_emotion(mood_emotion)
         self.sprite_animator.play(action, loop=action != "wave")
         if action == "idle":
             self.update_action(self.mood_system.decide_emotion())
@@ -591,6 +613,8 @@ class CharacterWidget(QLabel):
         return self.sprite_animator.yaw
 
     def _rig_landed(self):
+        if (reactions := getattr(self, 'reactions', None)) is not None:
+            reactions.safe()
         if self.rig_view is not None:
             self.rig_view.set_jump_active(False)
             phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
@@ -682,6 +706,18 @@ class CharacterWidget(QLabel):
                     or getattr(dialogue, '_speaking', False)
                     or time.monotonic() < getattr(dialogue, '_response_hold_until', 0))
 
+    def _show_greeting_dialogue(self):
+        if CharacterWidget._dialogue_is_busy(self):
+            return False
+        text, audio = choose_greeting(self.personality_system.preset_name)
+        context = dict(getattr(self, '_greeting_log_context', None) or {})
+        context.setdefault('trace_id', new_trace_id('greeting'))
+        context['source'] = 'greeting'
+        shown = _with_log_context(self._show_perception_dialogue, text, log_context=context)
+        if shown:
+            self.dialogue_system.tts.play_clip(audio, context=context)
+        return shown
+
     @pyqtSlot(str)
     def _show_automatic_ai_response(self, text):
         if not getattr(self, '_character_closing', False) and not CharacterWidget._dialogue_is_busy(self):
@@ -712,6 +748,7 @@ class CharacterWidget(QLabel):
                 log_event('perception.greeting_cancelled', '보류 시간 초과', category='사용자 인식', trace_id=getattr(self, '_greeting_log_context', {}).get('trace_id'))
             return False
         if (self.is_dragging or self.is_jumping or not self.on_ground
+                or CharacterWidget._dialogue_is_busy(self)
                 or getattr(self, '_ball_session_active', False)
                 or (self.rps_game is not None and self.rps_game.isVisible())
                 or CharacterWidget._cham_game_active(self)
@@ -723,6 +760,7 @@ class CharacterWidget(QLabel):
         self._mark_character_interaction()
         if self.rig_view is not None:
             self._play_rig_action('wave')
+            react(self, "greeting")
         else:
             self._move_timer.stop()
             self.is_moving = False
@@ -732,7 +770,7 @@ class CharacterWidget(QLabel):
             if (self.assets_path / 'wave').is_dir():
                 self.current_action = 'wave'
                 self.sprite_animator.play('wave', fps=24, loop=False)
-        _with_log_context(self._show_perception_dialogue, '안녕! 👋', log_context=getattr(self, '_greeting_log_context', None))
+        self._show_greeting_dialogue()
         print('[사용자 인사] 캐릭터 인사 재생')
         return True
 
@@ -746,6 +784,8 @@ class CharacterWidget(QLabel):
                 log_event('dialogue.automatic_cancelled', '앱 종료로 자동 응답 무효화', category='대화·AI', trace_id=context.get('trace_id'))
             getattr(self, '_automatic_log_contexts', {}).clear()
         self._character_closing = True
+        if (reactions := getattr(self, 'reactions', None)) is not None:
+            reactions.cancel()
         self._automatic_request_generation = getattr(self, '_automatic_request_generation', 0) + 1
         self._automatic_request_active = False
         if hasattr(self, 'manual_control'):
@@ -762,6 +802,8 @@ class CharacterWidget(QLabel):
             if timer is not None:
                 timer.stop()
         self.animation_controller.stop()
+        if hasattr(self, 'contact_feedback'):
+            self.contact_feedback.clear()
         if self.rig_view is not None:
             self.sprite_animator.release()
         else:
@@ -927,10 +969,7 @@ class CharacterWidget(QLabel):
             position = self.mapFromGlobal(QCursor.pos())
         inside = self._body_contains(position)
         if not inside:
-            CharacterWidget._finish_pet_log(self, 'cursor_left')
-            self._pet_last_position = None
-            self._pet_session_logged = False
-            self._pet_refusal_session_logged = False
+            CharacterWidget._reset_mouse_pet(self, 'cursor_left')
         self._cursor_over_character = inside
         return inside
 
@@ -1225,7 +1264,10 @@ class CharacterWidget(QLabel):
                 and getattr(self, "_rig_manual_action", None) in {"sleep", "thinking"}):
             self._rig_manual_action = None
         if not self.is_dragging and not self.is_moving:
+            was_resting = self.current_action == "sleep"
             self.update_action(self.mood_system.decide_emotion())
+            if was_resting:
+                react(self, "wake", follow="wake_settle")
 
     def _run_autonomous_behavior(self, event_name: str) -> bool:
         """Run a short visible action after the idle-only selector picks an intent."""
@@ -1265,7 +1307,10 @@ class CharacterWidget(QLabel):
         if (self._manual_control_active() or self.is_dragging or self.is_moving
                 or CharacterWidget._dialogue_is_busy(self)):
             return
+        was_resting = self.current_action == "sleep"
         self.update_action(self.mood_system.decide_emotion())
+        if was_resting:
+            react(self, "wake", follow="wake_settle")
 
     def update_mood(self):
         if self.is_dragging or self.is_moving:
@@ -1312,6 +1357,7 @@ class CharacterWidget(QLabel):
         if random.random() > 0.06:
             return
 
+        before = reaction_mood(self)
         mood = self.mood_system.decide_emotion()
         emotion = mood["emotion"]
         event_name = self.autonomous_needs.choose(emotion, mood["intensity"])
@@ -1325,6 +1371,8 @@ class CharacterWidget(QLabel):
         behavior_started = self._run_autonomous_behavior(event_name)
         if behavior_started:
             self.autonomous_needs.satisfy(event_name)
+            if event_name == "self_play":
+                react(self, "self_play", before=before)
         log_event(
             'character.autonomous.need_selected',
             '방치 상태의 욕구를 바탕으로 자율 활동을 선택했습니다.',
@@ -1375,9 +1423,7 @@ class CharacterWidget(QLabel):
         if CharacterWidget._cham_game_active(self):
             return
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(
-                self._get_sprite_display_emotion(mood["emotion"])
-            )
+            self.sprite_animator.set_mood_emotion(mood["emotion"])
             self._refresh_rig_overlay()
             busy = (getattr(self, "is_dragging", False)
                     or getattr(self, "is_moving", False)
@@ -1464,7 +1510,7 @@ class CharacterWidget(QLabel):
                 if self.on_ground and (self.is_moving or getattr(self, "_ball_chasing", False)):
                     if (self._manual_control_active()
                             and getattr(self.manual_control, 'motion', None) == 'run'):
-                        self.sprite_animator.set_emotion(mood["emotion"])
+                        self.sprite_animator.set_mood_emotion(mood["emotion"])
                         self.current_action = 'run'
                     else:
                         self.current_action = self._get_walk_animation(mood["emotion"])
@@ -1694,6 +1740,12 @@ class CharacterWidget(QLabel):
                 event.accept()
                 return
 
+            if getattr(self, '_hand_throw_active', False):
+                self._finish_hand_throw()
+            self._tap = (event.globalPosition().toPoint(), time.monotonic(), reaction_mood(self))
+            self._last_rough_drag = None
+            self._drag_reacted = False
+            self._drag_discomfort_shown = False
             self.mood_system.on_click()
             self._mark_character_interaction()
             self.drag_pos = event.globalPosition().toPoint()
@@ -1725,6 +1777,9 @@ class CharacterWidget(QLabel):
         if self.is_dragging and self.drag_pos:
             current_pos = event.globalPosition().toPoint()
             delta = current_pos - self.drag_pos
+            tap = getattr(self, '_tap', None)
+            if tap is not None and (current_pos - tap[0]).manhattanLength() > QApplication.startDragDistance():
+                self._tap = None
             
             # 드래그 속도 계산 (픽셀 거리)
             drag_distance = (delta.x() ** 2 + delta.y() ** 2) ** 0.5
@@ -1736,6 +1791,16 @@ class CharacterWidget(QLabel):
             
             # 빠른 드래그 감지 (100px 이상) → on_drag_hard 트리거
             if drag_distance > 100:
+                before = reaction_mood(self)
+                now = time.monotonic()
+                previous = getattr(self, '_last_rough_drag', None)
+                self._last_rough_drag = (now, delta)
+                if previous is None or now - previous[0] > .9:
+                    react(self, "drag_start", before=before, source="drag")
+                elif not self._drag_reacted and QPoint.dotProduct(previous[1], delta) < 0:
+                    self._drag_reacted = True
+                    react(self, "drag_repeated", before=before, source="drag",
+                          strength=min(1.5, 1 + (drag_distance - 100) / 250))
                 self.mood_system.on_drag_hard()
                 print(f"[on_drag_hard 트리거] 속도={drag_distance:.1f}px, vx={delta.x():.1f}, vy={delta.y():.1f}")
             
@@ -1750,8 +1815,13 @@ class CharacterWidget(QLabel):
             self.dialogue_system.update_dialogue_position()
             return
 
-        if not self._refresh_body_hover(event.position().toPoint()):
+        position = event.position().toPoint()
+        if not self._refresh_body_hover(position):
             event.ignore()
+            return
+        body = self._physics_body_rect()
+        if position.y() >= body.top() + body.height() * PET_HEAD_HEIGHT_RATIO:
+            CharacterWidget._reset_mouse_pet(self, 'cursor_left_head')
             return
         current_pos = event.globalPosition().toPoint()
         current_time = time.monotonic()
@@ -1782,11 +1852,16 @@ class CharacterWidget(QLabel):
 
         if self.mood_system.should_refuse_pet():
             if not self._pet_refusal_session_logged:
+                react(self, "pet_refused", source="mouse_pet")
                 print("[쓰다듬기 거부] 감정이 너무 나빠 접촉을 거부함")
                 self._pet_refusal_session_logged = True
             return
 
+        before = reaction_mood(self)
         reward = self.mood_system.on_pet(movement_speed, elapsed)
+        self.contact_feedback.pulse('pet')
+        if reward > 0:
+            react(self, "pet", before=before, sustain=True)
         if not getattr(self, '_pet_trace_id', None):
             self._pet_trace_id = new_trace_id('pet')
             self._pet_log_start_count = self._pet_log_count
@@ -1813,6 +1888,12 @@ class CharacterWidget(QLabel):
             )
             self._pet_session_logged = True
 
+    def _reset_mouse_pet(self, reason):
+        CharacterWidget._finish_pet_log(self, reason)
+        self._pet_last_position = None
+        self._pet_session_logged = False
+        self._pet_refusal_session_logged = False
+
     def _finish_pet_log(self, reason):
         trace_id = getattr(self, '_pet_trace_id', None)
         if trace_id:
@@ -1838,19 +1919,17 @@ class CharacterWidget(QLabel):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        CharacterWidget._finish_pet_log(self, 'cursor_left')
+        CharacterWidget._reset_mouse_pet(self, 'cursor_left')
         self._cursor_over_character = False
-        self._pet_last_position = None
-        self._pet_session_logged = False
-        self._pet_refusal_session_logged = False
         super().leaveEvent(event)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event, *, hand_throw_velocity=None):
         if (not getattr(self, 'is_dragging', False)
                 or (event is not None and event.button() != Qt.MouseButton.LeftButton)):
             if event is not None:
                 event.ignore()
             return
+        tap, self._tap = getattr(self, '_tap', None), None
         drag_duration = getattr(self, 'drag_time', 0)
         was_dragging = getattr(self, 'is_dragging', False)
         self.is_dragging = False
@@ -1872,6 +1951,15 @@ class CharacterWidget(QLabel):
         # 저장된 드래그 속도가 있으면 그것을 사용, 없으면 0
         self.velocity_x = getattr(self, '_drag_velocity_x', 0) * 0.5  # 0.5배 감쇠
         self.velocity_y = getattr(self, '_drag_velocity_y', 0) * 0.5
+        if hand_throw_velocity is not None:
+            vx, vy = hand_throw_velocity
+            self.velocity_x = vx / 60
+            self.velocity_y = vy / 60
+            self._hand_throw_active = True
+            if (reactions := getattr(self, 'reactions', None)) is not None:
+                reactions.cancel()
+            if self.rig_view is not None:
+                self.sprite_animator.set_motion_emotion('dizzy_plain')
         if was_dragging:
             log_event('character.drag_finished', '드래그 종료', category='캐릭터 상태', trace_id=getattr(self, '_drag_trace_id', None), duration=drag_duration,
                       start_position=getattr(self, '_drag_start_position', None), release_position=(self.x(), self.y()), velocity_x=self.velocity_x, velocity_y=self.velocity_y, mood=CharacterWidget._log_mood_snapshot(self))
@@ -1886,6 +1974,9 @@ class CharacterWidget(QLabel):
         # 중력 즉시 활성화 (첫 프레임 바로 적용)
         self.on_ground = False
         self._apply_gravity()  # ← 즉시 호출로 지연 제거
+        if (event is not None and tap is not None and time.monotonic() - tap[1] <= .35
+                and (event.globalPosition().toPoint() - tap[0]).manhattanLength() <= QApplication.startDragDistance()):
+            react(self, "tap", before=tap[2])
         
         # 현재 감정 상태 유지 (walk 애니메이션 아님)
         mood = self.mood_system.decide_emotion()
@@ -1901,13 +1992,58 @@ class CharacterWidget(QLabel):
         # 호흡 애니메이션 비활성화 (떨어지는 중이므로)
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
+
+    def _finish_hand_throw(self):
+        self._hand_throw_active = False
+        self.velocity_x = self.velocity_y = 0.
+        if self.rig_view is not None:
+            self.sprite_animator.set_motion_emotion()
     
     # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
+    def _play_game_cue(self, cue):
+        if self._character_closing or cue not in {
+                'scissors', 'rock', 'paper', 'cham_1', 'cham_2', 'cham_final'}:
+            return False
+        tts = self.dialogue_system.tts
+        if tts.busy and tts.request_source != 'game':
+            log_event('game.voice.skipped', '진행 중인 음성을 유지하고 게임 음성을 생략합니다.',
+                      category='대화·AI', cue=cue, reason='voice_busy')
+            return False
+        if tts.busy or self._pending_game_cues:
+            self._pending_game_cues.append(cue)
+            self._on_game_voice_busy_changed(tts.busy)
+            return True
+        return self._play_game_recording(cue)
+
+    def _play_game_recording(self, cue):
+        return self.dialogue_system.tts.play_clip(
+            GAME_AUDIO_DIRECTORY / f'{cue}.wav',
+            context={'source': 'game', 'cue': cue, 'trace_id': new_trace_id('game-voice')})
+
+    def _on_game_voice_busy_changed(self, busy):
+        if not busy and self._pending_game_cues:
+            QTimer.singleShot(0, self._drain_game_cues)
+
+    def _drain_game_cues(self):
+        tts = self.dialogue_system.tts
+        if tts.busy and tts.request_source != 'game':
+            self._pending_game_cues.clear()
+        while not self._character_closing and self._pending_game_cues and not tts.busy:
+            self._play_game_recording(self._pending_game_cues.pop(0))
+
+    def _stop_game_voice(self):
+        self._pending_game_cues.clear()
+        self.dialogue_system.tts.stop_clip('game')
+
     def show_rps_game(self):
         if CharacterWidget._cham_game_active(self):
             self.cham_game.close()
         if self.rps_game is None:
             self.rps_game = RpsGameOverlay(self._rps_command_callback, self)
+            self.rps_game.cue_requested.connect(self._play_game_cue)
+            self.rps_game.cue_stopped.connect(self._stop_game_voice)
+            self.rps_game.cue_stopped.connect(lambda: self.reactions.clear("rps"))
+            self.rps_game.result_revealed.connect(lambda event: react(self, event, source="rps"))
         self._mark_character_interaction()
         self.rps_game.start_game()
         self.dialogue_system.update_dialogue_position()
@@ -1930,8 +2066,16 @@ class CharacterWidget(QLabel):
         if self.cham_game is None:
             self.cham_game = ChamGameOverlay(self._rps_command_callback, self,
                                              pose_callback=self._apply_cham_pose)
+            self.cham_game.cue_requested.connect(self._play_game_cue)
+            self.cham_game.cue_stopped.connect(self._stop_game_voice)
+            if self.rig_view is not None:
+                self.cham_game.reaction_face = lambda event, strength: choose_face(
+                    event, reaction_mood(self), strength=strength
+                )
         if self.cham_game.is_active:
             self.cham_game.close()
+        if (reactions := getattr(self, 'reactions', None)) is not None:
+            reactions.cancel()
         self._cham_saved_pose = (self._rig_preferred_yaw, getattr(self, '_rig_direction_explicit', False),
                                  self.is_flipped, getattr(self.sprite_animator, 'yaw', 0))
         self.manual_control._stop_horizontal()
@@ -1967,7 +2111,9 @@ class CharacterWidget(QLabel):
         self.is_flipped = yaw > 0
         if self.rig_view is not None:
             self.sprite_animator.set_yaw(yaw)
-            self.sprite_animator.set_emotion_override(emotion or 'neutral')
+            if emotion is None:
+                self.sprite_animator.set_mood_emotion(self.mood_system.decide_emotion()['emotion'])
+            self.sprite_animator.set_emotion_override(emotion or self.manual_control.display_emotion)
             self._refresh_rig_overlay()
         else:
             self.update_render('happy' if emotion == 'happy' else 'sad' if emotion == 'sad' else 'idle')
@@ -2053,7 +2199,7 @@ class CharacterWidget(QLabel):
             self.set_pixmap_with_flip(self.current_pixmap)
         self.update()
 
-    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, running_speed=None, personality_traits=None, trace_id=None):
+    def apply_character_settings(self, width, height, personality, size_percent=None, movement_speed=None, jump_height=None, show_hitboxes=None, movement_range_extra_percent=None, boredom_minutes=None, *, running_speed=None, emotion_delta_duration_ms=None, emotion_delta_enabled=None, personality_traits=None, trace_id=None):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
         same_width = self.custom_screen_width == requested_width
@@ -2075,6 +2221,10 @@ class CharacterWidget(QLabel):
                                             if movement_range_extra_percent is None else movement_range_extra_percent),
             'boredom_minutes': (self.autonomous_needs.boredom_minutes
                                 if boredom_minutes is None else boredom_minutes),
+            'emotion_delta_duration_ms': (self.emotion_delta_overlay.duration_ms
+                                         if emotion_delta_duration_ms is None else emotion_delta_duration_ms),
+            'emotion_delta_enabled': (self.emotion_delta_overlay.enabled
+                                     if emotion_delta_enabled is None else emotion_delta_enabled),
         }, strict=True)
         old_width, old_height = self.width(), self.height()
         was_grounded, standing_surface = self.on_ground, self.current_surface
@@ -2087,6 +2237,8 @@ class CharacterWidget(QLabel):
         self.jump_height = options['jump_height']
         self.movement_range_extra_percent = options['movement_range_extra_percent']
         self.autonomous_needs.set_boredom_minutes(options['boredom_minutes'])
+        self.emotion_delta_overlay.duration_ms = options['emotion_delta_duration_ms']
+        self.emotion_delta_overlay.set_enabled(options['emotion_delta_enabled'])
         self.set_show_hitboxes(options['show_hitboxes'])
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)
         bounds_changed = not (same_width and same_height)
@@ -2251,9 +2403,14 @@ class CharacterWidget(QLabel):
         
         if mime_data.hasUrls():
             urls = mime_data.urls()
+            before = reaction_mood(self)
+            acquired = False
             for url in urls:
                 file_path = url.toLocalFile()
-                self.acquire_item(file_path)
+                if file_path:
+                    acquired = self.acquire_item(file_path) or acquired
+            if acquired:
+                react(self, "file_received", before=before)
             event.acceptProposedAction()
 
     def _restore_held_items(self):
@@ -2316,8 +2473,10 @@ class CharacterWidget(QLabel):
             # 현재 감정 애니메이션 갱신 + 아이콘 표시
             mood = self.mood_system.decide_emotion()
             self.update_action(mood)
+            return True
         except Exception as e:
             print(f"[오류] 아이템 획득 실패: {e}")
+            return False
 
     def release_items_to_desktop(self):
         """들고있던 아이템을 바탕화면으로 순차적 반환 (1초 간격)"""
@@ -2407,7 +2566,9 @@ class CharacterWidget(QLabel):
             # 아이콘 업데이트 (제거된 아이템을 반영)
             self.render()
             if not self._remaining_items_to_release:
+                before = reaction_mood(self)
                 self._release_single_item()
+                react(self, "files_returned", before=before)
             
         except Exception as e:
             if self._release_timer is not None:
@@ -2459,7 +2620,7 @@ class CharacterWidget(QLabel):
         emotion = mood["emotion"]
         self.current_action = "jump" if self.rig_view is not None else self._get_emotion_animation(emotion)
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(emotion)
+            self.sprite_animator.set_mood_emotion(emotion)
             phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
             if phase_setter is not None:
                 phase_setter(.15)
@@ -2564,6 +2725,10 @@ class CharacterWidget(QLabel):
             return  # Hand interactions currently affect movement only, not mood or files.
         if self.is_dragging:
             self.drag_time += 0.1
+            if self.drag_time >= 1.2 and not getattr(self, '_drag_discomfort_shown', False):
+                self._drag_discomfort_shown = True
+                if not getattr(self, '_drag_reacted', False):
+                    react(self, "drag_discomfort", source="drag")
             
             # 3초 이상 드래그하면 아이템 반환 시작
             if self.drag_time >= 3.0 and self.held_items and not self._remaining_items_to_release:
@@ -2575,7 +2740,7 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
-        if CharacterWidget._cham_game_active(self):
+        if CharacterWidget._cham_game_active(self) or getattr(self, '_hand_throw_active', False):
             return
         if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
             return
@@ -2666,7 +2831,7 @@ class CharacterWidget(QLabel):
 
     def move_toward_ball(self, ball_x: int) -> None:
         """Scale configured pixels/second by PJS02's emotion and intensity."""
-        if CharacterWidget._cham_game_active(self):
+        if CharacterWidget._cham_game_active(self) or getattr(self, '_hand_throw_active', False):
             return
         if self._manual_control_active() or self.is_dragging or self.is_jumping:
             self._chase_last_time = None
@@ -2754,7 +2919,7 @@ class CharacterWidget(QLabel):
         """
         if self.rig_view is not None:
             self._rig_manual_action = None
-            self.sprite_animator.set_emotion(emotion)
+            self.sprite_animator.set_mood_emotion(emotion)
             self.sprite_animator.set_direction(self.is_flipped)
             self._refresh_rig_overlay()
             return "walk"
@@ -2789,7 +2954,7 @@ class CharacterWidget(QLabel):
         등의 폴더를 만들면 자동으로 사용됨
         """
         if self.rig_view is not None:
-            self.sprite_animator.set_emotion(emotion)
+            self.sprite_animator.set_mood_emotion(emotion)
             return "fall"
         # TODO: fall 애니메이션 구현
         # emotion_fall = f"fall_{emotion}"
@@ -2880,6 +3045,10 @@ class CharacterWidget(QLabel):
         steps = max(1, math.ceil(dt * 120))
         for _ in range(steps):
             CharacterWidget._gravity_step(self, dt * 60 / steps)
+        if (getattr(self, '_hand_throw_active', False) and self.on_ground
+                and abs(self.velocity_x) < .65):
+            self._finish_hand_throw()
+            self._rig_landed()
         self.dialogue_system.update_dialogue_position()
         self.repaint()
 
@@ -2895,6 +3064,7 @@ class CharacterWidget(QLabel):
             current_x = float(self.x())
         body = self._physics_body_rect()
         body_bottom = body.y() + body.height()
+        throwing = getattr(self, '_hand_throw_active', False)
 
         if abs(self.velocity_x) > 0.1:
             # Exponential damping has the same total effect at any callback rate.
@@ -2937,16 +3107,21 @@ class CharacterWidget(QLabel):
             self.move(round(current_x), round(self._physics_position_y))
             return
 
+        lost_support = self.on_ground and standing is not None
         self.on_ground = False
         self.current_surface = None
         velocity = self.velocity_y
         # Exact constant acceleration, including time spent at terminal speed.
-        terminal = 20.0
+        # A fast downward throw keeps its launch speed until a collision.
+        terminal = max(36.0, velocity) if throwing else 20.0
         until_terminal = max(0.0, (terminal - velocity) / self.gravity)
         accelerated = min(frames, until_terminal)
         new_y = (current_y + velocity * accelerated + .5 * self.gravity * accelerated ** 2
                  + terminal * (frames - accelerated))
         self.velocity_y = min(velocity + self.gravity * frames, terminal)
+        if throwing and new_y + body.y() < screen_top:
+            new_y = screen_top - body.y()
+            self.velocity_y = max(0., -self.velocity_y * self.bounce_damping)
         if (self.rig_view is not None and self.velocity_y > 0
                 and self.sprite_animator.current_action != "fall"):
             self.current_action = "fall"
@@ -2965,25 +3140,36 @@ class CharacterWidget(QLabel):
         # Select from the previous feet position, then test the downward crossing.
         # This also catches fast falls through thin window tops without accepting
         # side entry below their top or an upward jump through them.
-        landing_surface = self.get_landing_surface(current_y, current_x)
+        landing_surface = (next((surface for surface in self.surfaces if surface.name == 'ground'), None)
+                           if throwing else self.get_landing_surface(current_y, current_x))
+        reactions = getattr(self, 'reactions', None)
+        if (reactions is not None and not throwing and not self.is_jumping
+                and landing_surface is not None and self.velocity_y > 0
+                and new_y + body_bottom < landing_surface.y_level):
+            gap = landing_surface.y_level - (current_y + body_bottom)
+            reactions.falling(gap / max(1, body.height()), sudden=lost_support)
         if (landing_surface is not None and self.velocity_y >= 0
-                and current_y + body_bottom <= landing_surface.y_level
+                and (throwing or current_y + body_bottom <= landing_surface.y_level)
                 and new_y + body_bottom >= landing_surface.y_level):
             new_y = landing_surface.y_level - body_bottom
-            self.on_ground = True
-            self.velocity_y = 0
-            self.velocity_x *= 0.8
-            self.current_surface = landing_surface
-            self._authored_jump_landing = self.is_jumping
-            self.is_jumping = False
-            self._jump_physics_y = None
-            self.can_jump = True
-            self._grounded_body_bottom = body_bottom
-            self._grounded_surface_level = landing_surface.y_level
-            self._last_surface_name = landing_surface.name
-            print(f"[착지!] 표면: {landing_surface.name}, surface_y={landing_surface.y_level}px -> char_y={new_y}px")
-            if self.rig_view is not None or not self.is_moving:
-                self._rig_landed()
+            if throwing and self.velocity_y >= 3.:
+                self.velocity_y *= -self.bounce_damping
+                self.velocity_x *= .9
+            else:
+                self.on_ground = True
+                self.velocity_y = 0
+                self.velocity_x *= 0.8
+                self.current_surface = landing_surface
+                self._authored_jump_landing = self.is_jumping
+                self.is_jumping = False
+                self._jump_physics_y = None
+                self.can_jump = True
+                self._grounded_body_bottom = body_bottom
+                self._grounded_surface_level = landing_surface.y_level
+                self._last_surface_name = landing_surface.name
+                print(f"[착지!] 표면: {landing_surface.name}, surface_y={landing_surface.y_level}px -> char_y={new_y}px")
+                if not throwing and (self.rig_view is not None or not self.is_moving):
+                    self._rig_landed()
 
         self._physics_position_x, self._physics_position_y = current_x, new_y
         self.move(round(current_x), round(new_y))

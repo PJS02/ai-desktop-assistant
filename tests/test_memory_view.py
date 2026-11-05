@@ -147,9 +147,9 @@ def test_settings_tab_loads_the_supplied_store_without_setting_changes(app, memo
              'ai': {'api_key': '', 'model': ''}}
     with patch.object(SettingsDialog, '_refresh_voice_models'):
         dialog = SettingsDialog(local, model_manager=Mock(), long_term_memory=memory)
-    assert dialog.tabs.tabText(2) == '사용자 인식'
-    assert dialog.tabs.tabText(3) == 'AI'
-    assert dialog.tabs.tabText(5) == '장기기억'
+    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.recognition_page)) == '카메라·마이크'
+    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.dialogue_page)) == '대화·음성'
+    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.memory_view)) == '장기기억'
     dialog.tabs.setCurrentWidget(dialog.memory_view)
     dialog.show()
     wait_for_page(app, dialog.memory_view)

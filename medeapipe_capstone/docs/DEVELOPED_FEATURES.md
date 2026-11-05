@@ -20,7 +20,6 @@
 | 얼굴/상체/손 트래킹 | MediaPipe Holistic 기반 랜드마크 추출 및 시각화 | `detailed_holistic_tracker.py` |
 | 가위바위보 인식 | 손가락 펴짐 상태를 기반으로 ROCK/PAPER/SCISSORS/NONE 판정 | `detailed_holistic_tracker.py`, `holistic_gui_app.py` |
 | 참참참 모드 | 눈 중심 대비 코 위치로 얼굴 방향 LEFT/CENTER/RIGHT 판정 | `holistic_gui_app.py` |
-| 에어드로잉 | 검지 끝 좌표의 이동 경로를 화면에 선으로 표시 | `holistic_gui_app.py` |
 | 감정 인식 | 얼굴 영역 crop 후 MobileNetV3 기반 7개 감정 분류 | `emotion_recognizer.py`, `holistic_gui_app.py` |
 | 영상 처리 | 입력 영상 또는 웹캠 프레임을 분석해 주석 영상과 JSON 저장 | `detailed_holistic_tracker.py` |
 | 데이터 저장 | 프레임별 랜드마크, 요약 정보, 상체 지표, 손 제스처 JSON 출력 | `detailed_holistic_tracker.py` |
@@ -37,7 +36,6 @@
 - 모드 버튼:
   - 가위바위보
   - 참참참
-  - 에어드로잉
 - 토글 옵션:
   - 트래킹 표시 켜기/끄기
   - 검은 화면에 마커만 표시
@@ -130,19 +128,7 @@
 - 임계값 안에 있으면 `CENTER`
 - 필요한 랜드마크가 없으면 `NONE`
 
-## 7. 에어드로잉 모드
-
-에어드로잉 모드는 손의 검지 끝 이동 경로를 화면에 선으로 남기는 기능이다.
-
-### 구현 내용
-
-- 왼손/오른손 검지 끝 좌표를 각각 추적
-- 손이 사라지는 구간에는 경로를 끊기 위해 `None` 삽입
-- 손별 최대 180개 포인트 유지
-- 왼손은 빨간색, 오른손은 파란색 계열 선으로 표시
-- 에어드로잉 모드로 전환할 때 기존 경로 초기화
-
-## 8. 감정 인식 기능
+## 7. 감정 인식 기능
 
 `emotion_recognizer.py`는 PyTorch 기반 감정 인식 모델을 정의하고, `epoch72_best_acc_0.8664.pth` 가중치를 로드해 추론한다.
 
@@ -173,7 +159,7 @@
 - 모델 예측 결과와 confidence를 우측 상단 오버레이에 표시
 - 모델 로드 실패 시 GUI 상태에 오류 메시지 표시
 
-## 9. 배치/CLI 영상 처리 기능
+## 8. 배치/CLI 영상 처리 기능
 
 `detailed_holistic_tracker.py`는 명령행에서 직접 실행할 수 있으며, 영상 파일 또는 웹캠을 입력으로 처리한다.
 
@@ -200,7 +186,7 @@
 - 프레임별 JSON 데이터
 - 처리된 프레임 수 콘솔 출력
 
-## 10. 웹캠 처리 기능
+## 9. 웹캠 처리 기능
 
 웹캠 입력은 안정성을 위해 여러 백엔드를 순차적으로 탐색한다.
 
@@ -210,7 +196,7 @@
 
 자동 탐색은 0번부터 5번까지의 카메라 인덱스를 확인한다. 프레임을 실제로 읽을 수 있는 장치만 후보로 등록한다.
 
-## 11. 실험 및 산출물
+## 10. 실험 및 산출물
 
 `정리` 폴더에는 개발 과정에서 사용된 실험 스크립트와 결과물이 보관되어 있다.
 
@@ -233,7 +219,7 @@
 - `정리/test01_holistic_rps.mp4`
 - `정리/test01_holistic_rps.json`
 
-## 12. 주요 파일 설명
+## 11. 주요 파일 설명
 
 | 파일 | 설명 |
 | --- | --- |
@@ -246,7 +232,7 @@
 | `test01.mp4` | Holistic/RPS 실험용 입력 영상 |
 | `정리/` | 실험 스크립트와 생성 결과물 보관 폴더 |
 
-## 13. 실행 예시
+## 12. 실행 예시
 
 ### GUI 실행
 
@@ -272,7 +258,7 @@ python detailed_holistic_tracker.py --show-preview
 python detailed_holistic_tracker.py --input test01.mp4 --max-frames 100
 ```
 
-## 14. 사용 프레임워크 및 라이브러리
+## 13. 사용 프레임워크 및 라이브러리
 
 현재 코드 기준으로 사용하는 주요 프레임워크와 라이브러리는 다음과 같다.
 
@@ -307,7 +293,7 @@ python detailed_holistic_tracker.py --input test01.mp4 --max-frames 100
 | `epoch72_best_acc_0.8664.pth` | PyTorch 감정 인식 모델 가중치 |
 | `pose_landmarker.task` | MediaPipe Tasks 기반 포즈 랜드마커 모델 파일 |
 
-## 15. 현재 구현 상태
+## 14. 현재 구현 상태
 
 완성된 기능:
 
@@ -317,7 +303,6 @@ python detailed_holistic_tracker.py --input test01.mp4 --max-frames 100
 - 상체 주요 지표 계산
 - 가위바위보 인식
 - 참참참 얼굴 방향 판정
-- 에어드로잉
 - 감정 인식 모델 연동
 - 영상 파일 배치 처리
 - 결과 영상 및 JSON 저장
@@ -327,7 +312,6 @@ python detailed_holistic_tracker.py --input test01.mp4 --max-frames 100
 
 - `requirements.txt` 추가
 - GUI 내 결과 저장 버튼 추가
-- 에어드로잉 지우기 버튼 추가
 - 감정 인식 confidence 임계값 설정
 - 한국어/영어 표시 언어 옵션
 - PDF 리포트 자동 생성 스크립트 추가

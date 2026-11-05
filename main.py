@@ -255,10 +255,13 @@ class MediaPipeProcessManager(QObject):
             packet, self._latest_preview = self._latest_preview, None
             return packet
 
-    def device_command(self, action):
+    def device_command(self, action, *, request_id=None):
         if not self.is_running and not self.start():
             return False
-        return self._send_command('settings ' + json.dumps({'action': 'device', 'operation': action}))
+        request = {'action': 'device', 'operation': action}
+        if request_id is not None:
+            request['request_id'] = request_id
+        return self._send_command('settings ' + json.dumps(request))
 
     def send_game_command(self, command: str) -> bool:
         if command.startswith(("rps_begin ", "cham_begin ")) and not self.is_running:

@@ -95,7 +95,7 @@ class ModelStore:
 
     def verify_engine(self, engine):
         if not self.installed(engine) or not all(self.verified(a) for a in self.assets(engine)):
-            raise ValueError('음성 모델이 없거나 손상되었습니다. 설정 → 음성에서 다시 다운로드해 주세요.')
+            raise ValueError('음성 모델이 없거나 손상되었습니다. 설정 → 대화·음성 → 음성 모델 다운로드에서 다시 다운로드해 주세요.')
 
     def install(self, engine, cancel, progress):
         assets = self.assets(engine)

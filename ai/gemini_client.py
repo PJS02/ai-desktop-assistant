@@ -15,6 +15,7 @@ from context.screen_privacy import ScreenPrivacyError, redact_screen
 
 
 AI_DIR = Path(__file__).resolve().parent
+REQUEST_TIMEOUT_SECONDS = 120
 CONFIG_PATH = AI_DIR / "config" / "gemini_config.json"
 LEGACY_CONFIG_PATHS = (
     AI_DIR.parent / "context" / "gemini_config.json",
@@ -122,7 +123,7 @@ def request_gemini(
         if "inlineData" in part else part for part in parts]}]
     log_event("gemini.request", "Gemini 요청 본문 (이미지 데이터 제외)", category="대화·AI",
               trace_id=trace_id, model=model, payload=log_payload,
-              source=context.get("source"), timeout_seconds=30)
+              source=context.get("source"), timeout_seconds=REQUEST_TIMEOUT_SECONDS)
     request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), method="POST")
     request.add_header("Content-Type", "application/json")
     for attempt in range(3):
@@ -130,7 +131,7 @@ def request_gemini(
         log_event("gemini.attempt_started", "Gemini HTTP 요청 시작", category="대화·AI",
                   trace_id=trace_id, attempt=attempt + 1, model=model)
         try:
-            with urlopen(request, timeout=30) as response:
+            with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 raw_body = response.read().decode("utf-8")
                 status = getattr(response, "status", None)
             log_event("gemini.http_response", "Gemini HTTP 응답 전체", category="대화·AI",
@@ -154,10 +155,20 @@ def request_gemini(
                 time.sleep(1 + attempt)
                 continue
             return f"[gemini error] {error}"
-        except URLError as error:
-            log_event("gemini.connection_failed", "Gemini 연결 실패", category="대화·AI",
-                      level="ERROR", trace_id=trace_id, attempt=attempt + 1, error=str(error),
+        except (TimeoutError, URLError) as error:
+            timed_out = isinstance(error, TimeoutError) or isinstance(error.reason, TimeoutError)
+            retry = timed_out and attempt < 2
+            log_event("gemini.timeout" if timed_out else "gemini.connection_failed",
+                      "Gemini 응답 대기 시간 초과" if timed_out else "Gemini 연결 실패", category="대화·AI",
+                      level="WARNING" if retry else "ERROR", trace_id=trace_id,
+                      attempt=attempt + 1, error=str(error), timeout_seconds=REQUEST_TIMEOUT_SECONDS,
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2))
+            if retry:
+                log_event("gemini.retry_scheduled", "Gemini 시간 초과 재시도", category="대화·AI",
+                          level="WARNING", trace_id=trace_id, attempt=attempt + 1,
+                          next_attempt=attempt + 2, delay_seconds=1 + attempt)
+                time.sleep(1 + attempt)
+                continue
             return f"[gemini error] {error}"
         except Exception as error:
             log_event("gemini.failed", "Gemini 응답 처리 실패", category="대화·AI",

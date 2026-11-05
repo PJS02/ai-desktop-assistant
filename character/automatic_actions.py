@@ -2,6 +2,7 @@
 import time
 
 from PyQt6.QtCore import QObject, QTimer
+from .reactions import react
 
 
 class AutomaticActions(QObject):
@@ -32,6 +33,7 @@ class AutomaticActions(QObject):
         self.sleep_after = time.monotonic() + self.SLEEP_SECONDS
         if self.host._automatic_pose == 'sleep':
             self._release()
+            react(self.host, "wake", follow="wake_settle")
 
     def _release(self):
         host = self.host
@@ -81,7 +83,7 @@ class AutomaticActions(QObject):
             host.animation_controller.update_base_pos(host.pos())
             host._automatic_pose = host.current_action = action
             host.sprite_animator.set_yaw(host._idle_rig_yaw())
-            host.sprite_animator.set_emotion(host.mood_system.decide_emotion()['emotion'])
+            host.sprite_animator.set_mood_emotion(host.mood_system.decide_emotion()['emotion'])
             host.update_render(action)
 
     def shutdown(self):

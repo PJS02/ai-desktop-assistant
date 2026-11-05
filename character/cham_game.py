@@ -63,6 +63,9 @@ class ChamGameOverlay(RpsGameOverlay):
         super().__init__(send_command, parent)
         self.setWindowTitle("캐릭터 참참참")
         self.pose_callback = pose_callback
+        self.reaction_face = None
+        self._reaction_until = 0.0
+        self._best_lead = 0
         self.round_number = 1
         self.player_score = self.character_score = 0
         self._yaw = self._turn_from = self._turn_to = 0.0
@@ -135,10 +138,12 @@ class ChamGameOverlay(RpsGameOverlay):
             return
         progress = max(0.0, min(1.0, (now - self._turn_at) / self.TURN_SECONDS))
         smooth = progress * progress * (3 - 2 * progress)
-        self._pose(self._turn_from + (self._turn_to - self._turn_from) * smooth,
-                   self._reaction)
+        face = self._reaction if self.reaction_face is None or now < self._reaction_until else None
+        self._pose(self._turn_from + (self._turn_to - self._turn_from) * smooth, face)
 
     def start_game(self):
+        self._best_lead = 0
+        self.cue_stopped.emit()
         self.timer.stop()
         self._end_recognition()
         self.session = uuid.uuid4().hex
@@ -159,6 +164,8 @@ class ChamGameOverlay(RpsGameOverlay):
         self.update_position()
 
     def start_round(self):
+        self.cue_stopped.emit()
+        self._last_cue = None
         now = time.time()
         self.state = "ready"
         self.deadline = now + self.READY_SECONDS
@@ -174,6 +181,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.state = "countdown"
         self.deadline = now + 2 * self.BEAT_SECONDS
         self._show_message('참', '준비…')
+        self._request_cue('cham_1')
 
     def _begin_capture(self, now):
         # Use actual reveal time, even when Qt's timer ran late.
@@ -182,6 +190,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.tracker = DirectionTracker(self.session, now)
         self._turn(-65 if self.opponent == "LEFT" else 65, now)
         self._show_message('참!', '')
+        self._request_cue('cham_final')
         log_event('game.cham.revealed', '참참참 방향 공개', category='캐릭터 상태',
                   trace_id=self.session, round=self.round_number, opponent=self.opponent)
 
@@ -204,7 +213,12 @@ class ChamGameOverlay(RpsGameOverlay):
         self.character_score += int(caught)
         self.player_score += int(not caught)
         self.result = "caught" if caught else "escaped"
+        self._best_lead = max(self._best_lead, self.character_score - self.player_score)
         self._reaction = "happy" if caught else "sad"
+        if self.reaction_face is not None:
+            event = "game_earned_win" if caught else "game_loss"
+            self._reaction = self.reaction_face(event, 1.0)
+            self._reaction_until = now + 1.15
         self.state = "result"
         self.deadline = now + self.RESULT_SECONDS
         self._show_message('잡혔다!' if caught else '피했다!',
@@ -215,6 +229,7 @@ class ChamGameOverlay(RpsGameOverlay):
                   player_score=self.player_score, character_score=self.character_score)
 
     def _error(self, message):
+        self.cue_stopped.emit()
         self.state = "error"
         self.deadline = time.time() + self.ERROR_SECONDS
         self._reaction = None
@@ -234,6 +249,7 @@ class ChamGameOverlay(RpsGameOverlay):
                 self._begin_capture(now)
             elif self.deadline - now <= self.BEAT_SECONDS:
                 self.opponent_image.setText("참 · 참")
+                self._request_cue('cham_2')
         elif self.state == "waiting" and now >= self.deadline:
             self.state = "retry"
             self.deadline = now + self.RESULT_SECONDS
@@ -252,6 +268,12 @@ class ChamGameOverlay(RpsGameOverlay):
                 self._turn(0, now)
                 self._show_message('네가 이겼어!' if self.player_score > self.character_score
                                    else '내가 이겼어!', '다시 하기는 우클릭 메뉴에서')
+                if self.reaction_face is not None:
+                    won = self.character_score > self.player_score
+                    event = ("game_earned_win" if won else "game_disappointed"
+                             if self._best_lead >= 2 else "game_loss")
+                    self._reaction = self.reaction_face(event, 1.25)
+                    self._reaction_until = now + 1.55
                 self._end_recognition()
         elif self.state in {"finished", "error"} and now >= self.deadline:
             self.close()
@@ -259,6 +281,7 @@ class ChamGameOverlay(RpsGameOverlay):
             self.update_position()
 
     def closeEvent(self, event):
+        self.cue_stopped.emit()
         if self.session:
             log_event('game.cham.ended', '참참참 게임 종료', category='캐릭터 상태',
                       trace_id=self.session, player_score=self.player_score,
