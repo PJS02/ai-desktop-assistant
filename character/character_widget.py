@@ -23,6 +23,7 @@ from .rig_state import RigAnimator
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
+from ai.gemini_client import load_gemini_config, request_gemini
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
@@ -38,9 +39,11 @@ CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_
 try:
     from context.active_window_classifier import (
         get_active_window_info,
-        call_gemini,
+        capture_active_window_image,
         extract_dialogue,
-        build_gemini_prompt
+        build_gemini_prompt,
+        build_response_schema,
+        build_system_instruction,
     )
     HAS_CONTEXT = True
 except ImportError:
@@ -127,13 +130,14 @@ class CharacterWidget(QLabel):
         screen_width=None,
         screen_height=None,
         personality_preset=None,
-        personality_traits=None,
+        auto_program_detection=True,
         on_show_perception_console=None,
         on_show_log_window=None,
         on_close_log_window=None,
         on_rps_command=None,
         on_show_settings=None,
         character_options=None,
+        personality_traits=None,
     ):
         super().__init__()
         options = normalize_character_options(character_options)
@@ -370,9 +374,10 @@ class CharacterWidget(QLabel):
         self.last_auto_dialogue_time = 0  # 마지막 자동 대사 시간
         self.auto_dialogue_cooldown = 20  # 자동 감지 쿨다운: 20초 (API 제한 방지)
         
-        if HAS_CONTEXT:
-            # Gemini 설정 파일 로드
-            self._load_gemini_config()
+        # Gemini 설정 파일 로드
+        self._load_gemini_config()
+
+        if HAS_CONTEXT and auto_program_detection:
             
             # 활성 창 모니터링 타이머 (30초마다 체크, 120초 쿨다운으로 최대 2분마다 요청)
             self._activity_monitor_timer = QTimer()
@@ -985,10 +990,12 @@ class CharacterWidget(QLabel):
     # ====== 자동 대사 생성 시스템 ======
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
-        from .ai_settings import load_ai_settings
         try:
-            self.gemini_config = load_ai_settings()
-            print(f"[Gemini 설정 로드] API 키: {'설정됨' if self.gemini_config.get('api_key') else '미설정'}")
+            self.gemini_config = load_gemini_config()
+            if self.gemini_config:
+                print(f"[Gemini 설정 로드] API 키: {'설정됨' if self.gemini_config.get('api_key') else '미설정'}")
+            else:
+                print("[경고] Gemini 설정 파일이 없거나 비어 있습니다.")
         except Exception as e:
             print(f"[오류] Gemini 설정 로드 실패: {e}")
     
@@ -1083,10 +1090,23 @@ class CharacterWidget(QLabel):
                 f"{tone_instruction}\n"
                 f"\n위의 감정 상태와 말투 지침을 고려하여 활동에 대한 자연스러운 한두 문장의 반응을 생성하세요."
             )
-            log_event('dialogue.automatic_prompt', '활동 기반 Gemini 요청', category='대화·AI', trace_id=context['trace_id'], activity=info, activity_category=category, prompt=prompt, generation=generation, input_epoch=input_epoch)
+            image = capture_active_window_image()
+            if image is None:
+                log_event('dialogue.automatic_no_window', '활성 창 캡처 불가: 요청 차단', category='대화·AI', trace_id=context['trace_id'])
+                if context.get('source') == 'manual_generation':
+                    dialogue_text, failed = '활성 창을 캡처하지 못했어요. 다시 시도해 주세요.', True
+                return
+            log_event('dialogue.automatic_prompt', '활동 기반 화면 요청 준비', category='대화·AI', trace_id=context['trace_id'], activity_category=category, generation=generation, input_epoch=input_epoch)
             
             request_time = time.time()
-            response = _with_log_context(call_gemini, prompt, config, log_context=context)
+            response = request_gemini(
+                prompt,
+                config,
+                image=image,
+                response_schema=build_response_schema(),
+                system_instruction=build_system_instruction(),
+                log_context=context,
+            )
             failed = DialogueSystem._is_error_response(response)
             log_event('dialogue.automatic_response', '활동 기반 응답 수신', category='대화·AI', trace_id=context['trace_id'], response=response,
                       outcome='failed' if failed else 'received')
@@ -1536,7 +1556,7 @@ class CharacterWidget(QLabel):
                 painter.setBrush(QBrush(QColor(255, 215, 0, 80)))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawEllipse(8, 8, 64, 64)
-            
+
             # Windows may return a smaller icon or a high-DPI pixmap.
             # Normalize its pixels before fitting it into the ring's logical box.
             fitted_icon = icon_pixmap.copy()
@@ -1547,7 +1567,7 @@ class CharacterWidget(QLabel):
             icon_x = 8 + (64 - fitted_icon.width()) // 2
             icon_y = 8 + (64 - fitted_icon.height()) // 2
             painter.drawPixmap(icon_x, icon_y, fitted_icon)
-            
+
             if self.show_debug:
                 painter.setPen(QPen(QColor(255, 215, 0), 3))
                 painter.setBrush(Qt.BrushStyle.NoBrush)

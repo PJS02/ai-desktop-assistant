@@ -188,6 +188,7 @@ _ACTIONS = {
     'gemini.connection_failed': 'Gemini 연결 실패', 'gemini.retry_scheduled': 'Gemini 재시도 예약',
     'gemini.text_extracted': 'Gemini 대사 추출', 'gemini.empty_response': 'Gemini 응답 내용 없음',
     'gemini.failed': 'Gemini 응답 처리 실패', 'gemini.skipped': 'Gemini 호출 생략',
+    'gemini.screen_redacted': '화면 개인정보 마스킹 완료', 'gemini.privacy_blocked': '화면 개인정보 보호 실패·전송 차단',
     'tts.requested': '음성 합성 요청', 'tts.skipped': '음성 출력 생략',
     'tts.model_loading': '음성 모델 로딩', 'tts.model_ready': '음성 모델 준비',
     'tts.model_failed': '음성 모델 로딩 실패', 'tts.synthesis_started': '음성 합성 시작',

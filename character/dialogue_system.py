@@ -13,6 +13,13 @@ import time
 import re
 from collections import deque
 from app_logging import log_event, new_trace_id, register_secret
+from ai.gemini_client import request_gemini
+from memory.short_term_memory import ConversationMemory
+from memory.long_term_memory import LongTermMemory
+from memory.long_term_memory.dialogue_memory import (
+    DIALOGUE_RESPONSE_SCHEMA, DIALOGUE_SYSTEM_INSTRUCTION,
+    parse_dialogue_response, apply_dialogue_memory, build_memory_context, validate_memory_references,
+)
 
 
 class DialogueSystem(QObject):
@@ -49,6 +56,8 @@ class DialogueSystem(QObject):
         self.user_input_epoch = 0
         self.pending_inputs = deque()
         self.conversation_history = []
+        self.conversation_memory = ConversationMemory(max_messages=12, max_context_chars=4000)
+        self.long_term_memory = LongTermMemory()
         self._speaking = False
         self._tts_busy = False
         self._pending_ai_response = None
@@ -477,6 +486,9 @@ class DialogueSystem(QObject):
         # the user to read it alongside the actual answer.
         self.show_user_dialogue(turn['text'], duration=0, log_context=context)
         try:
+            # 아직 대기 중인 다음 입력이 현재 요청의 기억에 섞이지 않게 한다.
+            self.conversation_memory.add("user", turn['text'])
+            recent_context = self.conversation_memory.build_context()
             if not self.gemini_config:
                 self._load_gemini_config()
             # Read character state and configuration on the Qt thread; workers only
@@ -501,12 +513,35 @@ class DialogueSystem(QObject):
         def get_ai_response():
             failed = False
             try:
-                raw_response = self._call_ai(prompt, config, log_context=context)
+                # E5 로딩·검색·저장은 Qt 스레드를 막지 않도록 이 작업 스레드에서 실행한다.
+                candidates = []
+                if self.long_term_memory.count():
+                    recall_query = f"{turn['text']}\n최근 대화 문맥:\n{recent_context[-1000:]}"
+                    candidates = self.long_term_memory.search_candidates(recall_query)
+                long_term_context, recalled_memories = build_memory_context(candidates, self.long_term_memory.settings)
+                memory_prompt = prompt + f"""
+
+{long_term_context}"""
+                raw_response = self._call_ai(memory_prompt, config, log_context=context)
                 failed = self._is_error_response(raw_response)
                 log_event('dialogue.model_text_received', '대화 모델 텍스트 전체', category='대화·AI',
                           level='ERROR' if failed else 'INFO', trace_id=turn['trace_id'],
                           raw_response=raw_response, failed=failed)
                 response_text = self._process_gemini_response(raw_response, log_context=context)
+                metadata = parse_dialogue_response(raw_response)
+                if metadata and not validate_memory_references(metadata, recalled_memories, candidates):
+                    failed = True
+                    metadata = None
+                    response_text = "기억 참조를 확인하지 못했어요. 다시 말씀해 주세요."
+                    log_event('dialogue.memory_references_rejected', '제공 범위를 벗어난 기억 참조 거부',
+                              category='오류', level='ERROR', trace_id=turn['trace_id'])
+                if metadata and not failed and not self._closed and generation == self._request_generation:
+                    self.conversation_memory.add("assistant", response_text)
+                    try:
+                        apply_dialogue_memory(self.long_term_memory, metadata, recalled_memories, turn['text'], candidates=candidates)
+                    except Exception as exc:
+                        log_event('dialogue.memory_failed', '장기기억 저장 실패', category='오류',
+                                  level='ERROR', trace_id=turn['trace_id'], error=str(exc))
             except Exception as exc:
                 log_event('dialogue.response_failed', '대화 AI 응답 처리 실패', category='대화·AI',
                           level='ERROR', trace_id=turn['trace_id'], error=str(exc))
@@ -535,12 +570,7 @@ class DialogueSystem(QObject):
     def _build_user_prompt(self, user_input):
         mood = self.character_widget.mood_system
         personality = self.character_widget.personality_system
-        completed = sorted(
-            (item for item in self.conversation_history if item['state'] == 'completed'),
-            key=lambda item: (item['turn_id'], item['role'] != 'user'))
-        previous = [f"{'사용자' if item['role'] == 'user' else '캐릭터'}: {item['text']}"
-                    for item in completed][-12:]
-        history = '\n'.join(previous) or '(이전 대화 없음)'
+        history = self.conversation_memory.build_context() or '(이전 대화 없음)'
         return f"""당신은 사용자의 데스크톱 어시스턴트 AI 캐릭터입니다.
 
 캐릭터 성격 (Big Five):
@@ -558,15 +588,41 @@ class DialogueSystem(QObject):
 {user_input}
 
 지침을 따르면서 사용자에게 자연스럽고 친근한 대답을 해주세요.
-응답은 한두 문장으로 간단하게 해주세요."""
+응답은 반드시 아래 JSON 형식만 사용하세요.
+{{"text": "사용자에게 보여줄 한두 문장 답변", "importance": 0~10 정수, "emotional_intensity": 0~10 정수,
+"used_memory_ids": [], "memory_summary": "사용자 입력의 핵심 기억 또는 빈 문자열", "duplicate_memory_id": 0,
+"superseded_memory_ids": [], "relevant_memory_ids": [], "memory_type": "unknown", "retention_policy": "standard"}}
+
+명확한 사용자 정보 수정은 새 사실을 memory_summary에 넣고 대체할 제공 기억의 ID를 superseded_memory_ids에 넣으세요.
+같은 대상의 현재 사실을 분명하게 정정한 경우에만 대체하며, 일시적인 감정·다른 시점의 사건·불확실한 추측은 대체하지 마세요.
+
+emotional_intensity는 이 대화가 캐릭터에게 얼마나 감정적인 기억인지 별도로 평가하세요.
+캐릭터의 성격과 현재 감정 상태를 고려해 기쁨, 슬픔, 두려움, 애착 등 감정 반응의 강도를 0~10 정수로 표현하세요.
+감정이 긍정적인지 부정적인지와 관계없이 강도가 높으면 높은 점수, 평범하고 담담한 정보면 낮은 점수를 부여하세요.
+emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
+
+【 장기기억 중요도 판단 기준 】
+사용자 입력을 최근 대화와 검색된 장기기억 문맥에 비추어 아래 기준으로 평가하세요.
+1. 미래에 다시 언급될 가능성이 있는가?
+2. 사용자의 취향/관계/성향에 관한 정보인가?
+3. 중요한 사건인가?
+4. 약속이나 계획인가?
+5. 새롭게 알게 된 사실인가?
+6. 사용자가 명시적으로 기억해달라고 했는가?
+
+기준의 충족 정도와 향후 대화에서의 가치를 종합해 importance를 0~10 정수로 평가하세요.
+7점 이상은 장기기억에 저장할 가치가 있는 정보에 부여하세요.
+명시적인 기억 요청은 높은 중요도로 평가하세요.
+가벼운 인사, 일시적 잡담, 새로운 정보가 없는 반복은 낮게 평가하세요."""
 
     def _call_ai(self, prompt, config, *, log_context=None):
         if self._response_provider is not None:
             log_event('dialogue.provider_called', '사용자 정의 응답 제공자 호출', category='대화·AI',
                       trace_id=(log_context or {}).get('trace_id'), model=config.get('model'))
             return self._response_provider(prompt, config)
-        from context.active_window_classifier import call_gemini
-        return call_gemini(prompt, config, log_context=log_context)
+        return request_gemini(prompt, config, response_schema=DIALOGUE_RESPONSE_SCHEMA,
+                              system_instruction=DIALOGUE_SYSTEM_INSTRUCTION,
+                              log_context=log_context)
 
     @staticmethod
     def _is_error_response(response):
@@ -778,7 +834,7 @@ class DialogueSystem(QObject):
 
         if not response:
             return normalized("뭔가 반응이 없네요... 😔", 'empty_fallback')
-        
+
         # Numeric answers (e.g. 500원) are valid conversation, not HTTP errors.
         error = self._is_error_response(response)
         if error and ("429" in response or "Too Many Requests" in response):

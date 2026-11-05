@@ -28,6 +28,10 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from dotenv import load_dotenv
 
+# True: 활성 창·프로그램을 주기적으로 감지하고 자동 대화를 생성합니다.
+# False: 자동 감지를 끄고 사용자가 입력한 대화만 처리합니다.
+AUTO_PROGRAM_DETECTION = False
+
 
 load_dotenv()
 register_environment_secrets()
@@ -360,6 +364,7 @@ def main():
         screen_width=width,
         screen_height=height,
         personality_preset=personality,
+        auto_program_detection=AUTO_PROGRAM_DETECTION,
         personality_traits=load_personality_traits(),
         on_show_perception_console=mediapipe_manager.show_console,
         on_show_log_window=log_window.show_and_raise,

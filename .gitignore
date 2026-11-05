@@ -130,12 +130,36 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local runtime data (including SQLite sidecars and schema backups)
+/data/*.sqlite*
+/data/*.db*
+/character_items/
+/.ai_desktop_assistant/
+
+# Private credentials
+/.aws/
+/.ssh/
+*.pem
+*.key
+
+# Editor temporary files and local backups
+*.bak
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
 
 # cache
 context/cache/
@@ -148,7 +172,9 @@ context/*.json
 url_cache.json
 
 # API key configs
-context/config/
+context/config/*
+!context/config/*.template.json
+!context/config/README.md
 medeapipe_capstone/config/device_settings.json*
 
 # Spyder project settings
@@ -238,7 +264,6 @@ $RECYCLE.BIN/
 *.lnk
 
 # Local tests
-/tests/
 
 # Local Codex experiments and validation
 /integration-validation/
