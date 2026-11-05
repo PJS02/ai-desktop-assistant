@@ -1553,10 +1553,7 @@ class RecognitionEngine(SettingsBridge):
             return "NONE"
 
         extended = pose["extended"]
-        folded_fingers = not any(
-            extended[finger] for finger in ("index", "middle", "ring", "pinky")
-        )
-        if pose["thumb_up"] and folded_fingers:
+        if pose["thumb_up"]:
             return "THUMBS_UP"
         if pose["pinch"] and extended["middle"] and extended["ring"] and extended["pinky"]:
             return "OK"
@@ -1598,22 +1595,9 @@ class RecognitionEngine(SettingsBridge):
         hand_map = core.records_by_name(hand_records)
         scale = self.hand_scale(hand_map)
         thumb_tip = core.point_from_record(hand_map.get("THUMB_TIP"))
-        thumb_ip = core.point_from_record(hand_map.get("THUMB_IP"))
-        thumb_mcp = core.point_from_record(hand_map.get("THUMB_MCP"))
-        wrist = core.point_from_record(hand_map.get("WRIST"))
         index_tip = core.point_from_record(hand_map.get("INDEX_FINGER_TIP"))
 
-        thumb_angle = core.angle_between_points(thumb_mcp, thumb_ip, thumb_tip)
-        thumb_up = (
-            thumb_tip is not None
-            and thumb_ip is not None
-            and thumb_mcp is not None
-            and wrist is not None
-            and thumb_angle is not None
-            and thumb_angle >= 145
-            and thumb_tip[1] < thumb_ip[1] < thumb_mcp[1]
-            and wrist[1] - thumb_tip[1] > scale * 0.28
-        )
+        thumb_up = core.is_thumbs_up(hand_records)
 
         pinch_distance = core.distance_between_points(thumb_tip, index_tip)
         pinch = pinch_distance is not None and pinch_distance <= scale * 0.42
