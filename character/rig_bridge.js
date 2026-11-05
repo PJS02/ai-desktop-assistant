@@ -68,6 +68,7 @@
       textAlign: 'start', textBaseline: 'alphabetic'};
     var currentPath = [], saved = [];
     var context = {};
+    state.transform = [1, 0, 0, 1, 0, 0];
     Object.keys(state).forEach(function (key) {
       Object.defineProperty(context, key, {get: function () { return state[key]; },
         set: function (value) { state[key] = value; }});
@@ -87,6 +88,14 @@
     });
     context.save = function () { saved.push(copy(state)); };
     context.restore = function () { if (saved.length) state = saved.pop(); };
+    context.scale = function (x, y) {
+      var m = state.transform;
+      m[0] *= x; m[1] *= x; m[2] *= y; m[3] *= y;
+    };
+    context.translate = function (x, y) {
+      var m = state.transform;
+      m[4] += m[0] * x + m[2] * y; m[5] += m[1] * x + m[3] * y;
+    };
     context.drawImage = function (image) {
       canvas.commands.push({op: 'drawImage', image: image.name,
         args: Array.prototype.slice.call(arguments, 1), state: copy(state)});
@@ -128,6 +137,9 @@
         heads[name] = {name: name, width: part.size[0], height: part.size[1]};
       });
       var sprites = root.CloudyEmotionFX ? root.CloudyEmotionFX.createSprites(heads, P) : {};
+      if (root.CloudyDizzyFX) {
+        Object.assign(sprites, root.CloudyDizzyFX.createSprites(heads, P, {skipPlain: true}));
+      }
       Object.keys(sprites).forEach(function (name) {
         var image = sprites[name];
         var recipe = {width: image.width, height: image.height, commands: image.commands};
@@ -208,6 +220,7 @@
     ['emotion', 'speaking', 'speechTime', 'walkAmount'].forEach(function (key) {
       if (state[key] !== undefined) options[key] = state[key];
     });
+    if (state.emotion === 'dizzy') options.emotion = 'neutral';
     var authoredFlight = state.jumpActive === true && Number.isFinite(state.jumpPhase);
     var sampleAction = authoredFlight ? 'jump' : action;
     var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
@@ -264,6 +277,8 @@
         });
       }
     }
+    pose.dizzy = state.emotion === 'dizzy' ? 1 : 0;
+    pose.dizzyPlain = 0;
     return {action: action, time: time, pose: pose, originalPose: originalPose,
       externalRootHeightAdjustment: adjustment};
   }

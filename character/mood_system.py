@@ -385,10 +385,10 @@ class MoodSystem:
         )
 
     def on_drag_hard(self):
-        """강하게/빠르게 드래그할 때 - 거친 다루기"""
+        """빠른 좌우 반복 흔들림에 반응한다. 단순 이동에서는 호출하지 않는다."""
         now = time.monotonic()
-        if now - self._last_hard_drag_at < 4.0:
-            return
+        if now - self._last_hard_drag_at < 1.8:
+            return False
         self._last_hard_drag_at = now
         event = EmotionEvent(
             goal_relevance=-0.7,      # 중간 정도 부정적
@@ -398,9 +398,10 @@ class MoodSystem:
             agent_benevolence=-0.6,   # 중간 정도 부정적 의도
         )
         self.appraise_event(
-            event, weight=0.2, valence_bias=-0.15, arousal_bias=0.3, source="빠른 캐릭터 드래그", category="negative",
-            details="짧은 시간에 큰 위치 변화가 감지됨",
+            event, weight=0.65, valence_bias=-0.35, arousal_bias=0.65, source="반복적인 캐릭터 흔들기", category="negative",
+            details="일정 거리 이상의 빠른 좌우 방향 전환이 반복됨",
         )
+        return True
 
     def on_sudden_move(self):
         """갑작스러운 위치 변화 - 놀람/공포"""

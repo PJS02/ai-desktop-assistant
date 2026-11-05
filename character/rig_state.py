@@ -1,12 +1,12 @@
 """Adapt the existing sprite-player API to independent Cloudy rig channels."""
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 
 
 RIG_EMOTIONS = frozenset({
     "neutral", "happy", "excited", "proud", "relieved", "calm", "anxious",
     "hurt", "displeased", "distressed", "sad", "depressed", "tired", "angry",
-    "scared",
+    "scared", "dizzy",
 })
 HOST_EMOTIONS = {
     "idle": "neutral", "joy": "happy", "delight": "happy",
@@ -45,6 +45,8 @@ class RigAnimator(QObject):
         self.current_emotion = "neutral"
         self._requested_emotion = "neutral"
         self._emotion_override = None
+        self._dizzy = False
+        self._dizzy_generation = 0
         self.is_looping = True
         self.is_playing = False
         self._paused = False
@@ -56,7 +58,7 @@ class RigAnimator(QObject):
         if self._released:
             return
         self._requested_emotion = rig_emotion(name)
-        emotion = self._emotion_override or self._requested_emotion
+        emotion = 'dizzy' if self._dizzy else self._emotion_override or self._requested_emotion
         if emotion != self.current_emotion:
             self.current_emotion = emotion
             self.view.set_emotion(emotion)
@@ -64,6 +66,21 @@ class RigAnimator(QObject):
     def set_emotion_override(self, name=None):
         """Pin only the rendered face while continuing to receive real moods."""
         self._emotion_override = rig_emotion(name) if name else None
+        self.set_emotion(self._requested_emotion)
+
+    def show_dizzy(self, duration_ms=2800):
+        if self._released:
+            return
+        self._dizzy = True
+        self._dizzy_generation += 1
+        generation = self._dizzy_generation
+        self.set_emotion(self._requested_emotion)
+        QTimer.singleShot(duration_ms, lambda: self._finish_dizzy(generation))
+
+    def _finish_dizzy(self, generation):
+        if generation != self._dizzy_generation or self._released:
+            return
+        self._dizzy = False
         self.set_emotion(self._requested_emotion)
 
     def set_direction(self, flipped=False, *, front=False):

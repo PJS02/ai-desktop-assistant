@@ -159,7 +159,42 @@ class WindowPresence(QObject):
 
     @property
     def blocks_physics(self):
-        return self.is_active or self.occluded
+        # A cover can catch the character halfway through a fall. Let gravity
+        # find real support before freezing it or starting a standing animation.
+        return self.is_active or (self.occluded and self._standing_support() is not None)
+
+    def _standing_support(self):
+        h = self.host
+        surface = getattr(h, 'current_surface', None)
+        if (not h.on_ground or surface is None or getattr(h, 'is_jumping', False)
+                or getattr(h, 'velocity_y', 0) != 0
+                or surface not in getattr(h, 'surfaces', ())):
+            return None
+        body = h._physics_body_rect().translated(h.pos())
+        if (abs(body.y()+body.height()-surface.y_level) > 2
+                or body.right()+1 <= surface.x_min or body.left() >= surface.x_max
+                or not self.surface_visible(surface, body.left(), body.right()+1)):
+            return None
+        return surface
+
+    def _anchor_escape(self):
+        """Keep the standing breakout pose planted as its painted bounds change."""
+        h = self.host
+        surface = self._escape_surface
+        body = h._physics_body_rect()
+        if (surface not in getattr(h, 'surfaces', ()) or surface.y_level != self._escape_level
+                or h.x()+body.x()+body.width() <= surface.x_min
+                or h.x()+body.x() >= surface.x_max
+                or not self.surface_visible(surface, h.x()+body.x(), h.x()+body.x()+body.width())):
+            return False
+        bottom = body.y()+body.height()
+        h.move(h.x(), round(surface.y_level-bottom))
+        h.on_ground, h.current_surface = True, surface
+        h.velocity_x = h.velocity_y = 0
+        h._grounded_body_bottom, h._grounded_surface_level = bottom, surface.y_level
+        h._physics_position_y = float(h.y())
+        h._physics_position_x = float(h.x())
+        return True
 
     def surface_visible(self, surface, left, right):
         if not self.cover or not surface.name.startswith('window_'):
@@ -277,6 +312,10 @@ class WindowPresence(QObject):
 
     def begin_escape(self):
         h = self.host
+        support = self._standing_support()
+        if support is None:
+            return
+        self._escape_surface, self._escape_level = support, support.y_level
         h._cancel_autonomous_behavior()
         h.automatic_actions._release()
         self.saved_override = h.sprite_animator._emotion_override
@@ -289,6 +328,7 @@ class WindowPresence(QObject):
         h.sprite_animator.set_yaw(0)
         h.sprite_animator.set_emotion_override('excited')
         h.sprite_animator.play('break_out')
+        self._anchor_escape()
         body = h._physics_body_rect().translated(h.pos())
         self.overlay = TearOverlay(h)
         self.overlay.setGeometry(body.adjusted(-round(body.width()*.25), -round(body.height()*.12),
@@ -303,6 +343,9 @@ class WindowPresence(QObject):
         if not self.is_active:
             return
         h = self.host
+        if not self._anchor_escape():
+            self.cancel()
+            return
         elapsed = time.monotonic()-self.started
         opening = smooth((elapsed-.2)/1.0)
         geometry = self.overlay.geometry()
@@ -341,12 +384,11 @@ class WindowPresence(QObject):
         if escaped:
             self.front_of = self.cover[0] if self.cover else None
             self.walk_after_landing = True
-            h.on_ground, h.current_surface = False, None
-            h._physics_position_y = h._physics_position_x = None
-            h.velocity_x = h.velocity_y = 0
         h._gravity_last_time = time.monotonic()
         if not h._character_closing:
             h.update_action(h.mood_system.decide_emotion())
+            if escaped:
+                self._anchor_escape()
 
     def cancel(self):
         self.finish()

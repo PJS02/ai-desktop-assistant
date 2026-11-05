@@ -29,6 +29,7 @@ from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
 from .automatic_actions import AutomaticActions
 from .hide_and_seek import HideAndSeek
+from .drag_shake import DragShakeDetector
 from .dialogue_persona import character_voice
 from .window_presence import WindowPresence
 from .game_spectator import GameSpectator
@@ -388,7 +389,7 @@ class CharacterWidget(QLabel):
 
         if HAS_CONTEXT and auto_program_detection:
             
-            # 활성 창 모니터링 타이머 (30초마다 체크, 120초 쿨다운으로 최대 2분마다 요청)
+            # 활성 창 모니터링 타이머 (30초마다 확인, 설정된 쿨다운 적용)
             self._activity_monitor_timer = QTimer()
             self._activity_monitor_timer.timeout.connect(self._on_activity_monitor)
             self._activity_monitor_timer.start(30000)  # 30초마다 체크
@@ -396,6 +397,12 @@ class CharacterWidget(QLabel):
             print("[자동 대사 생성 시스템 초기화 완료]")
         else:
             print("[자동 대사 생성 시스템 비활성화]")
+        log_event('dialogue.automatic_configured', '자동 대화 설정 확인', category='대화·AI',
+                  enabled=bool(HAS_CONTEXT and auto_program_detection),
+                  reason=('ready' if HAS_CONTEXT and auto_program_detection else
+                          'disabled_by_setting' if not auto_program_detection else 'context_unavailable'),
+                  api_key_present=bool(self.gemini_config.get('api_key')), interval_seconds=30,
+                  cooldown_seconds=self.auto_dialogue_cooldown)
         
         
         
@@ -1006,7 +1013,7 @@ class CharacterWidget(QLabel):
                 dialogue.update_dialogue_position()
 
     def get_landing_surface(self, y_pos: int, x_pos: int = None) -> Surface | None:
-        """Find the nearest surface at or below the feet, without snapping to it."""
+        """Find support below the feet, retaining ground for penetration recovery."""
         if x_pos is None:
             x_pos = self.x()
         body = self._physics_body_rect()
@@ -1015,7 +1022,7 @@ class CharacterWidget(QLabel):
         right = left + body.width()
         valid_surfaces = [
             surface for surface in self.surfaces
-            if surface.y_level >= foot_y
+            if (surface.y_level >= foot_y or surface.name == 'ground')
             and (not hasattr(self, "window_presence") or self.window_presence.surface_visible(surface, left, right))
             and right > surface.x_min and left < surface.x_max
         ]
@@ -1035,8 +1042,12 @@ class CharacterWidget(QLabel):
     
     def _on_activity_monitor(self, *, manual=False):
         if not manual and getattr(getattr(self, "game_spectator", None), "is_active", False):
+            log_throttled('dialogue.automatic_skipped', '게임 반응 동작 중 자동 대화 대기',
+                          category='대화·AI', key='game_action', reason='game_action')
             return False
         if not manual and getattr(getattr(self, 'window_presence', None), 'blocks_physics', False):
+            log_throttled('dialogue.automatic_skipped', '창 가림·탈출 중 자동 대화 대기',
+                          category='대화·AI', key='window_occluded', reason='window_occluded')
             return False
         """Start ambient work only when the user conversation has released the UI."""
         reason = ('context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
@@ -1744,8 +1755,8 @@ class CharacterWidget(QLabel):
 
             self.is_dragging = True
             self.drag_time = 0
-            self._drag_sample_at = time.monotonic()
-            self._rough_drag_seconds = 0.0
+            self._drag_shake = DragShakeDetector(self._physics_body_rect().width()*.3)
+            self._drag_shake.reset(self.drag_pos.x(), self.drag_pos.y(), time.monotonic())
             self._drag_trace_id = new_trace_id('drag')
             self._drag_start_position = (self.x(), self.y())
             log_event('character.drag_started', '드래그 시작', category='캐릭터 상태', trace_id=self._drag_trace_id, position=self._drag_start_position)
@@ -1779,19 +1790,15 @@ class CharacterWidget(QLabel):
             self._drag_velocity_x = delta.x()
             self._drag_velocity_y = delta.y()
             
-            # Only sustained very fast movement counts as rough handling.
-            now = time.monotonic()
-            sample_seconds = max(0.001, now - self._drag_sample_at)
-            self._drag_sample_at = now
-            speed = drag_distance / sample_seconds
-            if drag_distance >= 20 and speed >= 2500:
-                self._rough_drag_seconds += min(sample_seconds, 0.05)
-            else:
-                self._rough_drag_seconds = max(0.0, self._rough_drag_seconds - sample_seconds * 2)
-            if self._rough_drag_seconds >= 0.15:
-                self.mood_system.on_drag_hard()
-                self._rough_drag_seconds = 0.0
-                print(f"[on_drag_hard 트리거] 속도={drag_distance:.1f}px, vx={delta.x():.1f}, vy={delta.y():.1f}")
+            detector = getattr(self, '_drag_shake', None)
+            if detector and detector.update(current_pos.x(), current_pos.y(), time.monotonic()):
+                if self.mood_system.on_drag_hard():
+                    show_dizzy = getattr(self.sprite_animator, 'show_dizzy', None)
+                    if show_dizzy:
+                        show_dizzy()
+                    log_event('character.drag_shaken', '좌우 반복 흔들기 감지', category='캐릭터 상태',
+                              trace_id=getattr(self, '_drag_trace_id', None),
+                              state=self.mood_system.get_russell_state())
             
             # 캐릭터를 이동하되, 화면 범위 내로 제한
             new_pos = self.pos() + delta
@@ -3050,10 +3057,13 @@ class CharacterWidget(QLabel):
 
         # Select from the previous feet position, then test the downward crossing.
         # This also catches fast falls through thin window tops without accepting
-        # side entry below their top or an upward jump through them.
+        # side entry below their top or an upward jump through them. Ground is
+        # also a recovery boundary: dragging/resizing can put feet below the
+        # taskbar top, where the full-screen clamp otherwise causes endless fall.
         landing_surface = self.get_landing_surface(current_y, current_x)
         if (landing_surface is not None and self.velocity_y >= 0
-                and current_y + body_bottom <= landing_surface.y_level
+                and (current_y + body_bottom <= landing_surface.y_level
+                     or landing_surface.name == 'ground')
                 and new_y + body_bottom >= landing_surface.y_level):
             new_y = landing_surface.y_level - body_bottom
             self.on_ground = True

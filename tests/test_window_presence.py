@@ -24,6 +24,7 @@ class Host(QWidget):
         self.window_occlusion = True
         self.is_dragging = self.is_moving = False
         self.on_ground = True
+        self.velocity_y = self.velocity_x = 0
         self.rig_view = Mock()
         self.sprite_animator = Mock(yaw=0, _emotion_override=None)
         self._move_timer = Mock()
@@ -32,7 +33,8 @@ class Host(QWidget):
         self._cancel_autonomous_behavior = Mock()
         self.mood_system = Mock()
         self.update_action = Mock()
-        self.current_surface = SimpleNamespace(name='ground', x_min=0, x_max=1000, y_level=700)
+        self.current_surface = SimpleNamespace(name='ground', x_min=0, x_max=1000, y_level=200)
+        self.surfaces = [self.current_surface]
 
     def _physics_body_rect(self):
         return QRect(10, 0, 100, 100)
@@ -84,13 +86,66 @@ class WindowPresenceTests(unittest.TestCase):
             presence.animate()
             assert not presence.is_active and not presence.occluded
             assert presence.front_of == 1
-            assert not h.on_ground
+            assert h.on_ground
             h.on_ground = True
             h.current_surface = SimpleNamespace(name='ground', x_min=0, x_max=1000, y_level=700)
             presence.poll()
             assert h.is_moving
             h.sprite_animator.play.assert_called_with('walk')
             h._move_timer.start.assert_called_with(16)
+        presence.shutdown()
+        h.deleteLater()
+
+    def test_airborne_cover_does_not_freeze_gravity_or_start_escape(self):
+        h = Host()
+        h.on_ground = False
+        h.current_surface = None
+        h.velocity_y = 6
+        presence = WindowPresence(h, Mock(return_value=(1, QRect(100, 80, 600, 500))))
+        with patch('character.window_presence.time.monotonic', return_value=100) as clock, \
+                patch('character.window_presence.TearOverlay') as overlay:
+            self.confirm(presence)
+            clock.return_value = 120
+            presence.poll()
+            assert presence.occluded
+            assert not presence.blocks_physics
+            assert not presence.is_active
+            overlay.assert_not_called()
+            h.on_ground, h.current_surface = True, h.surfaces[0]
+            h.velocity_y = 0
+            overlay.return_value.geometry.return_value = QRect(180, 88, 160, 124)
+            presence.poll()
+            assert presence.is_active
+        presence.shutdown()
+        h.deleteLater()
+
+    def test_stale_grounded_flag_without_feet_on_support_cannot_escape(self):
+        h = Host()
+        h.current_surface.y_level = 700
+        presence = WindowPresence(h)
+        presence.occluded = True
+        assert not presence.blocks_physics
+        presence.begin_escape()
+        assert not presence.is_active
+        presence.shutdown()
+        h.deleteLater()
+
+    def test_escape_keeps_changed_pose_feet_planted_and_cancels_lost_support(self):
+        h = Host()
+        presence = WindowPresence(h, Mock(return_value=(1, QRect(100, 80, 600, 500))))
+        presence.cover = (1, QRect(100, 80, 600, 500))
+        with patch('character.window_presence.TearOverlay') as overlay:
+            overlay.return_value.geometry.return_value = QRect(180, 88, 160, 124)
+            presence.begin_escape()
+            assert presence.is_active
+            h._physics_body_rect = lambda: QRect(10, 0, 100, 115)
+            presence.animate()
+            assert h.y()+115 == 200
+            assert h.on_ground
+            h.surfaces.clear()
+            presence.animate()
+            assert not presence.is_active
+            assert not presence.blocks_physics
         presence.shutdown()
         h.deleteLater()
 

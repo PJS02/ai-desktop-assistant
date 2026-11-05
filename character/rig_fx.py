@@ -6,7 +6,7 @@ import re
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage,
                          QLinearGradient, QPainter, QPainterPath, QPen,
-                         QRadialGradient)
+                         QRadialGradient, QTransform)
 
 
 def _color(value):
@@ -126,6 +126,7 @@ def build_effect(name, recipe, headImage=None):
     try:
         for command in recipe["commands"]:
             state, op = command.get("state", {}), command["op"]
+            painter.setTransform(QTransform(*state.get('transform', [1, 0, 0, 1, 0, 0])))
             painter.setOpacity(state.get("globalAlpha", 1))
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn
                 if state.get("globalCompositeOperation") == "destination-in"

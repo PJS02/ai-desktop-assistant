@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 
 # True: 활성 창·프로그램을 주기적으로 감지하고 자동 대화를 생성합니다.
 # False: 자동 감지를 끄고 사용자가 입력한 대화만 처리합니다.
-AUTO_PROGRAM_DETECTION = False
+AUTO_PROGRAM_DETECTION = True
 
 
 load_dotenv()
