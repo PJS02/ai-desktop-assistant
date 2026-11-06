@@ -66,3 +66,76 @@ def test_automatic_worker_does_not_send_when_own_window_is_active(window):
     send.assert_not_called()
     window.grab.assert_not_called()
     character.automatic_response_ready.emit.assert_called_once_with((1, 2, None, None, None, False))
+
+
+def test_manual_worker_waits_for_external_window_before_capture(monkeypatch):
+    from character import character_widget
+
+    info = {'process': 'chrome.exe', 'title': 'recipe'}
+    current_window = Mock(side_effect=[None, info])
+    image = object()
+    capture = Mock(return_value=image)
+    send = Mock(return_value='{"dialogue":"맛있겠어요!"}')
+    pause = Mock()
+    character = SimpleNamespace(
+        _character_closing=False, automatic_response_ready=Mock(),
+        dialogue_system=SimpleNamespace(_process_gemini_response=lambda _: '맛있겠어요!'))
+    monkeypatch.setattr(character_widget, 'get_active_window_info', current_window)
+    monkeypatch.setattr(character_widget, 'capture_active_window_image', capture)
+    monkeypatch.setattr(character_widget, 'request_gemini', send)
+    monkeypatch.setattr(character_widget.time, 'sleep', pause)
+
+    character_widget.CharacterWidget._check_active_window_async(
+        character, 1, 2, {'api_key': 'test'}, 'calm', 'friendly',
+        {'source': 'manual_generation', 'trace_id': 'window-selection-test'})
+
+    assert current_window.call_count == 2
+    pause.assert_called_once_with(0.1)
+    capture.assert_called_once_with()
+    assert send.call_args.kwargs['image'] is image
+    result = character.automatic_response_ready.emit.call_args.args[0]
+    assert result[2:4] == ('맛있겠어요!', info)
+    assert result[5] is False
+
+
+def test_manual_window_timeout_gives_selection_help_without_capture(monkeypatch):
+    from character import character_widget
+
+    character = SimpleNamespace(_character_closing=False, automatic_response_ready=Mock())
+    capture, send = Mock(), Mock()
+    monkeypatch.setattr(character_widget, 'get_active_window_info', lambda: None)
+    monkeypatch.setattr(character_widget, 'capture_active_window_image', capture)
+    monkeypatch.setattr(character_widget, 'request_gemini', send)
+    monkeypatch.setattr(character_widget.CharacterWidget, 'MANUAL_WINDOW_SELECTION_SECONDS', 0,
+                        raising=False)
+
+    character_widget.CharacterWidget._check_active_window_async(
+        character, 1, 2, {'api_key': 'test'}, 'calm', 'friendly',
+        {'source': 'manual_generation', 'trace_id': 'window-timeout-test'})
+
+    capture.assert_not_called()
+    send.assert_not_called()
+    result = character.automatic_response_ready.emit.call_args.args[0]
+    assert '다른 창' in result[2] and '대사 생성' in result[2]
+    assert result[5] is True
+
+
+def test_closing_while_waiting_for_window_cancels_capture(monkeypatch):
+    from character import character_widget
+
+    character = SimpleNamespace(_character_closing=False, automatic_response_ready=Mock())
+    capture, send = Mock(), Mock()
+    pause = Mock(side_effect=lambda _: setattr(character, '_character_closing', True))
+    monkeypatch.setattr(character_widget, 'get_active_window_info', lambda: None)
+    monkeypatch.setattr(character_widget, 'capture_active_window_image', capture)
+    monkeypatch.setattr(character_widget, 'request_gemini', send)
+    monkeypatch.setattr(character_widget.time, 'sleep', pause)
+
+    character_widget.CharacterWidget._check_active_window_async(
+        character, 1, 2, {'api_key': 'test'}, 'calm', 'friendly',
+        {'source': 'manual_generation', 'trace_id': 'window-close-test'})
+
+    pause.assert_called_once_with(0.1)
+    capture.assert_not_called()
+    send.assert_not_called()
+    character.automatic_response_ready.emit.assert_not_called()

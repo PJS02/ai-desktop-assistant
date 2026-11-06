@@ -106,6 +106,7 @@ class CharacterWidget(QLabel):
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
     PET_MIN_DISTANCE = 6
+    MANUAL_WINDOW_SELECTION_SECONDS = 5
 
     # ====== 감정별 캐릭터 반응 영역 ======
     # 감정별 표정, 걷기 애니메이션, 랜덤 이동 범위는 여기서 관리한다.
@@ -1113,10 +1114,20 @@ class CharacterWidget(QLabel):
         try:
             # 활성 창 정보 수집
             info = get_active_window_info()
+            if not info and context.get('source') == 'manual_generation':
+                # Clicking Generate focuses our settings window, which is excluded.
+                deadline = time.monotonic() + CharacterWidget.MANUAL_WINDOW_SELECTION_SECONDS
+                while (not info and time.monotonic() < deadline
+                       and not getattr(self, '_character_closing', False)):
+                    time.sleep(0.1)
+                    info = get_active_window_info()
+            if getattr(self, '_character_closing', False):
+                return
             if not info:
                 log_event('dialogue.automatic_no_window', '활성 창 정보 없음', category='대화·AI', trace_id=context['trace_id'])
                 if context.get('source') == 'manual_generation':
-                    dialogue_text, failed = '활성 창 정보를 가져오지 못했어요. 다시 시도해 주세요.', True
+                    dialogue_text, failed = ('다른 창을 선택하지 못했어요. 대사 생성을 누른 뒤 '
+                                             '분석할 창을 클릭해 주세요.'), True
                 return
             
             # 프로세스 이름으로 활동 분류

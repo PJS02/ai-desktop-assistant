@@ -415,7 +415,8 @@ class SettingsDialog(QDialog):
         self.generate_dialogue_button.setAutoDefault(False)
         self.generate_dialogue_button.clicked.connect(lambda _checked=False: self.dialogue_generation_requested.emit())
         form.addRow('AI 대사', self.generate_dialogue_button)
-        hint = QLabel('직접 표시한 말풍선은 숨기거나 일반 대화를 시작할 때까지 유지됩니다.')
+        hint = QLabel('AI 대사 생성을 누른 뒤 분석할 다른 창을 선택하세요.\n'
+                      '직접 표시한 말풍선은 숨기거나 일반 대화를 시작할 때까지 유지됩니다.')
         hint.setWordWrap(True)
         form.addRow(hint)
 

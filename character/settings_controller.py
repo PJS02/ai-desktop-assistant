@@ -137,6 +137,9 @@ class SettingsController(QObject):
         self._refresh_dialogue_generation()
         if not accepted:
             self.dialog.status.setText('대사 생성을 시작하지 못했습니다. AI 설정과 진행 중인 대화를 확인해 주세요.')
+        else:
+            seconds = self.character.MANUAL_WINDOW_SELECTION_SECONDS
+            self.dialog.status.setText(f'{seconds:g}초 안에 분석할 다른 창을 클릭해 주세요. 선택하면 대사를 생성합니다.')
 
     def show_recognition(self):
         self.show()
