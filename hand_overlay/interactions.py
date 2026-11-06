@@ -139,7 +139,8 @@ class DisplayedHand:
     def supports(self):
         wrist, knuckle = self.points[0], self.points[9]
         dx, dy = abs(knuckle[0] - wrist[0]), abs(knuckle[1] - wrist[1])
-        return self.all_open and dx >= 8 and dx >= dy * 1.5
+        # Either side can support the feet with a relaxed thumb or one bent finger.
+        return sum(self.extended) >= 3 and dx >= 8 and dx >= dy * .8
 
 
 class HandInteractionEngine:
@@ -342,8 +343,19 @@ class HandInteractionEngine:
             if fresh:
                 self._last_seen_at = now
             self._other_ids.update(h.track_id for h in hands if h.track_id != identity)
+            if mode == 'ball' and fresh:
+                swing = self._swing_velocity(hand, now)
+                if any(swing):
+                    self.actions.move_hold(mode, hand.pinch_point)
+                    self._release(now, 'thrown', swing)
+                    return
             if mode == 'palm' and not hand.supports:
-                self._release(now, 'palm_closed')
+                if self._open_at is None:
+                    self._open_at, self._open_samples = now, 0
+                self._open_samples += int(fresh)
+                if (fresh and now - self._open_at >= self.OPEN_SECONDS
+                        and self._open_samples >= 2):
+                    self._release(now, 'palm_closed')
             else:
                 opened = hand.open_for_grab if mode == 'grab' else hand.all_open
                 if mode != 'palm' and opened:
@@ -393,9 +405,9 @@ class HandInteractionEngine:
                 if hand.supports:
                     px, py = hand.palm
                     left, right = hand.support_span
-                    span = (right - left) / 2 + 8
+                    span = (right - left) / 2 + max(12., body.width * .20)
                     if (abs(body.center[0] - px) <= span
-                            and -max(14., body.height * .30) <= py - body.bottom <= 35):
+                            and -max(14., body.height * .30) <= py - body.bottom <= max(35., body.height * .16)):
                         candidate = 'palm', hand.track_id, hand.palm
                         break
         key = candidate[:2] if candidate else None
@@ -405,7 +417,7 @@ class HandInteractionEngine:
                 self._candidate_samples = 0
             self._candidate_seen_at = now
             self._candidate_samples += int(fresh)
-            dwell = {'grab': .055, 'ball': .12, 'palm': .18}[candidate[0]]
+            dwell = {'grab': .055, 'ball': .12, 'palm': .12}[candidate[0]]
             if now - self._candidate_at >= dwell and self._candidate_samples >= 2:
                 if self.actions.begin_hold(candidate[0], candidate[2]):
                     self.active = candidate[:2]
@@ -413,12 +425,12 @@ class HandInteractionEngine:
                     self._last_seen_at = now
                     self._other_ids = {h.track_id for h in hands if h.track_id != candidate[1]}
                     self._rebind = None
-                    if candidate[0] == 'grab':
+                    if candidate[0] in ('grab', 'ball'):
                         self._swing_velocity(self._held_hand, now)
                     self._pets.clear()
                     return
         elif (self._candidate is not None
-              and (self._candidate[0] != 'grab' or now - self._candidate_seen_at > .10
+              and (self._candidate[0] not in ('grab', 'palm') or now - self._candidate_seen_at > .10
                    or self._candidate[1] not in present)):
             self._candidate = None
         if key is None:

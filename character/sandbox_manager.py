@@ -115,9 +115,10 @@ class BallWidget(QWidget):
         # Engine velocities are logical pixels/second; ball physics uses pixels
         # per 16 ms tick. Tracking loss drops safely instead of replaying a throw.
         self.x_velocity, self.y_velocity = tuple(
-            max(-24., min(24., value * .016)) if reason == 'released' else 0.
+            value * .016 if reason in ('released', 'thrown') else 0.
             for value in velocity)
-        log_event('sandbox.ball.hand_released', '손으로 공 놓기', category='캐릭터 상태',
+        log_event('sandbox.ball.hand_released', '손으로 공 던지기' if reason == 'thrown' else '손으로 공 놓기',
+                  category='캐릭터 상태',
                   trace_id=self.log_trace_id, reason=reason,
                   velocity=[self.x_velocity, self.y_velocity], mood_applied=False)
 
