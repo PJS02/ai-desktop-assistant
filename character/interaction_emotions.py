@@ -3,9 +3,11 @@
 OCC categories describe the event; the small doses below are application tuning,
 not constants supplied by OCC or Russell's circumplex model.
 """
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import math
 import time
+
+from .perception_affect import appraise_perception, state_labels, unit
 
 from app_logging import log_event
 
@@ -20,6 +22,11 @@ SOURCES = {
     'ball_ready': '공놀이 준비', 'ball_kicked': '공 차기', 'ball_removed': '공놀이 중단',
     'file_received': '파일 전달받음', 'files_returned': '파일 반환 완료',
     'files_dropped': '거친 드래그로 파일 놓침', 'wake': '잠에서 깨어남',
+}
+FACE_SOURCES = {
+    'happy': '사용자 웃음 감지', 'anger': '사용자 분노 표정 감지',
+    'contempt': '사용자 경멸 표정 감지', 'disgust': '사용자 불쾌 표정 감지',
+    'fear': '사용자 두려움 감지', 'sadness': '사용자 슬픔 감지', 'surprise': '사용자 놀람 감지',
 }
 
 
@@ -39,6 +46,9 @@ class InteractionEmotions:
         self.fall = None
         self.claims = {}
         self.totals = {key.value: value for key, value in mood.occ_intensities.items()}
+        self.perception_budget = deque()
+        self.perception_states = set()
+        self.perception_pending = {}
 
     def _sync_claims(self, resolved=None):
         # Track only the remaining contribution of each episode. Recovery must
@@ -77,6 +87,8 @@ class InteractionEmotions:
         return True
 
     def apply(self, event, *, event_id=None, source=None, **context):
+        if event.startswith('user_'):
+            return self._apply_perception(event[5:], event_id=event_id, source=source, **context)
         mood, now = self.mood, time.monotonic()
         before = (mood.russell.valence, mood.russell.arousal)
         result = {'before': before, 'reaction': event, 'applied': False, 'dose': 0.}
@@ -319,4 +331,105 @@ class InteractionEmotions:
                              **context})
             result['applied'] = True
         result['changes'] = changes
+        return result
+
+    def _apply_perception(self, signal, *, event_id=None, source=None, actor_state=None,
+                          label=None, quality=1., maintenance=1., **context):
+        mood, now = self.mood, time.monotonic()
+        quality, maintenance = unit(quality), unit(maintenance)
+        state = mood._capture_emotion_state()
+        before = (mood.russell.valence, mood.russell.arousal)
+        occ = {key.value: value for key, value in mood.occ_intensities.items()}
+        actor = dict(actor_state or {})
+        actor['manual_emotion'] = bool(actor.get('manual_emotion') or mood._manual_russell_override)
+        appraisal = appraise_perception(signal, occ, before, actor, label=label)
+        appraisal['state_labels'] = state_labels(
+            occ, before, unit(actor.get('rest', 0.)), self.perception_states,
+            self.perception_pending, now)
+        result = {'before': before, 'reaction': None, 'applied': False, 'dose': 0.,
+                  'accepted': appraisal['accepted'], 'appraisal': appraisal, 'changes': {}}
+        if not self._distinct(event_id, 'user_' + signal):
+            appraisal.update(accepted=False, reason='duplicate')
+            result.update(accepted=False, duplicate=True)
+            return result
+        if not appraisal['accepted'] or quality <= 0 or maintenance <= 0:
+            appraisal.update(accepted=False, reason=appraisal['reason'] or 'invalid_quality')
+            result['accepted'] = False
+            log_event('mood.perception.skipped', '사용자 인식 감정 반영 생략', category='사용자 인식',
+                      event_name=signal, reason=appraisal['reason'] or 'invalid_quality', event_id=event_id)
+            return result
+
+        family = 'face' if signal == 'face' else 'gesture'
+        repeat = self._dose('user_' + family, maintenance, now) / maintenance
+        raw = appraisal['requested_occ']
+        goodness = sum(-v if k in ('distress', 'fear', 'anger', 'shame') else v
+                       for k, v in raw.items())
+        factor, factors = 1., []
+        if mood.personality_system is not None:
+            factor, factors = mood.personality_system.get_event_weight_multiplier(
+                valence=goodness, agent_benevolence=.6 if signal in
+                ('heart', 'thumbs_up', 'greeting', 'ok', 'head_agree') else 0.,
+                novelty=.2 if label == 'surprise' else 0.)
+        factor = _number(factor, .25, 2., 1.)
+        dose = quality * maintenance * repeat * factor * appraisal['multiplier']
+        requested = {name: max(-.04, min(.04, value * dose)) for name, value in raw.items()}
+        total = sum(abs(value) for value in requested.values())
+        if total > .06:
+            requested = {name: value * .06 / total for name, value in requested.items()}
+        changes = {}
+        for name, amount in requested.items():
+            current = occ[name]
+            if amount > 0:
+                remaining = max(0., 1. - current)
+                updated = (1. - (remaining ** -.5 + amount / 2.) ** -2
+                           if remaining > 1e-12 else current)
+                changes[name] = updated - current
+            else:
+                changes[name] = -min(-amount, current * .1)
+        while self.perception_budget and now - self.perception_budget[0][0] >= 60:
+            self.perception_budget.popleft()
+        used = sum(item[2] for item in self.perception_budget)
+        family_used = sum(item[2] for item in self.perception_budget if item[1] == family)
+        amount = sum(abs(value) for value in changes.values())
+        remaining = min(max(0., .25 - used),
+                        max(0., (.06 if family == 'face' else .20) - family_used))
+        scale = min(1., remaining / amount) if amount else 1.
+        changes = {name: value * scale for name, value in changes.items()}
+        arousal = max(-.02, min(.02, appraisal['arousal'] * dose))
+        arousal_used = sum(item[3] for item in self.perception_budget)
+        arousal = math.copysign(min(abs(arousal), max(0., .06 - arousal_used)), arousal)
+        arousal = max(-1., min(1., mood._event_arousal_bias + arousal)) - mood._event_arousal_bias
+        self._sync_claims()
+        for name, delta in changes.items():
+            mood.occ_intensities[self._key(name)] = max(0., min(1., occ[name] + delta))
+        mood._event_arousal_bias = max(-1., min(1., mood._event_arousal_bias + arousal))
+        actual_amount = sum(abs(value) for value in changes.values())
+        if actual_amount or arousal:
+            self.perception_budget.append((now, family, actual_amount, abs(arousal)))
+            mood._apply_occ_to_mood()
+            self._sync_claims()
+        changes = {key: value for key, value in changes.items() if abs(value) > 1e-12}
+        appraisal.update(expression_strength=unit(appraisal['strength'] * dose),
+                         applied_occ=changes, budget_scale=scale, quality=quality,
+                         personality_multiplier=factor, repetition_multiplier=repeat)
+        result.update(reaction='user_' + signal, applied=bool(changes or arousal),
+                      changes=changes, dose=dose)
+        if result['applied']:
+            source = source or {'heart': '하트 인식', 'thumbs_up': '엄지척 인식',
+                'ok': 'OK 인식', 'greeting': '손 흔들기 인사', 'head_agree': '고개 끄덕임',
+                'head_negative': '고개 좌우 흔들기', 'face': FACE_SOURCES.get(label, '사용자 표정 인식')}[signal]
+            goodness = sum(-v if k in ('distress', 'fear', 'anger', 'shame') else v
+                           for k, v in changes.items())
+            mood._record_influence(
+                source=source, category='positive' if goodness > 0 else 'negative' if goodness < 0 else 'neutral',
+                base_weight=quality * maintenance, adjusted_weight=dose, personality_multiplier=factor,
+                personality_factors=factors, before=before, before_occ=state['occ'], state_before=state,
+                weight_applied=mood.personality_system is not None,
+                details=(f'인식 신뢰도 {quality * 100:.0f}% · ' if signal == 'face' else '')
+                        + ' · '.join(appraisal['interpretation']),
+                event_input={'event': 'user_' + signal, 'event_id': event_id, 'label': label,
+                    'quality': quality, 'profile_weights': appraisal['weights'],
+                    'actor_state': actor, 'requested_occ': raw, 'actual_occ': changes,
+                    'budget_scale': scale, 'repetition_multiplier': repeat,
+                    'state_labels': appraisal['state_labels'], **context})
         return result

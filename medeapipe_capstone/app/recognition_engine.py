@@ -108,6 +108,12 @@ class RecognitionEngine(SettingsBridge):
         self.camera_stream = None
         self.desktop_hands = None
         self.camera_sequence = 0
+        self.recognition_session = uuid.uuid4().hex
+        self.camera_observed_at = None
+        self.camera_status = 'off'
+        self.emotion_inference_sequence = 0
+        self._last_state_sent_at = -float('inf')
+        self._last_control_signature = None
         self.capture_fps = 30.0
         self.hand_overlay_enabled = False
         self.current_photo = None
@@ -603,6 +609,8 @@ class RecognitionEngine(SettingsBridge):
     def change_emotion_model(self, _selection):
         self.load_emotion_model()
         self.emotion_result = None
+        self.last_emotion_inference_ms = -EMOTION_INFERENCE_INTERVAL_MS
+        self.send_recognition_state()
         self.save_recognition_settings()
 
 
@@ -635,6 +643,8 @@ class RecognitionEngine(SettingsBridge):
         )
 
         if result is None:
+            self.camera_status = 'error'
+            self.send_recognition_state()
             log_event('device.camera.failed', '카메라 열기 실패', category='오류', level='ERROR', selected=selected_candidate)
             self.status_var.set("\uc120\ud0dd\ud55c \uce74\uba54\ub77c\ub97c \uc5f4\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
             return
@@ -656,6 +666,11 @@ class RecognitionEngine(SettingsBridge):
         # The stream now owns capture.read/release. Both consumers see only its
         # newest image; slow Holistic/emotion inference cannot block desktop hands.
         self.camera_sequence = 0
+        self.recognition_session = uuid.uuid4().hex
+        self.camera_observed_at = None
+        self.camera_status = 'running'
+        self.emotion_result = None
+        self.last_emotion_inference_ms = -EMOTION_INFERENCE_INTERVAL_MS
         self.camera_stream = LatestCameraStream(self.cap, result['frame'])
         self.desktop_hands = DesktopHandTracker(self.camera_stream, self.event_client.send_hand_frame)
         self.sync_desktop_hands()
@@ -775,7 +790,7 @@ class RecognitionEngine(SettingsBridge):
         self.away_frame_count = 0
 
 
-    def release_camera(self):
+    def release_camera(self, *, status='off'):
         tracker = getattr(self, 'desktop_hands', None)
         stream = getattr(self, 'camera_stream', None)
         if tracker is not None:
@@ -799,6 +814,10 @@ class RecognitionEngine(SettingsBridge):
                 self.cap.release()
             self.cap = None
             log_event('device.camera.released', '카메라 해제', category='사용자 인식', selected=getattr(self, 'active_camera_candidate', None))
+        self.camera_status = status
+        self.emotion_result = None
+        if getattr(self, 'event_client', None) is not None and not getattr(self, 'is_shutting_down', False):
+            self.send_recognition_state()
         return True
 
 
@@ -821,7 +840,7 @@ class RecognitionEngine(SettingsBridge):
         if self.camera_stream.error:
             log_event('device.camera.frame_failed', '카메라 프레임 읽기 실패', category='오류', level='ERROR', selected=self.active_camera_candidate)
             self.status_var.set("\ud504\ub808\uc784\uc744 \uc77d\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
-            self.release_camera()
+            self.release_camera(status='error')
             self.scheduler.after(30, self.update_frame)
             return
 
@@ -830,6 +849,7 @@ class RecognitionEngine(SettingsBridge):
             self.scheduler.after(5, self.update_frame)
             return
         self.camera_sequence = frame.sequence
+        self.camera_observed_at = frame.captured_at
         frame_started = time.perf_counter()
         # Inference only reads the shared camera image. Copy only for drawing,
         # so the independent hand tracker always sees the unannotated frame.
@@ -1012,6 +1032,17 @@ class RecognitionEngine(SettingsBridge):
 
     def send_recognition_state(self):
         event = self.build_recognition_state_event()
+        control = json.dumps({**{key: event.get(key) for key in
+                              ('camera_status', 'emotion_model', 'speech')},
+                              'mode': (event.get('mode') or {}).get('active')},
+                             ensure_ascii=False, sort_keys=True)
+        now = time.monotonic()
+        urgent = control != getattr(self, '_last_control_signature', None)
+        playing = bool(getattr(self, 'rps_session', None) or getattr(self, 'cham_session', None)
+                       or event.get('rps_game') or event.get('cham_game'))
+        if not urgent and not playing and now - getattr(self, '_last_state_sent_at', -float('inf')) < .2:
+            return
+        self._last_control_signature, self._last_state_sent_at = control, now
         self.send_interaction_event_if_changed("recognition_state", event)
 
 
@@ -1025,6 +1056,11 @@ class RecognitionEngine(SettingsBridge):
             "type": "recognition_state",
             "version": 1,
             "source": "mediapipe_capstone",
+            "camera_status": getattr(self, 'camera_status', 'off'),
+            "emotion_model": getattr(self, 'loaded_emotion_model_key', None),
+            "observation": {"session": getattr(self, 'recognition_session', None),
+                            "sequence": getattr(self, 'camera_sequence', 0),
+                            "observed_at": getattr(self, 'camera_observed_at', None)},
             "always": {
                 "wave": {
                     "left": wave.get("left_state"),
@@ -1073,6 +1109,9 @@ class RecognitionEngine(SettingsBridge):
             "label": self.emotion_result["label"],
             "confidence": self.emotion_result.get("confidence", 0.0),
             "scores": self.emotion_result["scores"],
+            "observation_id": self.emotion_result.get('observation_id'),
+            "observed_at": self.emotion_result.get('observed_at'),
+            "model": getattr(self, 'loaded_emotion_model_key', None),
         }
 
 
@@ -1137,6 +1176,7 @@ class RecognitionEngine(SettingsBridge):
             return
 
         try:
+            self.emotion_inference_sequence = getattr(self, 'emotion_inference_sequence', 0) + 1
             prediction = self.emotion_recognizer.predict(face_crop)
         except Exception as exc:
             log_throttled('recognition.inference.failed', '감정 추론 실패', category='오류', level='ERROR', key=f'emotion-inference:{id(self)}', error=str(exc), model=getattr(self, 'loaded_emotion_model_key', None))
@@ -1154,6 +1194,8 @@ class RecognitionEngine(SettingsBridge):
             "label": label,
             "confidence": scores.get(label, 0.0),
             "scores": scores,
+            "observation_id": self.emotion_inference_sequence,
+            "observed_at": getattr(self, 'camera_observed_at', None) or time.time(),
         }
 
 

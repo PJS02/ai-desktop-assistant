@@ -29,12 +29,12 @@ class AutomaticActions(QObject):
         self.wake()
         self.tick()
 
-    def wake(self):
+    def wake(self, *, appraise=True):
         self.sleep_after = time.monotonic() + self.SLEEP_SECONDS
         if self.host._automatic_pose == 'sleep':
-            self._release()
+            self._release(appraise=appraise)
 
-    def _release(self):
+    def _release(self, *, appraise=True):
         host = self.host
         previous, host._automatic_pose = host._automatic_pose, None
         if (previous and host.current_action == previous
@@ -43,7 +43,7 @@ class AutomaticActions(QObject):
             host.update_action(host.mood_system.decide_emotion())
             if host.current_action == 'idle':
                 host.animation_controller.start_idle()
-        if previous == 'sleep':
+        if previous == 'sleep' and appraise:
             experience(host, 'wake', follow='wake_settle')
 
     def tick(self):

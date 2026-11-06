@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Dict, Optional, Tuple
 
 from .russell_sectors import russell_face
+from .perception_affect import update_label
 
 
 class OccEmotionToMood(Enum):
@@ -290,29 +291,10 @@ class MoodSystem:
                 details="사용자의 긍정적인 상호작용",
             )
 
-    def on_positive_gesture(self, label: str) -> None:
-        """인식된 긍정 제스처를 이름이 드러나는 감정 근거로 남긴다."""
-        gesture_names = {
-            "thumbs_up": "엄지척 제스처",
-            "heart": "하트 제스처",
-            "ok": "OK 제스처",
-            "hello": "손 흔들기",
-            "greeting": "손 흔들기 인사",
-        }
-        event = EmotionEvent(
-            goal_relevance=0.8,
-            expectedness=0.65,
-            controllability=0.7,
-            self_attribution=0.35,
-            agent_benevolence=0.9,
-        )
-        self.appraise_event(
-            event,
-            weight=0.75,
-            source=gesture_names.get(label, f"{label} 제스처"),
-            category="positive",
-            details="사용자 인식 모델에서 긍정 제스처 감지",
-        )
+    def on_positive_gesture(self, label: str, **context):
+        """Legacy entry point shares the state-dependent observation policy."""
+        signal = 'greeting' if label in ('hello', 'wave') else label
+        return self.on_interaction('user_' + signal, **context)
 
     def on_pet(self, movement_speed: float, elapsed_seconds: float = 0.15,
                *, source="쓰다듬기", event_id=None) -> float:
@@ -323,16 +305,12 @@ class MoodSystem:
         return result['dose']
 
     def should_refuse_pet(self) -> bool:
-        """감정이 극도로 부정적일 때 접촉을 거부한다."""
-        # Fear can accept comforting contact; hostility is a different appraisal.
-        if (self.occ_intensities[OccEmotionToMood.FEAR] > .2
-                and self.occ_intensities[OccEmotionToMood.ANGER] < .2):
-            return False
-        emotion = self.decide_emotion()
-        return (
-            self.russell.valence <= -0.65
-            and emotion["intensity"] >= 0.65
-        )
+        """Sustained hostility can refuse contact; fear alone accepts comfort."""
+        anger, valence = self.occ_intensities[OccEmotionToMood.ANGER], self.russell.valence
+        return update_label('contact_refusal', anger >= .65 and valence <= -.4,
+                            anger > .5 and valence < -.25,
+                            self.interactions.perception_states,
+                            self.interactions.perception_pending, time.monotonic())
 
     def on_idle(self):
         """캐릭터가 오래 방치되었을 때 - 무시당함"""
@@ -473,93 +451,14 @@ class MoodSystem:
     def on_ball_play(self):
         self.on_interaction('ball_kicked', source='공놀이')
 
-    def on_external_emotion(self, label: str, confidence: float) -> bool:
-        """사용자 감정 인식 결과를 캐릭터의 OCC 상태에 반영합니다."""
+    def on_external_emotion(self, label: str, confidence: float, **context) -> bool:
+        """Compatibility entry point; observations use the same appraisal path."""
+        aliases = {'angry': 'anger', 'happiness': 'happy', 'joy': 'happy',
+                   'sad': 'sadness', 'surprised': 'surprise'}
         emotion = str(label).strip().lower()
-        confidence = max(0.0, min(1.0, float(confidence)))
-        if confidence <= 0.0 or emotion == "neutral":
-            return False
-
-        aliases = {
-            "angry": "anger",
-            "happiness": "happy",
-            "joy": "happy",
-            "sad": "sadness",
-            "surprised": "surprise",
-        }
         emotion = aliases.get(emotion, emotion)
-        # 관찰된 사용자 감정을 캐릭터의 OCC 감정 조합으로 해석한다.
-        occ_weights = {
-            "happy": {
-                OccEmotionToMood.JOY: 1.0,
-                OccEmotionToMood.GRATITUDE: 0.3,
-            },
-            "anger": {
-                OccEmotionToMood.ANGER: 1.0,
-                OccEmotionToMood.DISTRESS: 0.4,
-            },
-            "contempt": {
-                OccEmotionToMood.ANGER: 0.5,
-                OccEmotionToMood.DISTRESS: 0.4,
-            },
-            "disgust": {
-                OccEmotionToMood.ANGER: 0.7,
-                OccEmotionToMood.DISTRESS: 0.6,
-            },
-            "fear": {
-                OccEmotionToMood.FEAR: 1.0,
-                OccEmotionToMood.DISTRESS: 0.4,
-            },
-            "sadness": {
-                OccEmotionToMood.DISTRESS: 1.0,
-                OccEmotionToMood.SHAME: 0.2,
-            },
-            "surprise": {
-                OccEmotionToMood.FEAR: 0.35,
-                OccEmotionToMood.HOPE: 0.35,
-            },
-        }
-        weights = occ_weights.get(emotion)
-        if weights is None:
-            return False
-
-        state_before = self._capture_emotion_state()
-        before = (self.russell.valence, self.russell.arousal)
-        before_occ = dict(self.occ_intensities)
-
-        # 한 번의 인식 결과가 기존 기분을 덮어쓰지 않도록 제한된 강도로 누적한다.
-        influence = 0.35 * confidence
-        for occ_emotion, weight in weights.items():
-            current = self.occ_intensities[occ_emotion]
-            self._add_occ_intensity(occ_emotion, influence * weight)
-        self._apply_occ_to_mood()
-        emotion_names = {
-            "happy": "사용자 웃음 감지",
-            "anger": "사용자 분노 표정 감지",
-            "contempt": "사용자 경멸 표정 감지",
-            "disgust": "사용자 불쾌 표정 감지",
-            "fear": "사용자 두려움 감지",
-            "sadness": "사용자 슬픔 감지",
-            "surprise": "사용자 놀람 감지",
-        }
-        category = "positive" if emotion == "happy" else "negative"
-        self._record_influence(
-            source=emotion_names.get(emotion, f"사용자 {emotion} 감정 감지"),
-            category=category,
-            base_weight=influence,
-            adjusted_weight=influence,
-            personality_multiplier=1.0,
-            personality_factors=[],
-            before=before,
-            before_occ=before_occ,
-            details=f"인식 신뢰도 {confidence * 100:.0f}%",
-            state_before=state_before, weight_applied=False,
-            merge_window=1.5,
-            event_input={'label': label, 'normalized_label': emotion, 'confidence': confidence,
-                         'influence': influence,
-                         'occ_weights': {key.value: value for key, value in weights.items()}},
-        )
-        return True
+        return self.on_interaction('user_face', label=emotion,
+                                   quality=confidence, **context)['applied']
 
     def apply_drag_displeasure(self, elapsed_seconds: float) -> None:
         """드래그 지속 시간에 비례해 불쾌감(ANGER/DISTRESS) 누적"""

@@ -49,6 +49,7 @@ class DialogueSystem(QObject):
         self.bubble_style = load_dialogue_style()
         self._response_provider = response_provider
         self._time_provider = time_provider
+        self.last_output_at = -math.inf
         self._closed = False
         self.manual_dialogue_active = False
         self._request_generation = 0
@@ -200,6 +201,7 @@ class DialogueSystem(QObject):
                   display_type=display_type, visible=bubble.isVisible(), duration_ms=duration)
         
         if not user:
+            self.last_output_at = self._time_provider()
             self.dialogue_started.emit(text)
 
     def set_bubble_style(self, style):
@@ -223,6 +225,7 @@ class DialogueSystem(QObject):
     
     def _show_narration(self, text: str, character_name: str, duration: int, *, log_context=None):
         """하단 나레이션 박스 표시"""
+        self.last_output_at = self._time_provider()
         # 이전 나레이션 종료
         if self.current_narration:
             previous, self.current_narration = self.current_narration, None
@@ -679,6 +682,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                                   retry_of=previous['trace_id'])
 
     def _on_tts_speaking_changed(self, speaking):
+        if speaking or self._speaking:
+            self.last_output_at = self._time_provider()
         self._speaking = bool(speaking)
         if self._speaking:
             self._flush_ai_response('playback_started')

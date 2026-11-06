@@ -221,7 +221,7 @@ class CharacterHandActions:
     def pet(self, speed, elapsed, point):
         c = self.character
         before = reaction_mood(c)
-        c._mark_character_interaction()
+        c._mark_pet_interaction(speed)
         if c.mood_system.should_refuse_pet():
             experience(c, 'pet_refused', elapsed=elapsed, source='손 접촉 거절')
             return

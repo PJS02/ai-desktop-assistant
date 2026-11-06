@@ -431,6 +431,7 @@ class CharacterWidget(QLabel):
             on_greeting=self._request_user_greeting,
             on_speech=self.dialogue_system.submit_speech,
             on_speech_with_context=self.dialogue_system.submit_speech_with_context,
+            on_affect=self._apply_perception_affect,
         )
         self.dialogue_system.tts.speaking_changed.connect(self.perception_controller.set_speech_suppressed)
         self.dialogue_system.user_input_received.connect(lambda text, source: self._mark_character_interaction())
@@ -684,11 +685,50 @@ class CharacterWidget(QLabel):
 
     @pyqtSlot(str)
     def _on_perception_status(self, status):
+        if status.startswith('disconnected:'):
+            self.perception_controller.reset_connection(status.removeprefix('disconnected:'))
         print(f"[외부 인식 수신기] {status}")
 
     @pyqtSlot(str)
     def _on_perception_error(self, message):
         print(f"[외부 인식 수신기 오류] {message}")
+
+    def _perception_actor_state(self):
+        dialogue = self.dialogue_system
+        manual = getattr(self, 'manual_control', None)
+        manual_motion = self._manual_control_active() or (
+            self._rig_manual_action is not None and not self._autonomous_behavior_active)
+        return {
+            'closing': self._character_closing,
+            'physical': (self.is_dragging or self.is_jumping or not self.on_ground
+                         or getattr(self, '_hand_throw_active', False)
+                         or getattr(self, '_hand_control_mode', None) in ('grab', 'palm')),
+            'manual_motion': bool(manual_motion),
+            'manual_face': bool(getattr(manual, 'display_emotion', None)),
+            'manual_emotion': self.mood_system._manual_russell_override,
+            'game': any(getattr(getattr(self, name, None), 'is_active', False)
+                        for name in ('rps_game', 'cham_game')),
+            'sleeping': self.current_action == 'sleep' or self._automatic_pose == 'sleep',
+            'dialogue_busy': CharacterWidget._dialogue_is_busy(self),
+            'recent_dialogue': (getattr(dialogue, '_speaking', False)
+                                or 0 <= time.monotonic() - getattr(dialogue, 'last_output_at', -math.inf) <= 8.),
+            'rest': self.autonomous_needs.values.get('rest', 0.),
+            'boredom': self.autonomous_needs.values.get('boredom', 0.),
+        }
+
+    def _apply_perception_affect(self, event, **context):
+        actor = self._perception_actor_state()
+        result = experience(self, event, actor_state=actor,
+                            reaction=event != 'user_greeting' or actor['manual_motion'], **context)
+        if result.get('accepted'):
+            appraisal = result['appraisal']
+            if appraisal['reset_idle']:
+                self._mark_character_interaction(
+                    wake=event == 'user_greeting' and not actor['manual_motion'],
+                    appraise_wake=False)
+            if event == 'user_greeting':
+                self._greeting_appraisal = appraisal
+        return result
 
     def _show_perception_dialogue(self, text, *, log_context=None):
         context = log_context or {'trace_id': getattr(getattr(self, 'perception_controller', None), 'current_trace_id', None), 'source': 'perception'}
@@ -734,26 +774,35 @@ class CharacterWidget(QLabel):
 
     def _request_user_greeting(self):
         self._greeting_log_context = {'trace_id': getattr(getattr(self, 'perception_controller', None), 'current_trace_id', None), 'source': 'greeting'}
-        if self._character_closing or self._manual_control_active():
-            return
-        self._pending_user_greeting_until = time.monotonic() + 10.0
-        if not self._try_user_greeting():
+        actor = self._perception_actor_state()
+        if any(actor[name] for name in ('closing', 'physical', 'manual_motion', 'manual_emotion', 'game')):
+            self._greeting_appraisal = None
+            return False
+        self._pending_user_greeting_until = time.monotonic() + 5.0
+        shown = self._try_user_greeting()
+        if not shown and self._pending_user_greeting_until is not None:
             print('[사용자 인사] 캐릭터 동작이 끝난 뒤 인사하도록 보류함')
             log_event('perception.greeting_deferred', '인사 동작 보류', category='사용자 인식', trace_id=self._greeting_log_context.get('trace_id'), deadline=self._pending_user_greeting_until)
             self._greeting_retry_timer.start()
+        return shown
 
     def _try_user_greeting(self):
         deadline = self._pending_user_greeting_until
         if deadline is None:
             return False
-        if self._character_closing or time.monotonic() > deadline:
+        actor = self._perception_actor_state()
+        blocked = next((name for name in ('closing', 'physical', 'manual_motion', 'manual_emotion', 'game')
+                        if actor[name]), None)
+        if blocked or time.monotonic() > deadline:
             self._pending_user_greeting_until = None
+            self._greeting_appraisal = None
             self._greeting_retry_timer.stop()
             if not self._character_closing:
-                print('[사용자 인사] 보류 시간 초과: 인사를 취소함')
-                log_event('perception.greeting_cancelled', '보류 시간 초과', category='사용자 인식', trace_id=getattr(self, '_greeting_log_context', {}).get('trace_id'))
+                print('[사용자 인사] 보류 인사를 취소함')
+                log_event('perception.greeting_cancelled', '보류 인사 취소', category='사용자 인식', reason=blocked or 'timeout', trace_id=getattr(self, '_greeting_log_context', {}).get('trace_id'))
             return False
         if (self.is_dragging or self.is_jumping or not self.on_ground
+                or self._perception_actor_state()['manual_motion']
                 or CharacterWidget._dialogue_is_busy(self)
                 or getattr(self, '_ball_session_active', False)
                 or (self.rps_game is not None and self.rps_game.isVisible())
@@ -763,10 +812,14 @@ class CharacterWidget(QLabel):
             return False
         self._pending_user_greeting_until = None
         self._greeting_retry_timer.stop()
-        self._mark_character_interaction()
         if self.rig_view is not None:
             self._play_rig_action('wave')
-            react(self, "greeting")
+            appraisal = getattr(self, '_greeting_appraisal', None)
+            self._greeting_appraisal = None
+            if appraisal is not None:
+                self.reactions.play_perception(appraisal)
+            else:
+                react(self, 'greeting')
         else:
             self._move_timer.stop()
             self.is_moving = False
@@ -1260,18 +1313,21 @@ class CharacterWidget(QLabel):
         """캐릭터 자체와 마지막으로 상호작용한 뒤의 시간을 반환한다."""
         return max(0.0, time.monotonic() - self._last_character_interaction_time)
 
-    def _mark_character_interaction(self) -> None:
+    def _mark_character_interaction(self, *, wake=True, appraise_wake=True) -> None:
         """캐릭터 상호작용 시 전용 방치 시간을 초기화한다."""
-        self._cancel_autonomous_behavior()
-        if hasattr(self, 'automatic_actions'):
-            self.automatic_actions.wake()
+        if wake:
+            self._cancel_autonomous_behavior(appraise_wake=appraise_wake)
+            if hasattr(self, 'automatic_actions'):
+                self.automatic_actions.wake(appraise=appraise_wake)
+        elif hasattr(self, 'automatic_actions') and self.current_action != 'sleep':
+            self.automatic_actions.sleep_after = time.monotonic() + self.automatic_actions.SLEEP_SECONDS
         needs = getattr(self, "autonomous_needs", None)
         if needs is not None:
             needs.on_interaction()
         self._last_character_interaction_time = time.monotonic()
         self.idle_counter = 0
 
-    def _cancel_autonomous_behavior(self) -> None:
+    def _cancel_autonomous_behavior(self, *, appraise_wake=True) -> None:
         if not getattr(self, "_autonomous_behavior_active", False):
             return
         self._autonomous_behavior_active = False
@@ -1282,8 +1338,17 @@ class CharacterWidget(QLabel):
         if not self.is_dragging and not self.is_moving:
             was_resting = self.current_action == "sleep"
             self.update_action(self.mood_system.decide_emotion())
-            if was_resting:
+            if was_resting and appraise_wake:
                 experience(self, "wake", follow="wake_settle")
+
+    def _mark_pet_interaction(self, speed):
+        sleeping = self.current_action == 'sleep' or self._automatic_pose == 'sleep'
+        rough = speed > 400.
+        manual = self._perception_actor_state()['manual_motion']
+        self._mark_character_interaction(wake=(not sleeping or rough) and not manual,
+                                         appraise_wake=not sleeping)
+        if sleeping and rough:
+            experience(self, 'poke_start', source='거친 접촉으로 놀람')
 
     def _run_autonomous_behavior(self, event_name: str) -> bool:
         """Run a short visible action after the idle-only selector picks an intent."""
@@ -1884,7 +1949,7 @@ class CharacterWidget(QLabel):
             self._pet_log_start_reward = self._pet_log_reward
             log_event('character.pet_started', '쓰다듬기 시작', category='캐릭터 상태', trace_id=self._pet_trace_id, speed=movement_speed)
         self._last_pet_time = current_time
-        self._mark_character_interaction()
+        self._mark_pet_interaction(movement_speed)
         self._pet_log_count += 1
         self._pet_total_count += 1
         self._pet_log_reward += reward
