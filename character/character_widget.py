@@ -102,6 +102,7 @@ class CharacterWidget(QLabel):
     show_ai_response = pyqtSignal(str)  # AI 응답 신호
     automatic_response_ready = pyqtSignal(object)
     occ_changed = pyqtSignal(str, dict)
+    arousal_changed = pyqtSignal(str, float)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -183,7 +184,8 @@ class CharacterWidget(QLabel):
         self.personality_system = PersonalitySystem(personality_preset or PersonalitySystem.DEFAULT_PRESET)
         if personality_traits is not None:
             self.personality_system.set_traits(personality_traits, preset_name=personality_preset)
-        self.mood_system = MoodSystem(self.personality_system, on_occ_change=self.occ_changed.emit)
+        self.mood_system = MoodSystem(self.personality_system, on_occ_change=self.occ_changed.emit,
+                                      on_arousal_change=self.arousal_changed.emit)
         self.russell_dialog = None
         self.current_action = "idle"
         self.drag_pos = None
@@ -286,6 +288,7 @@ class CharacterWidget(QLabel):
         self.emotion_delta_overlay = EmotionDeltaOverlay(
             self, options['emotion_delta_duration_ms'], enabled=options['emotion_delta_enabled'])
         self.occ_changed.connect(self.emotion_delta_overlay.collect)
+        self.arousal_changed.connect(self.emotion_delta_overlay.collect_arousal)
         self._pet_last_position = None
         self._pet_last_time = 0.0
         self._cursor_over_character = False

@@ -275,7 +275,7 @@ class RussellEmotionCanvas(QWidget):
             face = russell_face(self.valence_target, self.arousal_target)
             tooltip_text = (
                 f"정서가(Valence): {self.valence_target:+.3f}\n"
-                f"각성도(Arousal): {self.arousal_target:+.3f}\n"
+                f"흥분도(Arousal): {self.arousal_target:+.3f}\n"
                 f"표정: {SECTOR_NAMES[face]}"
             )
             global_pos = event.globalPosition().toPoint()
@@ -429,7 +429,7 @@ class RussellEmotionDialog(QDialog):
         
         self.description_label = QLabel(
             "정서가(Valence): -1(부정적 왼쪽)  +1(긍정적 오른쪽)\n"
-            "각성도(Arousal): -1(진정 아래)   +1(흥분 위)"
+            "흥분도(Arousal): -1(차분·졸림)   +1(활성·긴장)"
         )
         self.description_label.setFont(description_font)
         self.description_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -450,7 +450,7 @@ class RussellEmotionDialog(QDialog):
         self.chart_title = QLabel("최근 감정 흐름 · 약 45초")
         self.chart_title.setFont(description_font)
         self.chart_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.chart_legend = QLabel("● 정서가(Valence)    ● 각성도(Arousal)")
+        self.chart_legend = QLabel("● 정서가(Valence)    ● 흥분도(Arousal)")
         self.chart_legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.chart_legend.setStyleSheet("color: rgb(75, 84, 95);")
         left_layout.addWidget(self.chart_title)
@@ -689,6 +689,7 @@ class RussellEmotionDialog(QDialog):
             score = abs(int(latest.get("impact_score", 0)))
             self.change_label.setText(
                 f"가장 최근 변화: {marker}  {latest.get('source', '감정 사건')}  ·  좌표 변화 크기 {score}\n"
+                f"직접 반영량: {self._direct_change_text(latest)}\n"
                 f"Valence {latest.get('before_valence', 0):+.2f} → {latest.get('after_valence', 0):+.2f}   "
                 f"Arousal {latest.get('before_arousal', 0):+.2f} → {latest.get('after_arousal', 0):+.2f}\n"
                 f"{latest.get('details', '')}"
@@ -794,6 +795,14 @@ class RussellEmotionDialog(QDialog):
             table.blockSignals(signals_blocked)
             table.setUpdatesEnabled(updates_enabled)
 
+    def _direct_change_text(self, item):
+        parts = [f'{self.OCC_NAMES.get(name, name)} {delta * 100:+.2f}%p'
+                 for name, delta in item.get('occ_changes', {}).items()]
+        arousal = item.get('event_input', {}).get('arousal_change', 0.)
+        if arousal:
+            parts.append(f'흥분도 {arousal * 100:+.2f}점')
+        return ' · '.join(parts) or '직접 증감 없음'
+
     def _update_influence_row(self, row, item):
         category = item.get("category", "")
         marker = {"positive": "+", "negative": "-", "recovery": "회복 "}.get(category, "변화 ")
@@ -822,6 +831,8 @@ class RussellEmotionDialog(QDialog):
                 cell.setData(Qt.ItemDataRole.UserRole, item["event_id"])
             tooltip = ("사건 반영 시 현재 좌표가 이동한 크기(0~99). 목표 좌표·감정 성분 변화는 상세에서 확인하세요."
                        if column == 2 else value)
+            if column == 1:
+                tooltip += '\n직접 반영량: ' + self._direct_change_text(item)
             if cell.toolTip() != tooltip:
                 cell.setToolTip(tooltip)
             if column == 2 and cell.foreground().color() != color:
@@ -912,6 +923,11 @@ class RussellEmotionDialog(QDialog):
                  "idle_arousal_before": "방치의 A 기여 전", "idle_arousal_after": "방치의 A 기여 후",
                  "goal_relevance": "목표 관련성", "expectedness": "예상도", "controllability": "통제 가능성(참고 입력)",
                  "self_attribution": "자기 귀속", "agent_benevolence": "타인 의도", "confidence": "인식 신뢰도",
+                 "quality": "인식 신뢰도", "profile_weights": "현재 상태별 해석 비율",
+                 "actor_state": "인식 직전 캐릭터 상태", "state_labels": "안정 확인된 상태",
+                 "maintenance": "지속 인식 반영 비율", "budget_scale": "누적 상한 보정 비율",
+                 "repetition_multiplier": "반복 인식 보정 비율", "perception_context": "원본 인식 정보",
+                 "arousal_change": "사건의 흥분도 영향(Russell A)",
                  "label": "인식 표정", "normalized_label": "해석한 표정", "occ_weights": "감정 성분 반영 비율",
                  "influence": "인식 반영 계수", "valence_bias": "사건의 V 추가 보정", "arousal_bias": "사건의 A 추가 보정",
                  "negative_retention": "부정 성분 유지율", "positive_retention": "긍정 성분 유지율",
@@ -930,6 +946,15 @@ class RussellEmotionDialog(QDialog):
             if key in ('requested_occ', 'actual_occ') and isinstance(value, dict):
                 text = ' · '.join(f'{self.OCC_NAMES.get(name, name)} {amount * 100:+.2f}%p'
                                   for name, amount in value.items()) or '직접 증감 없음'
+            elif key == 'arousal_change' and isinstance(value, (int, float)):
+                text = f'{value * 100:+.2f}점 (실제값 {value:+.6f})'
+            elif key in ('quality', 'confidence') and isinstance(value, (int, float)):
+                text = f'{value:.1%}'
+            elif key == 'profile_weights' and isinstance(value, dict):
+                profiles = {'normal': '호의 수용', 'fear': '안정과 위로',
+                            'guard': '조심스러운 수용', 'down': '낮은 활력에서의 위로'}
+                text = ' · '.join(f'{profiles.get(name, name)} {amount:.1%}'
+                                  for name, amount in value.items())
             elif isinstance(value, bool):
                 text = '예' if value else '아니오'
             else:

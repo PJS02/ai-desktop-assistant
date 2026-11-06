@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from app_logging import LogEvent, sanitize
+from .mood_system import OCC_EMOTION_NAMES
 
 
 CATEGORY_TABS = {
@@ -54,6 +55,8 @@ _LABELS = {
     'sample_rate': '샘플레이트(Hz)', 'pcm_bytes': '오디오 크기(byte)',
     'device': '장치', 'channels': '채널 수', 'sample_format': '오디오 형식',
     'label': '인식 감정', 'confidence': '신뢰도', 'kind': '반응 종류',
+    'quality': '인식 신뢰도', 'signal': '인식 신호', 'applied': '실제 감정 반영',
+    'maintenance': '지속 인식 반영 비율', 'arousal_change': '사건의 흥분도 영향(Russell A)',
     'previous': '이전 상태', 'current': '현재 상태', 'previous_reason': '이전 이유',
     'speaking': '음성 재생 여부', 'ignore_until': '입력 억제 종료 시각',
     'suppressed_since_previous': '이전 기록 이후 같은 사유로 생략된 횟수',
@@ -116,6 +119,18 @@ _LABELS = {
 # Translate known diagnostic values only; unknown values retain their original
 # representation so new event families cannot silently lose information.
 _VALUES = {
+    'accepted': '수락', 'no_change': '직접 변화 없음', 'budget_exhausted': '누적 반영 상한',
+    'sleeping': '수면 중',
+    'anger': '분노', 'sadness': '슬픔', 'disgust': '불쾌', 'contempt': '경멸',
+    'face': '얼굴 표정', 'heart': '하트', 'thumbs_up': '엄지척', 'ok': 'OK',
+    'head_agree': '고개 끄덕임', 'head_negative': '고개 좌우 흔들기',
+    'user_face': '얼굴 표정', 'user_heart': '하트', 'user_thumbs_up': '엄지척',
+    'user_ok': 'OK', 'user_greeting': '손 흔들기 인사',
+    'user_head_agree': '고개 끄덕임', 'user_head_negative': '고개 좌우 흔들기',
+    'physical_owner': '잡기·낙하 등 물리 동작 우선', 'manual_emotion': '수동 감정 조작 중',
+    'game_owner': '게임 입력 우선', 'no_dialogue_context': '최근 캐릭터 대화 없음',
+    'missing_inference_id': '실제 얼굴 추론 식별자 없음',
+    'duplicate_or_out_of_order': '중복 또는 이전 관측', 'stale_observation': '오래된 관측',
     'typed': '문자 입력', 'speech': '음성 입력', 'manual': '직접 조작',
     'automatic': '자동', 'disabled': '음성 설정 꺼짐', 'shutdown': '앱 종료',
     'empty': '내용 없음', 'empty_input': '빈 입력', 'closed': '종료된 상태',
@@ -207,6 +222,8 @@ _ACTIONS = {
     'stt.result.discarded': '음성 입력 전달 생략', 'stt.utterance.silence': '낮은 음량의 입력 생략',
     'stt.suppression.changed': '음성 입력 억제 변경', 'stt.audio.suppressed': '오디오 청크 억제',
     'perception.rejected': '인식 적용 생략', 'perception.emotion.applied': '인식 감정 반영',
+    'perception.affect.result': '인식 감정 처리 결과',
+    'mood.perception.skipped': '인식 감정 반영 생략',
     'perception.attention.changed': '사용자 주의 상태 변경', 'perception.wave.detected': '손 흔들기 인식',
     'perception.speech.accepted': '음성 대화 입력 수락',
     'perception.reaction.requested': '인식 반응 요청', 'perception.reaction.result': '인식 반응 전달 결과',
@@ -322,7 +339,7 @@ def _field(data: dict, key: str, label: str | None = None, limit=60) -> str:
     translated_fields = {
         'source', 'reason', 'selection_reason', 'previous_reason', 'kind', 'mode', 'outcome',
         'state', 'status', 'label', 'runtime_status', 'previous_status', 'previous', 'current',
-        'emotion', 'final_emotion', 'mood', 'old_emotion', 'new_emotion',
+        'emotion', 'final_emotion', 'mood', 'old_emotion', 'new_emotion', 'signal', 'event_name',
         'player', 'opponent', 'hand', 'previous_hand', 'result', 'display_type',
     }
     return f'{label or _LABELS.get(key, key)} {_short(value, limit, translate=key in translated_fields)}'
@@ -371,6 +388,10 @@ def _mood_summary(data: dict) -> list[str]:
     parts = []
     if isinstance(influence, dict):
         parts.append(_field(influence, 'source', '원인'))
+        parts.append(_occ_summary(influence.get('occ_changes')))
+        arousal = influence.get('event_input', {}).get('arousal_change', 0.)
+        if arousal:
+            parts.append(f'흥분도 {arousal * 100:+.2f}점')
         for axis, label in (('valence', 'V'), ('arousal', 'A')):
             before, after = influence.get('before_' + axis), influence.get('after_' + axis)
             if before is not None and after is not None:
@@ -384,6 +405,16 @@ def _mood_summary(data: dict) -> list[str]:
         parts.append(_field(data, 'amount', '보상'))
     parts.append(_field(data, 'final_emotion'))
     return parts
+
+
+def _occ_summary(changes) -> str:
+    if not isinstance(changes, dict):
+        return ''
+    entries = [(name, value) for name, value in changes.items()
+               if isinstance(value, (int, float)) and not isinstance(value, bool) and value != 0]
+    entries.sort(key=lambda entry: abs(entry[1]), reverse=True)
+    return ' · '.join(f'{OCC_EMOTION_NAMES.get(name, name)} {value * 100:+.2f}%p'
+                      for name, value in entries[:2])
 
 
 def _settings_summary(data: dict) -> list[str]:
@@ -452,10 +483,18 @@ def _summary(event: str, message: str, data: dict) -> str:
                   _field(data, 'suppressed_chunks'), _field(data, 'error')]
     elif event.startswith('perception.'):
         parts += [_text(data, 'text'), _field(data, 'kind'), _field(data, 'label'),
-                  _field(data, 'confidence'), _field(data, 'reason'), _field(data, 'outcome'),
+                  _field(data, 'signal'), _field(data, 'confidence'), _field(data, 'quality'),
+                  _field(data, 'reason') if data.get('reason') is not None else '', _field(data, 'outcome'),
                   _field(data, 'previous'), _field(data, 'current'),
                   _field(data, 'sides', '인식한 손'), _field(data, 'error')]
+        if event == 'perception.affect.result':
+            parts += ['실제 감정 반영' if data.get('applied') else '반영 없음',
+                      _occ_summary(data.get('occ_changes'))]
+            if data.get('arousal_change'):
+                parts.append(f"흥분도 {data['arousal_change'] * 100:+.2f}점")
     elif event.startswith('mood.'):
+        if event == 'mood.perception.skipped':
+            parts.append(_field(data, 'event_name', '인식 신호'))
         parts += _mood_summary(data)
         parts += [_field(data, 'reason'), _field(data, 'error')]
     elif event.startswith('settings.') or event.startswith('device.settings.'):

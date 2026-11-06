@@ -28,6 +28,10 @@ FACE_SOURCES = {
     'contempt': '사용자 경멸 표정 감지', 'disgust': '사용자 불쾌 표정 감지',
     'fear': '사용자 두려움 감지', 'sadness': '사용자 슬픔 감지', 'surprise': '사용자 놀람 감지',
 }
+GESTURE_SOURCES = {
+    'heart': '하트 인식', 'thumbs_up': '엄지척 인식', 'ok': 'OK 인식',
+    'greeting': '손 흔들기 인사', 'head_agree': '고개 끄덕임', 'head_negative': '고개 좌우 흔들기',
+}
 
 
 def _number(value, lower=0., upper=1., default=0.):
@@ -147,7 +151,7 @@ class InteractionEmotions:
                 result['dose'] = elapsed * quality
         elif event == 'poke_start':
             dose = self._dose('poke', 1., now)
-            arousal, meaning = .025, '갑작스러운 접촉에 각성도가 잠깐 상승'
+            arousal, meaning = .025, '갑작스러운 접촉에 흥분도가 잠깐 상승'
         elif event in ('poke_play', 'poke_discomfort', 'contact_ignored'):
             dose = self._dose('poke', 1., now)
             if event == 'contact_ignored' or mood.should_refuse_pet():
@@ -266,7 +270,7 @@ class InteractionEmotions:
         elif event == 'wake':
             dose = self._dose('wake', 1., now)
             arousal = min(.04, max(0., -before[1]))
-            meaning = '수면에서 깨어나 각성도를 회복; 휴식 보상은 다시 지급하지 않음'
+            meaning = '수면에서 깨어나 흥분도를 회복; 휴식 보상은 다시 지급하지 않음'
         elif event == 'wake_settle':
             return result
         else:
@@ -411,13 +415,17 @@ class InteractionEmotions:
         changes = {key: value for key, value in changes.items() if abs(value) > 1e-12}
         appraisal.update(expression_strength=unit(appraisal['strength'] * dose),
                          applied_occ=changes, budget_scale=scale, quality=quality,
+                         applied_arousal=arousal,
                          personality_multiplier=factor, repetition_multiplier=repeat)
         result.update(reaction='user_' + signal, applied=bool(changes or arousal),
                       changes=changes, dose=dose)
+        if not result['applied']:
+            limited = (amount > 0 and scale == 0 or
+                       appraisal['arousal'] * dose != 0 and arousal_used >= .06)
+            appraisal['reason'] = 'budget_exhausted' if limited else 'no_change'
         if result['applied']:
-            source = source or {'heart': '하트 인식', 'thumbs_up': '엄지척 인식',
-                'ok': 'OK 인식', 'greeting': '손 흔들기 인사', 'head_agree': '고개 끄덕임',
-                'head_negative': '고개 좌우 흔들기', 'face': FACE_SOURCES.get(label, '사용자 표정 인식')}[signal]
+            source = source or (FACE_SOURCES.get(label, '사용자 표정 인식') if signal == 'face'
+                                else GESTURE_SOURCES[signal])
             goodness = sum(-v if k in ('distress', 'fear', 'anger', 'shame') else v
                            for k, v in changes.items())
             mood._record_influence(
@@ -430,6 +438,7 @@ class InteractionEmotions:
                 event_input={'event': 'user_' + signal, 'event_id': event_id, 'label': label,
                     'quality': quality, 'profile_weights': appraisal['weights'],
                     'actor_state': actor, 'requested_occ': raw, 'actual_occ': changes,
+                    'arousal_change': arousal, 'maintenance': maintenance,
                     'budget_scale': scale, 'repetition_multiplier': repeat,
                     'state_labels': appraisal['state_labels'], **context})
         return result

@@ -356,7 +356,8 @@ class PerceptionController:
                   source=event.source, quality=quality, maintenance=maintenance,
                   outcome='accepted' if result.get('accepted') else 'blocked',
                   reason=result.get('appraisal', {}).get('reason'),
-                  applied=bool(result.get('applied')))
+                  applied=bool(result.get('applied')), occ_changes=result.get('changes', {}),
+                  arousal_change=result.get('appraisal', {}).get('applied_arousal', 0.))
         return result
 
     def _handle_speech(self, event: PerceptionEvent) -> bool:

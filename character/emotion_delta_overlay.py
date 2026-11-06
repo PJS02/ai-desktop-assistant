@@ -1,4 +1,4 @@
-"""Show short changes in OCC emotion strength over the character."""
+"""Show short OCC changes and event arousal adjustments over the character."""
 
 import random
 import math
@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QP
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from .mood_system import NEGATIVE_OCC_EMOTIONS, OCC_EMOTION_NAMES, OccEmotionToMood
+from .interaction_emotions import FACE_SOURCES, GESTURE_SOURCES
 
 
 SOURCE_LABELS = {
@@ -26,6 +27,7 @@ SOURCE_LABELS = {
     "손으로 쓰다듬기": "손 쓰다듬기",
     "안전하게 착지": "안전한 착지",
 }
+PRECISE_SOURCES = frozenset((*FACE_SOURCES.values(), *GESTURE_SOURCES.values()))
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,10 @@ class EmotionDeltaOverlay(QWidget):
         if not self._batch.isActive():
             self._batch.start()
 
+    @pyqtSlot(str, float)
+    def collect_arousal(self, source, change):
+        self.collect(source, {'arousal': change})
+
     def set_enabled(self, enabled):
         self.enabled = enabled
         if not enabled:
@@ -112,12 +118,17 @@ class EmotionDeltaOverlay(QWidget):
             if now - self._pending_at.get(key, now) > 4.:
                 del self._pending[key]
                 self._pending_at.pop(key, None)
-        ranked = sorted(((key, delta) for key, delta in self._pending.items()
-                         if abs(delta) >= .01 - 1e-12),
-                        key=lambda entry: abs(entry[1]), reverse=True)
+        ranked = []
+        for key, delta in self._pending.items():
+            # Confirmed recognition events can be smaller than one display point.
+            scale = 10000 if key[0] in PRECISE_SOURCES or key[1] == 'arousal' else 100
+            if abs(delta) >= 1 / scale - 1e-12:
+                ranked.append((key, delta, scale))
+        ranked.sort(key=lambda entry: abs(entry[1]), reverse=True)
         lines = []
-        for (source, emotion), delta in ranked[:2]:
-            points = math.trunc(delta * 100 + math.copysign(1e-9, delta))
+        for (source, emotion), delta, scale in ranked[:2]:
+            points = (round(delta * 100, 2) if scale == 10000 else
+                      math.trunc(delta * 100 + math.copysign(1e-9, delta)))
             lines.append((source, emotion, points))
             self._pending[source, emotion] -= points / 100
         if lines:
@@ -146,7 +157,8 @@ class EmotionDeltaOverlay(QWidget):
             cause = QPainterPath()
             cause.addText(-cause_metrics.horizontalAdvance(label) / 2, -22, self._cause_font, label)
             sign = '+' if points > 0 else '−'
-            text = f'{OCC_EMOTION_NAMES[emotion]} {sign}{abs(points)}'
+            name = '흥분도' if emotion == 'arousal' else OCC_EMOTION_NAMES[emotion]
+            text = f'{name} {sign}{abs(points):g}'
             path = QPainterPath()
             path.addText(-metrics.horizontalAdvance(text) / 2, 0, self._font, text)
             if index:
@@ -158,8 +170,11 @@ class EmotionDeltaOverlay(QWidget):
                 drift_x = -side * random.uniform(4, 12)
                 delay = 0.0
             drift = QPointF(drift_x, -random.uniform(22, 27))
-            positive_gain = (points > 0) != (OccEmotionToMood(emotion) in NEGATIVE_OCC_EMOTIONS)
-            color = QColor('#a6f284' if positive_gain else '#ff797d')
+            if emotion == 'arousal':
+                color = QColor('#8fc8ff')
+            else:
+                positive_gain = (points > 0) != (OccEmotionToMood(emotion) in NEGATIVE_OCC_EMOTIONS)
+                color = QColor('#a6f284' if positive_gain else '#ff797d')
             popups.append(EmotionPopup(cause, path, color, origin, drift, delay))
         return popups
 

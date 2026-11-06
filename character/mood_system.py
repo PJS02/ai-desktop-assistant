@@ -149,7 +149,7 @@ class MoodSystem:
     _NEGATIVE_EMOTION_RETENTION = 0.95
     _POSITIVE_EMOTION_RETENTION = 0.94
     
-    def __init__(self, personality_system=None, *, on_occ_change=None):
+    def __init__(self, personality_system=None, *, on_occ_change=None, on_arousal_change=None):
         # Russell 감정 좌표 (Valence, Arousal)
         self.russell = RussellState()
         
@@ -159,6 +159,7 @@ class MoodSystem:
         # OCC 감정 강도 (combined_emotion_system과의 연계)
         self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
         self._on_occ_change = on_occ_change
+        self._on_arousal_change = on_arousal_change
         
         # Russell 공간에서 17개 감정의 위치 (Valence, Arousal)
         # 코드 상 감정을 정의하는 구간
@@ -426,7 +427,7 @@ class MoodSystem:
             self_attribution=0.1,
         )
         self.appraise_event(event, weight=0.4, valence_bias=0.03, arousal_bias=0.12,
-                            source="주변 살피기", details="주변을 살피며 관심과 각성도를 얻음")
+                            source="주변 살피기", details="주변을 살피며 관심과 흥분도가 높아짐")
 
     def on_task_complex(self):
         """복잡한 작업 감지 - 생각함"""
@@ -728,6 +729,9 @@ class MoodSystem:
         # A continuous input can merge into the history item. Report only this step.
         if occ_changes and category != "recovery" and self._on_occ_change is not None:
             self._on_occ_change(source, occ_changes)
+        arousal_change = inputs.get('arousal_change', 0.)
+        if arousal_change and category != 'recovery' and self._on_arousal_change is not None:
+            self._on_arousal_change(source, arousal_change)
 
 
     def _apply_occ_to_mood(self) -> None:
