@@ -51,6 +51,8 @@ class AutomaticActions(QObject):
         if host._character_closing:
             self.timer.stop()
             return
+        if getattr(host, '_pointer_interaction_active', lambda: False)():
+            return
         blocked = (host.rig_view is None or host._manual_control_active()
                    or host._rig_manual_action is not None or host.is_dragging
                    or getattr(host, '_autonomous_behavior_active', False)

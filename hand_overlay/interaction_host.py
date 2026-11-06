@@ -115,6 +115,7 @@ class CharacterHandActions:
         c = self.character
         return (not c._character_closing and c.isVisible()
                 and not c._manual_control_active()
+                and not getattr(c, '_pointer_interaction_active', lambda: False)()
                 and not getattr(c, '_hand_throw_active', False)
                 and QApplication.activePopupWidget() is None
                 and QApplication.activeModalWidget() is None

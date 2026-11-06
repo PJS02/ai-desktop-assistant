@@ -811,9 +811,15 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
 
     def open_input_dialog(self):
         """대화 입력 창 열기"""
-        # 이전 입력창이 있으면 닫기
+        if self._closed:
+            return
+        # Preserve a draft when the character's talk action is selected again.
         if self.current_input_widget:
-            self.current_input_widget.close()
+            self.current_input_widget.showNormal()
+            self.current_input_widget.raise_()
+            self.current_input_widget.activateWindow()
+            self.current_input_widget.input_field.setFocus()
+            return
         
         # 새 입력창 생성
         input_widget = DialogueInputWidget()
@@ -826,6 +832,9 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         input_widget.set_position_below_character(char_x, char_y, char_width)
         
         input_widget.show()
+        input_widget.raise_()
+        input_widget.activateWindow()
+        input_widget.input_field.setFocus()
         self.current_input_widget = input_widget
     
     def _process_gemini_response(self, response: str, *, log_context=None) -> str:

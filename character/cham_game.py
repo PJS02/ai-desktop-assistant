@@ -155,7 +155,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.show()
         self._recognition_session = self.session
         if not self._command(f"cham_begin {self.session}"):
-            self._error("카메라에 연결하지 못했어.\n우클릭 메뉴에서 다시 시작해줘.")
+            self._error("카메라에 연결하지 못했어.\n캐릭터를 더블클릭해 다시 시작해줘.")
         else:
             self.start_round()
             log_event('game.cham.started', '참참참 게임 시작', category='캐릭터 상태',
@@ -272,7 +272,7 @@ class ChamGameOverlay(RpsGameOverlay):
                 self.deadline = now + 6.0
                 self._turn(0, now)
                 self._show_message('네가 이겼어!' if self.player_score > self.character_score
-                                   else '내가 이겼어!', '다시 하기는 우클릭 메뉴에서')
+                                   else '내가 이겼어!', '캐릭터를 더블클릭하면 다시 할 수 있어')
                 won = self.character_score > self.player_score
                 event = ("game_win" if won else "game_disappointed"
                          if self._best_lead >= 2 else "game_loss")

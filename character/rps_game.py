@@ -195,7 +195,7 @@ class RpsGameOverlay(QWidget):
         # 실패 응답이 늦게 도착해도 종료 명령으로 임시 인식 모드를 정리한다.
         self._recognition_session = self.session
         if not self._command(f"rps_begin {self.session}"):
-            self.finish_without_result("사용자 인식 프로그램을 연결하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.")
+            self.finish_without_result("사용자 인식 프로그램을 연결하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.")
             return
         self._report_emotion('game_start', 'expect')
         self.timer.start()
@@ -240,7 +240,7 @@ class RpsGameOverlay(QWidget):
         if self.state == "countdown" and now >= self.deadline:
             self._begin_capture()
         if self.state == "waiting" and now >= self.deadline:
-            self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
+            self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.", reason='timeout')
             return
         previous_label = self.tracker.label
         if self.tracker.feed(payload, now) and self.state == "waiting":
@@ -267,7 +267,7 @@ class RpsGameOverlay(QWidget):
                     self._request_cue(cue)
         if self.state == "waiting":
             if now >= self.deadline:
-                self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
+                self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.", reason='timeout')
             else:
                 hand = self.tracker.stable_hand(now)
                 if hand:
@@ -280,7 +280,7 @@ class RpsGameOverlay(QWidget):
             self.title.setText({"당신의 승리!": "승리!", "캐릭터의 승리!": "패배!",
                                 "무승부!": "무승부!"}[self.result])
             self.hint.setText(f"사용자 기준 · 나 {HANDS[self.player]} / 캐릭터 {HANDS[self.opponent]}\n"
-                              "다시 하기·종료는 캐릭터 메뉴에서")
+                              "캐릭터를 더블클릭해 다시 하거나 끝낼 수 있어요")
             event = {
                 "당신의 승리!": "game_loss", "캐릭터의 승리!": "game_win", "무승부!": "game_draw",
             }[self.result]

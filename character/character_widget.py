@@ -33,6 +33,7 @@ from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
 from .automatic_actions import AutomaticActions
+from .action_menu import CharacterActionMenu
 from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_options, random_movement_scale
 from .dialogue_options import normalize_dialogue_options
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
@@ -189,6 +190,15 @@ class CharacterWidget(QLabel):
         self.russell_dialog = None
         self.current_action = "idle"
         self.drag_pos = None
+        self.action_menu = None
+        self._pointer_press = None
+        self._pending_tap = None
+        self._double_click_pending = False
+        self._menu_close_until = 0.
+        self._single_click_timer = QTimer(self)
+        self._single_click_timer.setSingleShot(True)
+        self._single_click_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._single_click_timer.timeout.connect(self._finish_pending_click)
         self.current_pixmap = None
         self.is_flipped = False
         self.assets_path = Path(__file__).resolve().parent.parent / "assets"
@@ -465,6 +475,9 @@ class CharacterWidget(QLabel):
             self._ensure_taskbar_visibility()
 
     def hideEvent(self, event):
+        self._cancel_pointer_input()
+        if getattr(self, 'action_menu', None) is not None:
+            self.action_menu.dismiss('character_hidden')
         timer = getattr(self, '_taskbar_visibility_timer', None)
         if timer is not None:
             timer.stop()
@@ -640,12 +653,18 @@ class CharacterWidget(QLabel):
         super().resizeEvent(event)
         if getattr(self, "rig_view", None) is not None:
             self.rig_view.setGeometry(self.rect())
+        menu = getattr(self, 'action_menu', None)
+        if menu is not None and menu.isVisible():
+            menu.reposition()
 
     def moveEvent(self, event):
         super().moveEvent(event)
         dialogue = getattr(self, 'dialogue_system', None)
         if dialogue is not None:
             dialogue.update_dialogue_position()
+        menu = getattr(self, 'action_menu', None)
+        if menu is not None and menu.isVisible():
+            menu.reposition()
 
     def _get_screen_dimensions(self):
         """Use logical Qt dimensions, refreshing resolution and scaling changes."""
@@ -838,6 +857,9 @@ class CharacterWidget(QLabel):
 
     def _shutdown_character_renderer(self):
         """Stop host callbacks before releasing the drawing backend."""
+        CharacterWidget._cancel_pointer_input(self)
+        if getattr(self, 'action_menu', None) is not None:
+            self.action_menu.dismiss('shutdown')
         if not getattr(self, '_character_closing', False):
             log_event('character.shutdown', '캐릭터 종료 시작', category='캐릭터 상태',
                       action=getattr(self, 'current_action', None), moving=getattr(self, 'is_moving', False))
@@ -892,7 +914,9 @@ class CharacterWidget(QLabel):
     def on_animation_position_changed(self, new_pos):
         """애니메이션이 위치 변경을 요청 (이동 중에는 멈춤)"""
         # 중력이 적용되도록, X좌표만 갱신하고 Y는 현재 유지
-        if not self._manual_control_active() and not self.is_moving and not self.is_dragging and not getattr(self, '_ball_chasing', False):
+        if (not CharacterWidget._pointer_interaction_active(self)
+                and not self._manual_control_active() and not self.is_moving
+                and not self.is_dragging and not getattr(self, '_ball_chasing', False)):
             # X만 변경, Y는 현재 값 유지 (중력 효과 보존)
             self.move(new_pos.x(), self.y())
     
@@ -1424,7 +1448,7 @@ class CharacterWidget(QLabel):
 
     def _maybe_run_autonomous_event(self, idle_seconds: float) -> None:
         """상호작용이 없을 때 낮은 빈도로 캐릭터 혼자 이벤트를 발생시킨다."""
-        if self._manual_control_active():
+        if self._manual_control_active() or CharacterWidget._pointer_interaction_active(self):
             return
         now = time.monotonic()
         if idle_seconds < 15.0:
@@ -1802,62 +1826,148 @@ class CharacterWidget(QLabel):
             self._show_context_menu(global_pos, include_dialogue=True)
         event.accept()
 
-    # 클릭 이벤트
+    def _pointer_interaction_active(self):
+        menu = getattr(self, 'action_menu', None)
+        return bool(getattr(self, '_pointer_press', None) or getattr(self, '_pending_tap', None)
+                    or getattr(self, '_double_click_pending', False)
+                    or (menu is not None and menu.isVisible()))
+
+    def _cancel_pointer_input(self):
+        timer = getattr(self, '_single_click_timer', None)
+        if timer is not None:
+            timer.stop()
+        self._pointer_press = self._pending_tap = None
+        self._double_click_pending = False
+
+    def _pause_pointer_movement(self):
+        self._mark_character_interaction(wake=False)
+        if self.is_moving or getattr(self, '_ball_chasing', False):
+            if self._manual_control_active():
+                self.manual_control._stop_horizontal()
+            self._move_timer.stop()
+            self.is_moving = self._ball_chasing = False
+            self._chase_last_time = self._walk_last_time = None
+            self.velocity_x = 0
+            self.current_action = 'idle'
+            self.update_render('idle')
+            self.animation_controller.update_base_pos(self.pos())
+            self.animation_controller.start_idle()
+            log_event('character.movement_stopped', '메뉴 선택을 위해 이동 잠시 멈춤',
+                      category='캐릭터 상태', reason='pointer_input', position=(self.x(), self.y()))
+
+    def _apply_mouse_click(self):
+        self.mood_system.on_click()
+        self._mark_character_interaction()
+        log_event('mood.snapshot', '클릭 후 감정 상태', category='캐릭터 상태', reason='click',
+                  state=self.mood_system.get_russell_state(), final_emotion=self.mood_system.decide_emotion(),
+                  formatted_state=self.mood_system.get_formatted_mood_log())
+
+    def _finish_pending_click(self):
+        pending, self._pending_tap = self._pending_tap, None
+        self._single_click_timer.stop()
+        if pending is None or self._character_closing or not self.isVisible():
+            return
+        press, tapped = pending
+        response = self.sandbox_manager.use_selected_item()
+        if response:
+            self.dialogue_system.show_dialogue(response, duration=2500)
+            return
+        if getattr(self, '_hand_throw_active', False):
+            self._finish_hand_throw()
+        self._apply_mouse_click()
+        if tapped:
+            react(self, 'tap', before=press[2])
+
+    def _on_action_menu_closed(self, reason):
+        if reason == 'character_click':
+            self._menu_close_until = time.monotonic() + QApplication.doubleClickInterval() / 1000
+        if not self._character_closing:
+            self._mark_character_interaction(wake=False)
+
+    def toggle_action_menu(self):
+        self._cancel_pointer_input()
+        if self._character_closing or not self.isVisible():
+            return
+        if self.action_menu is not None and self.action_menu.isVisible():
+            self.action_menu.dismiss('toggle')
+            return
+        if time.monotonic() < self._menu_close_until:
+            return
+        menu = getattr(self, '_context_menu', None)
+        if menu is not None:
+            menu.hide()
+        self._pause_pointer_movement()
+        self._mark_character_interaction(appraise_wake=False)
+        if self.action_menu is None:
+            self.action_menu = CharacterActionMenu(self)
+            self.action_menu.closed.connect(self._on_action_menu_closed)
+        self.action_menu.show_for_character()
+
+    # Click reactions wait for the OS double-click interval; dragging never does.
     def mousePressEvent(self, event):
         if not self._refresh_body_hover(event.position().toPoint()):
             event.ignore()
             return
-        hand_interactions = getattr(self, 'hand_interactions', None)
-        if hand_interactions is not None:
-            hand_interactions.cancel('mouse_input')
-        print(f"[mousePressEvent] button={event.button()} pos={event.globalPosition().toPoint()}")
         if event.button() == Qt.MouseButton.RightButton:
-            self._show_context_menu(event.globalPosition().toPoint(), include_dialogue=True)
+            self._show_context_menu(event.globalPosition().toPoint())
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            if CharacterWidget._cham_game_active(self):
-                self.cham_game.close()
-            sandbox_response = self.sandbox_manager.use_selected_item()
-            if sandbox_response:
-                self.dialogue_system.show_dialogue(sandbox_response, duration=2500)
+            if self.action_menu is not None and self.action_menu.isVisible():
+                self.action_menu.dismiss('character_click')
                 event.accept()
                 return
+            if time.monotonic() < self._menu_close_until:
+                event.accept()
+                return
+            self._finish_pending_click()
+            hand_interactions = getattr(self, 'hand_interactions', None)
+            if hand_interactions is not None:
+                hand_interactions.cancel('mouse_input')
+            self._pointer_press = (event.globalPosition().toPoint(), time.monotonic(), reaction_mood(self))
+            self._pause_pointer_movement()
+            event.accept()
 
-            if getattr(self, '_hand_throw_active', False):
-                self._finish_hand_throw()
-            self._tap = (event.globalPosition().toPoint(), time.monotonic(), reaction_mood(self))
-            self._last_rough_drag = None
-            self._drag_reacted = False
-            self._drag_discomfort_shown = False
-            self.mood_system.on_click()
-            self._mark_character_interaction()
-            self.drag_pos = event.globalPosition().toPoint()
-            print(f"[클릭 이벤트 발생]")
-            log_event('mood.snapshot', '클릭 후 감정 상태', category='캐릭터 상태', reason='click',
-                      state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
-                      formatted_state=self.mood_system.get_formatted_mood_log())
-            
+    def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton or not self._body_contains(event.position().toPoint()):
+            event.ignore()
+            return
+        self._cancel_pointer_input()
+        hand_interactions = getattr(self, 'hand_interactions', None)
+        if hand_interactions is not None:
+            hand_interactions.cancel('mouse_input')
+        self._pointer_press = (event.globalPosition().toPoint(), time.monotonic(), reaction_mood(self))
+        self._double_click_pending = True
+        self._pause_pointer_movement()
+        event.accept()
 
-            self.is_dragging = True
-            self.drag_time = 0
-            self._drag_trace_id = new_trace_id('drag')
-            self._drag_start_position = (self.x(), self.y())
-            log_event('character.drag_started', '드래그 시작', category='캐릭터 상태', trace_id=self._drag_trace_id, position=self._drag_start_position)
-            
-            # 진행 중인 이동 로직 완전히 중지
-            if self.is_moving:
-                print(f"[드래그 시작] 이동 중단")
-                self._move_timer.stop()
-                self.is_moving = False
-                log_event('character.movement_stopped', '드래그로 이동 중단', category='캐릭터 상태', reason='drag_started', position=(self.x(), self.y()))
-                self.sprite_animator.stop()
-            
-            # 드래그 시작 시 hovering 애니메이션 로드 (한 번만)
-            self.current_action = "hovering"
-            self.update_render("hovering")
+    def _begin_mouse_drag(self):
+        press, self._pointer_press = self._pointer_press, None
+        self._double_click_pending = False
+        if CharacterWidget._cham_game_active(self):
+            self.cham_game.close()
+        if getattr(self, '_hand_throw_active', False):
+            self._finish_hand_throw()
+        self._tap = self._last_rough_drag = None
+        self._drag_reacted = self._drag_discomfort_shown = False
+        self._apply_mouse_click()
+        self.drag_pos = press[0]
+        self.is_dragging = True
+        self.drag_time = 0
+        self._drag_velocity_x = self._drag_velocity_y = 0
+        self._drag_trace_id = new_trace_id('drag')
+        self._drag_start_position = (self.x(), self.y())
+        log_event('character.drag_started', '드래그 시작', category='캐릭터 상태',
+                  trace_id=self._drag_trace_id, position=self._drag_start_position)
+        self.animation_controller.idle.stop()
+        self.current_action = 'hovering'
+        self.update_render('hovering')
 
     def mouseMoveEvent(self, event):
+        press = getattr(self, '_pointer_press', None)
+        if (press is not None and not self.is_dragging
+                and (event.globalPosition().toPoint() - press[0]).manhattanLength() > QApplication.startDragDistance()):
+            self._begin_mouse_drag()
         if self.is_dragging and self.drag_pos:
             current_pos = event.globalPosition().toPoint()
             delta = current_pos - self.drag_pos
@@ -1899,6 +2009,8 @@ class CharacterWidget(QLabel):
             self.dialogue_system.update_dialogue_position()
             return
 
+        if CharacterWidget._pointer_interaction_active(self):
+            return
         position = event.position().toPoint()
         if not self._refresh_body_hover(position):
             event.ignore()
@@ -2008,6 +2120,20 @@ class CharacterWidget(QLabel):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event, *, hand_throw_velocity=None):
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            if self._double_click_pending:
+                self._double_click_pending = False
+                self.toggle_action_menu()
+                event.accept()
+                return
+            press, self._pointer_press = self._pointer_press, None
+            if press is not None and not self.is_dragging:
+                tapped = (time.monotonic() - press[1] <= .35 and
+                          (event.globalPosition().toPoint() - press[0]).manhattanLength() <= QApplication.startDragDistance())
+                self._pending_tap = press, tapped
+                self._single_click_timer.start(QApplication.doubleClickInterval())
+                event.accept()
+                return
         if (not getattr(self, 'is_dragging', False)
                 or (event is not None and event.button() != Qt.MouseButton.LeftButton)):
             if event is not None:
@@ -2240,7 +2366,12 @@ class CharacterWidget(QLabel):
     
     #컨텍스트 메뉴 캐릭터 우클릭시 동작
     def _show_context_menu(self, global_pos, include_dialogue: bool = False):
-        print(f"[컨텍스트 메뉴] 위치: {global_pos.x()}, {global_pos.y()}")
+        self._cancel_pointer_input()
+        if self.action_menu is not None:
+            self.action_menu.dismiss('management_menu')
+        hand_interactions = getattr(self, 'hand_interactions', None)
+        if hand_interactions is not None:
+            hand_interactions.cancel('mouse_input')
         menu = QMenu(self)
         log_action = menu.addAction("로그창 보기")
         log_action.triggered.connect(self.show_log_window)
@@ -2250,32 +2381,9 @@ class CharacterWidget(QLabel):
         console_action.triggered.connect(self.show_perception_console)
         show_action = menu.addAction("감정 판단 근거 보기")
         show_action.triggered.connect(self.show_russell_dialog)
-        menu.addSeparator()
-        ball_action = menu.addAction("공 꺼내기")
-        ball_action.triggered.connect(self.select_ball)
-        if self.sandbox_manager.ball is not None:
-            remove_ball_action = menu.addAction("공 없애기")
-            remove_ball_action.triggered.connect(self.sandbox_manager.ball.close)
-        if include_dialogue:
-            talk_action = menu.addAction("대화하기")
-            talk_action.triggered.connect(self.dialogue_system.open_input_dialog)
         if getattr(self.dialogue_system, '_last_failed_input', None) is not None:
             retry_action = menu.addAction("실패한 대화 다시 보내기")
             retry_action.triggered.connect(self.dialogue_system.retry_last_input)
-        rps_action = menu.addAction("가위바위보 하기")
-        rps_action.triggered.connect(self.show_rps_game)
-        if self.rps_game is not None and self.rps_game.isVisible():
-            restart_action = menu.addAction("가위바위보 다시 하기")
-            restart_action.triggered.connect(self.show_rps_game)
-            end_action = menu.addAction("가위바위보 종료")
-            end_action.triggered.connect(self.end_rps_game)
-        cham_action = menu.addAction("참참참 하기")
-        cham_action.triggered.connect(self.show_cham_game)
-        if CharacterWidget._cham_game_active(self):
-            restart_action = menu.addAction("참참참 다시 하기")
-            restart_action.triggered.connect(self.show_cham_game)
-            end_action = menu.addAction("참참참 종료")
-            end_action.triggered.connect(self.end_cham_game)
         self._context_menu = menu
         menu.popup(global_pos)
 
@@ -2842,7 +2950,8 @@ class CharacterWidget(QLabel):
     
     # 캐릭터 랜덤 이동
     def random_move(self):
-        if CharacterWidget._cham_game_active(self) or getattr(self, '_hand_throw_active', False):
+        if (CharacterWidget._pointer_interaction_active(self)
+                or CharacterWidget._cham_game_active(self) or getattr(self, '_hand_throw_active', False)):
             return
         if self._manual_control_active() or CharacterWidget._dialogue_is_busy(self):
             return
@@ -2933,6 +3042,9 @@ class CharacterWidget(QLabel):
 
     def move_toward_ball(self, ball_x: int) -> None:
         """Scale configured pixels/second by PJS02's emotion and intensity."""
+        if CharacterWidget._pointer_interaction_active(self):
+            self._chase_last_time = None
+            return
         if CharacterWidget._cham_game_active(self) or getattr(self, '_hand_throw_active', False):
             return
         if self._manual_control_active() or self.is_dragging or self.is_jumping:
@@ -3306,6 +3418,8 @@ class CharacterWidget(QLabel):
             self_hwnd = self._get_self_window_handle()
             hand_overlay = getattr(self, 'hand_overlay', None)
             hand_handles = hand_overlay.window_handles if hand_overlay is not None else set()
+            action_menu = getattr(self, 'action_menu', None)
+            action_handle = int(action_menu.winId()) if action_menu is not None and action_menu.isVisible() else None
 
             # 첫 스캔 여부 확인
             first_scan = not hasattr(self, '_first_scan_done')
@@ -3330,6 +3444,8 @@ class CharacterWidget(QLabel):
                 if self_hwnd is not None and window_handle == self_hwnd:
                     continue
                 if window_handle in hand_handles:
+                    continue
+                if action_handle is not None and window_handle == action_handle:
                     continue
 
                 # 화면에 실제로 보이는 창만 사용 (첫 스캔에만 debug 로그 출력)
