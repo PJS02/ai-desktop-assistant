@@ -155,13 +155,13 @@ class HandInteractionEngine:
     GRAB_OPEN_SECONDS = .30
     OPEN_SAMPLES = 4
     SWING_SPEED = 1050.  # Logical screen pixels per second.
+    BALL_RELEASE_MIN_SPEED = 40.  # Ignore small tracking jitter.
 
     def __init__(self, actions):
         self.actions = actions
         self.active = None
         self._pinched = {}
         self._ball_grips = {}
-        self._last = {}
         self._candidate = None
         self._candidate_at = 0.
         self._candidate_seen_at = 0.
@@ -188,7 +188,6 @@ class HandInteractionEngine:
         self._candidate = None
         self._missing_at = None
         self._pets.clear()
-        self._last.clear()
         self._pinched.clear()
         self._ball_grips.clear()
         self._poke_candidates.clear()
@@ -317,24 +316,9 @@ class HandInteractionEngine:
         self._pets = {key: value for key, value in self._pets.items() if key in present}
         self._poke_latched.intersection_update(present)
         self._poke_candidates = {k: v for k, v in self._poke_candidates.items() if k in present}
-        release_velocities = {}
         for hand in hands:
-            previous = self._last.get(hand.track_id)
-            release_velocities[hand.track_id] = (previous[2] if previous and now - previous[0] <= .12
-                                                 else (0., 0.))
-            velocity = (0., 0.)
-            if previous and fresh:
-                dt = now - previous[0]
-                if .005 <= dt <= .2:
-                    raw = tuple((a - b) / dt for a, b in zip(hand.pinch_point, previous[1]))
-                    velocity = tuple(previous[2][i] * .5 + raw[i] * .5 for i in (0, 1))
-            elif previous:
-                velocity = previous[2]
-            if fresh:
-                self._last[hand.track_id] = now, hand.pinch_point, velocity
             was = self._pinched.get(hand.track_id, False)
             self._pinched[hand.track_id] = hand.pinch_ratio < (.40 if was else .25)
-        self._last = {k: v for k, v in self._last.items() if k in present}
 
         if self.active:
             mode, identity = self.active
@@ -364,21 +348,33 @@ class HandInteractionEngine:
                     return
                 identity = hand.track_id
                 self.active = mode, identity
-                # No throw speed may be carried across an identity interruption.
-                release_velocities[identity] = (0., 0.)
-                self._last.pop(identity, None)
             self._missing_at = None
             self._rebind = None
             self._held_hand = hand
             if fresh:
                 self._last_seen_at = now
             self._other_ids.update(h.track_id for h in hands if h.track_id != identity)
-            if mode == 'ball' and fresh:
-                swing = self._swing_velocity(hand, now)
-                if any(swing):
-                    self.actions.move_hold(mode, hand.pinch_point)
-                    self._release(now, 'thrown', swing)
+            if mode == 'ball':
+                if hand.all_open or hand.open_for_grab:
+                    if fresh:
+                        if self._open_at is not None and now - self._open_at <= .15:
+                            self._release(now, 'released', self._release_velocity)
+                        else:
+                            # Keep the grip's velocity until a second fresh frame confirms release.
+                            self._open_at = now
+                            last_grip, self._swing_sample = self._swing_sample, None
+                            self._release_velocity = (0., 0.)
+                            if (last_grip and now - last_grip[0] <= .12
+                                    and math.hypot(*last_grip[2]) >= self.BALL_RELEASE_MIN_SPEED):
+                                self._release_velocity = last_grip[2]
                     return
+                self._open_at = None
+                self.actions.move_hold(mode, hand.pinch_point)
+                if fresh:
+                    swing = self._swing_velocity(hand, now)
+                    if any(swing):
+                        self._release(now, 'thrown', swing)
+                return
             if mode == 'palm' and not hand.supports:
                 if self._open_at is None:
                     self._open_at, self._open_samples = now, 0
@@ -387,27 +383,21 @@ class HandInteractionEngine:
                         and self._open_samples >= 2):
                     self._release(now, 'palm_closed')
             else:
-                opened = hand.open_for_grab if mode == 'grab' else hand.all_open
-                if mode != 'palm' and opened:
-                    open_seconds = self.GRAB_OPEN_SECONDS if mode == 'grab' else self.OPEN_SECONDS
+                if mode == 'grab' and hand.open_for_grab:
                     if self._open_at is None:
                         self._open_at = now
                         self._open_samples = 0
-                        if mode == 'grab':
-                            self._release_velocity = self._swing_velocity(hand, now) if fresh else (0., 0.)
-                            self._swing_sample = None
-                        else:
-                            self._release_velocity = release_velocities[identity]
+                        self._release_velocity = self._swing_velocity(hand, now) if fresh else (0., 0.)
+                        self._swing_sample = None
                     self._open_samples += int(fresh)
-                    if (fresh and now - self._open_at >= open_seconds
+                    if (fresh and now - self._open_at >= self.GRAB_OPEN_SECONDS
                             and self._open_samples >= self.OPEN_SAMPLES):
-                        thrown = mode == 'grab' and any(self._release_velocity)
+                        thrown = any(self._release_velocity)
                         self._release(now, 'thrown' if thrown else 'released', self._release_velocity)
                     return
                 self._open_at = None
                 self._open_samples = 0
-                point = (hand.palm if mode == 'palm' else
-                         hand.grip_point if mode == 'grab' else hand.pinch_point)
+                point = hand.palm if mode == 'palm' else hand.grip_point
                 self.actions.move_hold(mode, point)
                 if mode == 'grab' and fresh:
                     swing = self._swing_velocity(hand, now)
