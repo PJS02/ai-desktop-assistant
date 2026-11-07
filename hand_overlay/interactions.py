@@ -160,6 +160,7 @@ class HandInteractionEngine:
         self.actions = actions
         self.active = None
         self._pinched = {}
+        self._ball_grips = {}
         self._last = {}
         self._candidate = None
         self._candidate_at = 0.
@@ -189,6 +190,7 @@ class HandInteractionEngine:
         self._pets.clear()
         self._last.clear()
         self._pinched.clear()
+        self._ball_grips.clear()
         self._poke_candidates.clear()
         self._poke_latched.clear()
         self._token = None
@@ -204,6 +206,7 @@ class HandInteractionEngine:
     def _release(self, now, reason, velocity=(0., 0.)):
         self.actions.end_hold(reason, velocity)
         self.active = None
+        self._ball_grips.clear()
         self._candidate = None
         self._missing_at = None
         self._open_at = None
@@ -276,6 +279,32 @@ class HandInteractionEngine:
         self._rebind = None
         return best
 
+    def _ball_contact(self, hand, ball, now, fresh):
+        """Confirm two fresh gripping poses and include motion between camera samples."""
+        if ball is None:
+            self._ball_grips.pop(hand.track_id, None)
+            return False
+        if not fresh:
+            return False
+        previous = self._ball_grips.pop(hand.track_id, None)
+        if hand.open_for_grab or not (hand.pinch_ratio <= .45 or hand.grasp_pose):
+            return False
+        relative = tuple(a - b for a, b in zip(hand.pinch_point, ball.center))
+        self._ball_grips[hand.track_id] = now, relative
+        if previous is None or not 0 < now - previous[0] <= .20:
+            return False
+        radius = max(ball.width, ball.height) / 2 + max(24., min(40., self._size(hand) * .55))
+        if math.hypot(*relative) <= radius:
+            return True
+        # Sweep relative hand/ball motion so a fast ball cannot skip the catch area.
+        start = previous[1]
+        delta = tuple(a - b for a, b in zip(relative, start))
+        length_sq = sum(value * value for value in delta)
+        if not length_sq:
+            return False
+        fraction = max(0., min(1., -sum(a * b for a, b in zip(start, delta)) / length_sq))
+        return math.hypot(*(a + fraction * b for a, b in zip(start, delta))) <= radius
+
     def update(self, hands, now, source_token):
         if not self.actions.available():
             self.reset('character_busy', now)
@@ -284,6 +313,7 @@ class HandInteractionEngine:
         self._token = source_token
         present = {hand.track_id for hand in hands}
         self._pinched = {key: value for key, value in self._pinched.items() if key in present}
+        self._ball_grips = {key: value for key, value in self._ball_grips.items() if key in present}
         self._pets = {key: value for key, value in self._pets.items() if key in present}
         self._poke_latched.intersection_update(present)
         self._poke_candidates = {k: v for k, v in self._poke_candidates.items() if k in present}
@@ -393,10 +423,9 @@ class HandInteractionEngine:
                         body.width * .82, body.height * .37)
             for hand in hands:
                 point = hand.pinch_point
-                if self._pinched[hand.track_id]:
-                    if ball and ball.contains(point, 9):
-                        candidate = 'ball', hand.track_id, point
-                        break
+                if self._ball_contact(hand, ball, now, fresh):
+                    candidate = 'ball', hand.track_id, point
+                    break
                 if (hand.grasp_pose and torso.contains(hand.points[4])
                         and torso.contains(hand.points[8])
                         and (self._pinched[hand.track_id] or not hand.petting_tips)):
@@ -417,8 +446,9 @@ class HandInteractionEngine:
                 self._candidate_samples = 0
             self._candidate_seen_at = now
             self._candidate_samples += int(fresh)
-            dwell = {'grab': .055, 'ball': .12, 'palm': .12}[candidate[0]]
-            if now - self._candidate_at >= dwell and self._candidate_samples >= 2:
+            dwell = .055 if candidate[0] == 'grab' else .12
+            # Ball contact already confirms two fresh poses; it needs no stationary dwell.
+            if candidate[0] == 'ball' or (now - self._candidate_at >= dwell and self._candidate_samples >= 2):
                 if self.actions.begin_hold(candidate[0], candidate[2]):
                     self.active = candidate[:2]
                     self._held_hand = next(h for h in hands if h.track_id == candidate[1])

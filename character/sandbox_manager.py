@@ -99,6 +99,10 @@ class BallWidget(QWidget):
         self._hand_play = True
         self._hand_dragging = self.is_dragging = True
         self._hand_offset = (point[0] - self.x(), point[1] - self.y())
+        # A near-edge or swept catch brings the moving ball into the fingers.
+        if not (0 <= self._hand_offset[0] <= self.width()
+                and 0 <= self._hand_offset[1] <= self.height()):
+            self._hand_offset = self.width() / 2, self.height() / 2
         self.x_velocity = self.y_velocity = 0.
 
     def move_hand_drag(self, point):
