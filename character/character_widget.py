@@ -282,6 +282,8 @@ class CharacterWidget(QLabel):
         self.drag_time = 0
         self._drag_velocity_x = 0  # 드래그 중 X축 속도 저장
         self._drag_velocity_y = 0  # 드래그 중 Y축 속도 저장
+        self._mouse_drag_motion_at = None
+        self._mouse_throw_face = False
         self.drag_timer = QTimer()
         self.drag_timer.timeout.connect(self.update_dragging)
         self.drag_timer.start(100)
@@ -638,6 +640,7 @@ class CharacterWidget(QLabel):
     def _rig_landed(self):
         if (reactions := getattr(self, 'reactions', None)) is not None:
             reactions.safe()
+        CharacterWidget._clear_mouse_throw_face(self)
         if self.rig_view is not None:
             self.rig_view.set_jump_active(False)
             phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
@@ -1948,6 +1951,7 @@ class CharacterWidget(QLabel):
             self.cham_game.close()
         if getattr(self, '_hand_throw_active', False):
             self._finish_hand_throw()
+        CharacterWidget._clear_mouse_throw_face(self)
         self._tap = self._last_rough_drag = None
         self._drag_reacted = self._drag_discomfort_shown = False
         self._apply_mouse_click()
@@ -1955,6 +1959,7 @@ class CharacterWidget(QLabel):
         self.is_dragging = True
         self.drag_time = 0
         self._drag_velocity_x = self._drag_velocity_y = 0
+        self._mouse_drag_motion_at = None
         self._drag_trace_id = new_trace_id('drag')
         self._drag_start_position = (self.x(), self.y())
         log_event('character.drag_started', '드래그 시작', category='캐릭터 상태',
@@ -1982,6 +1987,7 @@ class CharacterWidget(QLabel):
             # X, Y 속도 분리 저장 (나중에 던질 때 사용)
             self._drag_velocity_x = delta.x()
             self._drag_velocity_y = delta.y()
+            self._mouse_drag_motion_at = time.monotonic()
             
             # 빠른 드래그 감지 (100px 이상) → on_drag_hard 트리거
             if drag_distance > 100:
@@ -2161,6 +2167,13 @@ class CharacterWidget(QLabel):
         # 저장된 드래그 속도가 있으면 그것을 사용, 없으면 0
         self.velocity_x = getattr(self, '_drag_velocity_x', 0) * 0.5  # 0.5배 감쇠
         self.velocity_y = getattr(self, '_drag_velocity_y', 0) * 0.5
+        if event is not None:
+            last_motion = getattr(self, '_mouse_drag_motion_at', None)
+            if last_motion is None or time.monotonic() - last_motion > .12:
+                self.velocity_x = self.velocity_y = 0.
+            if self.rig_view is not None and math.hypot(self.velocity_x, self.velocity_y) > .1:
+                self._mouse_throw_face = True
+                self.sprite_animator.set_motion_emotion('dizzy_plain')
         if hand_throw_velocity is not None:
             vx, vy = hand_throw_velocity
             self.velocity_x = vx / 60
@@ -2179,6 +2192,7 @@ class CharacterWidget(QLabel):
         # 드래그 속도 저장 변수 초기화
         self._drag_velocity_x = 0
         self._drag_velocity_y = 0
+        self._mouse_drag_motion_at = None
         
         # 캐릭터가 화면 범위 내에 있는지 확인 (드래그 후 강제 조정)
         self._clamp_position_to_screen()
@@ -2204,6 +2218,12 @@ class CharacterWidget(QLabel):
         # 호흡 애니메이션 비활성화 (떨어지는 중이므로)
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
+
+    def _clear_mouse_throw_face(self):
+        if getattr(self, '_mouse_throw_face', False):
+            self._mouse_throw_face = False
+            if self.rig_view is not None:
+                self.sprite_animator.set_motion_emotion()
 
     def _finish_hand_throw(self):
         self._hand_throw_active = False
@@ -3248,6 +3268,7 @@ class CharacterWidget(QLabel):
             else:
                 dt = 1 / 60  # Deterministic windowless callers.
         if self.is_dragging:
+            CharacterWidget._clear_mouse_throw_face(self)
             self.on_ground = False
             self.velocity_y = 0
             self.velocity_x = 0
