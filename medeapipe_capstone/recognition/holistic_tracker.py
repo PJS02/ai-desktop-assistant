@@ -434,6 +434,23 @@ def finger_is_extended(hand_map, mcp_name, pip_name, tip_name):
     return angle >= 160 and tip["pixel_y"] < pip["pixel_y"] < mcp["pixel_y"]
 
 
+def rps_thumb_is_extended(hand_map):
+    """A straight, spread thumb can point sideways in thumb-index scissors."""
+    points = {name: point_from_record(hand_map.get(name)) for name in HAND_LANDMARK_NAMES}
+    if any(point is None or not all(math.isfinite(value) for value in point)
+           for point in points.values()):
+        return False
+    scale = max(math.dist(points['WRIST'], points['MIDDLE_FINGER_MCP']),
+                math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
+    if scale <= 1:
+        return False
+    mcp, ip, tip = (points[f'THUMB_{joint}'] for joint in ('MCP', 'IP', 'TIP'))
+    return ((angle_between_points(mcp, ip, tip) or 0) >= 150
+            and math.dist(tip, points['PINKY_MCP']) > math.dist(mcp, points['PINKY_MCP']) * 1.1
+            and math.dist(tip, points['INDEX_FINGER_MCP']) > scale * .35
+            and math.dist(tip, points['INDEX_FINGER_TIP']) > scale * .55)
+
+
 def analyze_rps_hand_state(hand_records):
     if not hand_records:
         return {
@@ -478,7 +495,7 @@ def analyze_rps_hand_state(hand_records):
         state = "PAPER"
     elif (
         extended_fingers["index"]
-        and extended_fingers["middle"]
+        and (extended_fingers["middle"] or rps_thumb_is_extended(hand_map))
         and not extended_fingers["ring"]
         and not extended_fingers["pinky"]
     ):
