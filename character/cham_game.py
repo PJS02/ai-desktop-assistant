@@ -74,34 +74,25 @@ class ChamGameOverlay(RpsGameOverlay):
 
     def _setup_game_card(self):
         self.card.setObjectName('chamCard')
-        self.card.setStyleSheet("""
-            QFrame#chamCard {
-                background: rgba(255, 253, 248, 248);
-                border: 1px solid rgba(63, 55, 46, 32);
-                border-radius: 12px;
-            }
-            QLabel { background: transparent; border: none;
-                font-family: 'Malgun Gothic'; color: #37342f; }
-        """)
         layout = self.card.layout()
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
         layout.removeWidget(self.title)
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        self.title.setStyleSheet('font-size: 11px; color: #8a8277;')
+        header_style = 'font-size: 11px; font-weight: 600; color: #4e5e6c;'
+        self.title.setStyleSheet(header_style)
         self.title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.title.setWordWrap(False)
         self.score = QLabel(self.card)
-        self.score.setStyleSheet('font-size: 11px; color: #6d665c;')
+        self.score.setStyleSheet(header_style)
         self.score.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(self.title)
         header.addStretch()
         header.addWidget(self.score)
         layout.insertLayout(0, header)
         self.opponent_image.setFixedHeight(44)
-        self.opponent_image.setStyleSheet('font-size: 27px; font-weight: 600; color: #37342f;')
-        self.hint.setStyleSheet('font-size: 12px; color: #81786c;')
+        self.opponent_image.setStyleSheet('font-size: 24px; font-weight: bold; color: #2e4f69;')
         self.hint.setFixedHeight(34)
         self.hint.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 

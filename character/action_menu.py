@@ -4,7 +4,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QFont, QIcon
-from PyQt6.QtWidgets import QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QToolButton
+from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
+                             QStyle, QStyleOptionToolButton, QStylePainter, QToolButton)
 
 from app_logging import log_event
 
@@ -39,6 +40,29 @@ def action_icon(kind):
     return QIcon(str(directory / f'{kind}.svg'))
 
 
+class _ActionButton(QToolButton):
+    def paintEvent(self, event):
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.toolButtonStyle = Qt.ToolButtonStyle.ToolButtonIconOnly
+        option.text = ''
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
+
+        name, _, action = self.text().partition('\n')
+        enabled = self.isEnabled()
+        font = self.font()
+        painter.setPen(QColor('#273542' if enabled else '#65717c'))
+        painter.setFont(font)
+        painter.drawText(QRect(0, 31, self.width(), 16), Qt.AlignmentFlag.AlignCenter, name)
+
+        font.setPixelSize(11)
+        font.setBold(False)
+        painter.setPen(QColor('#515e6a' if enabled else '#65717c'))
+        painter.setFont(font)
+        painter.drawText(QRect(0, 46, self.width(), 15), Qt.AlignmentFlag.AlignCenter, action)
+
+
 class CharacterActionMenu(QFrame):
     closed = pyqtSignal(str)
 
@@ -58,20 +82,30 @@ class CharacterActionMenu(QFrame):
         outer.setContentsMargins(8, 8, 8, 8)
         panel = QFrame(self)
         panel.setObjectName('characterActions')
-        panel.setStyleSheet('QFrame#characterActions { background: #ffffff; border-radius: 16px; }')
+        panel.setStyleSheet('''
+            QFrame#characterActions { background: #ffffff; border: 1px solid #cbd3dc;
+                border-radius: 9px; }
+            QToolButton { background: #ffffff; border: 1px solid #d4dce5;
+                border-radius: 6px; padding: 0; padding-bottom: 32px; }
+            QToolButton:hover { background: #dfe4ea; border-color: #a6b5c4; }
+            QToolButton:pressed { background: #cdd6de; }
+            QToolButton:focus { border: 2px solid #4d6b89; }
+            QToolButton:disabled { background: #f0f3f7; }
+        ''')
         shadow = QGraphicsDropShadowEffect(panel)
         shadow.setBlurRadius(12)
         shadow.setOffset(0, 2)
-        shadow.setColor(QColor(0, 0, 0, 34))
+        shadow.setColor(QColor(25, 45, 69, 30))
         panel.setGraphicsEffect(shadow)
         outer.addWidget(panel)
         row = QHBoxLayout(panel)
-        row.setContentsMargins(8, 8, 8, 8)
+        row.setContentsMargins(7, 7, 7, 7)  # The panel border adds the remaining pixel.
         row.setSpacing(6)
         font = QFont('Malgun Gothic')
         font.setPixelSize(12)
+        font.setWeight(QFont.Weight.DemiBold)
         for key in ('talk', 'cham', 'rps', 'ball'):
-            button = QToolButton(panel)
+            button = _ActionButton(panel)
             button.setFont(font)
             button.setFixedSize(64, 68)
             button.setIcon(action_icon(key))
@@ -79,14 +113,6 @@ class CharacterActionMenu(QFrame):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setStyleSheet('''
-                QToolButton { color: #253d32; background: transparent; border: 2px solid transparent;
-                    border-radius: 10px; padding: 0; }
-                QToolButton:hover { background: #e8f4ee; }
-                QToolButton:pressed { background: #d3eadd; }
-                QToolButton:focus { border-color: #4b866a; }
-                QToolButton:disabled { color: #707873; }
-            ''')
             button.clicked.connect(lambda checked=False, action=key: self.select_action(action))
             button.installEventFilter(self)
             self.buttons[key] = button

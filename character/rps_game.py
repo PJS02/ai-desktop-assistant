@@ -111,23 +111,23 @@ class RpsGameOverlay(QWidget):
         self.card = QFrame(self)
         self.card.setObjectName("rpsCard")
         self.card.setStyleSheet("""
-            QFrame#rpsCard { background: rgba(25, 35, 47, 244); border: 2px solid #8ddbc5;
-                border-radius: 18px; }
-            QLabel { color: #f4f8fc; background: transparent; border: none;
+            QFrame#rpsCard, QFrame#chamCard { background: #ffffff; border: 1px solid #c2cedb;
+                border-radius: 8px; }
+            QLabel { color: #263645; background: transparent; border: none;
                 font-family: 'Malgun Gothic'; }
         """)
         outer.addWidget(self.card)
         layout = QVBoxLayout(self.card)
-        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setContentsMargins(15, 13, 15, 13)
         layout.setSpacing(6)
         self.title = QLabel("가위바위보", self.card)
-        self.title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        self.title.setStyleSheet("font-size: 22px; font-weight: bold;")
         self.title.setWordWrap(True)
         self.opponent_image = QLabel(self.card)
         self.opponent_image.setFixedHeight(80)
-        self.opponent_image.setStyleSheet("font-size: 48px; font-weight: bold; color: #8ddbc5;")
+        self.opponent_image.setStyleSheet("font-size: 44px; font-weight: bold; color: #2e4f69;")
         self.hint = QLabel(self.card)
-        self.hint.setStyleSheet("font-size: 12px;")
+        self.hint.setStyleSheet("font-size: 12px; color: #4e5e6c;")
         self.hint.setWordWrap(True)
         for label in (self.title, self.opponent_image, self.hint):
             label.setTextFormat(Qt.TextFormat.PlainText)
