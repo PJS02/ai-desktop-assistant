@@ -1,8 +1,9 @@
 """Small, shared readiness display driven by actual initialization events."""
 from html import escape
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtWidgets import QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from app_logging import subscribe
 
@@ -243,6 +244,39 @@ class PreparationView(QWidget):
             value.setAccessibleName(f'{LABELS[key]} {caption}')
 
 
+class _PreparationIndicator(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(18, 18)
+        self.state = 'waiting'
+        self.angle = 90
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = '#167550' if self.state == 'ready' else COLORS.get(self.state, '#64748b')
+        pen = QPen(QColor(color), 1.7)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        ring = QRectF(2.5, 2.5, 13, 13)
+        if self.state == 'loading':
+            painter.setPen(QPen(QColor('#cddbed'), 1.7))
+            painter.drawEllipse(ring)
+            painter.setPen(pen)
+            painter.drawArc(ring, self.angle * 16, 105 * 16)
+        elif self.state == 'ready':
+            painter.drawLine(4, 9, 7, 12)
+            painter.drawLine(7, 12, 14, 5)
+        elif self.state == 'error':
+            painter.drawEllipse(ring)
+            painter.drawLine(9, 5, 9, 9)
+            painter.drawPoint(9, 12)
+        elif self.state in ('off', 'idle'):
+            painter.drawLine(5, 9, 13, 9)
+        else:
+            painter.drawEllipse(ring)
+
+
 class PreparationOverlay(QWidget):
     """One bar attached to the character, with persistent click-open details."""
     def __init__(self, status, character):
@@ -276,14 +310,44 @@ class PreparationOverlay(QWidget):
         self.details_popup.setStyleSheet(
             'QFrame#preparationDetails { background: #f6f8fc; border: 1px solid #cbd5e1; '
             'border-radius: 6px; } QLabel { color: #202936; background: transparent; '
-            'font-family: "맑은 고딕"; font-size: 12px; }')
+            'font-family: "맑은 고딕"; font-size: 13px; } '
+            'QLabel#preparationTitle { font-size: 15px; font-weight: 700; } '
+            'QLabel#preparationCaption, QLabel#preparationReason { color: #526174; font-size: 12px; }')
         details_layout = QVBoxLayout(self.details_popup)
-        details_layout.setContentsMargins(12, 12, 12, 12)
+        details_layout.setContentsMargins(14, 12, 14, 12)
+        details_layout.setSpacing(8)
         self.details_label = QLabel()
-        self.details_label.setTextFormat(Qt.TextFormat.RichText)
-        self.details_label.setWordWrap(True)
-        self.details_label.setFixedWidth(336)
+        self.details_label.setObjectName('preparationTitle')
         details_layout.addWidget(self.details_label)
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet('background: #dce4ee;')
+        details_layout.addWidget(divider)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(7)
+        grid.setColumnStretch(0, 1)
+        self.details_rows = {}
+        for index, (key, title) in enumerate(LABELS.items()):
+            label = QLabel(title)
+            caption = QLabel()
+            caption.setObjectName('preparationCaption')
+            caption.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            indicator = _PreparationIndicator()
+            reason = QLabel()
+            reason.setObjectName('preparationReason')
+            reason.setTextFormat(Qt.TextFormat.PlainText)
+            reason.setWordWrap(True)
+            row = index * 2
+            grid.addWidget(label, row, 0)
+            grid.addWidget(caption, row, 1)
+            grid.addWidget(indicator, row, 2)
+            grid.addWidget(reason, row + 1, 0, 1, 3)
+            self.details_rows[key] = label, caption, indicator, reason
+        details_layout.addLayout(grid)
+        self.spinner_timer = QTimer(self.details_popup)
+        self.spinner_timer.setInterval(45)
+        self.spinner_timer.timeout.connect(self._advance_spinners)
         self.details_popup.installEventFilter(self)
         for widget in (self, self.bar, self.percentage):
             widget.installEventFilter(self)
@@ -309,13 +373,21 @@ class PreparationOverlay(QWidget):
         self.bar.setStyleSheet('QProgressBar { background: #e3e8f0; border: 1px solid #cbd5e1; '
                               'border-radius: 4px; } QProgressBar::chunk { background: '
                               + color + '; border-radius: 3px; }')
-        details = ['<b>' + ('준비 상태 확인' if error else '준비 완료' if self.status.settled
-                            else '프로그램 준비 중') + '</b>']
+        self.details_label.setText('준비 상태 확인' if error else '준비 완료' if self.status.settled
+                                   else '프로그램 준비 중')
         for key, (state, text) in self.status.states.items():
+            label, caption, indicator, reason = self.details_rows[key]
             progress = self.status.stage_progress[key]
-            stage = f' ({progress[0]}/{progress[1]} 단계)' if progress and state != 'ready' else ''
-            details.append(f'{LABELS[key]} · {STATE_TEXT[state]}{stage}<br>{escape(text)}')
-        self.details_label.setText('<br><br>'.join(details))
+            stage = f'{progress[0]}/{progress[1]}단계 · ' if progress and state != 'ready' else ''
+            caption.setText(stage + STATE_TEXT[state])
+            caption.setAccessibleName(f'{LABELS[key]} {caption.text()}')
+            caption.setAccessibleDescription(text)
+            label.setToolTip(f'<qt>{escape(text)}</qt>')
+            indicator.state = state
+            indicator.update()
+            reason.setText(text)
+            reason.setVisible(state == 'error')
+        self._sync_spinner_timer()
         self.bar.setAccessibleDescription(f'{percent}% 준비. ' + '; '.join(
             f'{LABELS[key]} {STATE_TEXT[state]}: {text}' for key, (state, text) in self.status.states.items()))
         if not self.status.settled:
@@ -330,13 +402,28 @@ class PreparationOverlay(QWidget):
         self.hide_timer.stop()
         self._position_details()
         self.details_popup.show()
+        self._sync_spinner_timer()
+
+    def _sync_spinner_timer(self):
+        animate = self.details_popup.isVisible() and any(
+            state == 'loading' for state, _ in self.status.states.values())
+        if animate and not self.spinner_timer.isActive():
+            self.spinner_timer.start()
+        elif not animate:
+            self.spinner_timer.stop()
+
+    def _advance_spinners(self):
+        for _, _, indicator, _ in self.details_rows.values():
+            if indicator.state == 'loading':
+                indicator.angle = (indicator.angle - 20) % 360
+                indicator.update()
 
     def _position_details(self):
         screen = QApplication.screenAt(self.geometry().center()) or self.character.screen()
         if screen is None:
             return
         bounds = screen.availableGeometry()
-        self.details_label.setFixedWidth(min(336, max(60, bounds.width() - 40)))
+        self.details_popup.setFixedWidth(min(344, bounds.width()))
         self.details_popup.adjustSize()
         x = max(bounds.left(), min(self.x(), bounds.right() - self.details_popup.width() + 1))
         y = self.y() - self.details_popup.height() - 8
@@ -361,6 +448,7 @@ class PreparationOverlay(QWidget):
             if event.type() in (QEvent.Type.ToolTip, QEvent.Type.ContextMenu):
                 return True
         elif watched is self.details_popup and event.type() == QEvent.Type.Hide:
+            self.spinner_timer.stop()
             if self.status.settled and not self._completed and self.isVisible():
                 self.hide_timer.start()
         elif watched is self.character:
