@@ -7,8 +7,9 @@ from app_logging import log_event
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .personality_system import PersonalitySystem
@@ -18,9 +19,11 @@ from .tts_backend import runtime_python
 from .motion_options import CHARACTER_OPTION_RANGES, normalize_character_options, random_movement_scale
 from .manual_control import COMMAND_ROWS, DISPLAY_EMOTIONS, DISPLAY_EMOTION_NAMES
 from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
+from .dialogue_options import DIALOGUE_OPTION_RANGES, normalize_dialogue_options
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
 from .game_rules import DEFAULT_GAME_RULES, normalize_game_rules, running_process_names
+from .memory_view import MemoryView
 
 
 class _SettingsComboBox(QComboBox):
@@ -67,7 +70,6 @@ class _PreviewImage(QLabel):
 class SettingsDialog(QDialog):
     apply_requested = pyqtSignal(dict)
     apply_timeout = pyqtSignal(str)
-    refresh_requested = pyqtSignal(bool)
     character_command_requested = pyqtSignal(str)
     dialogue_generation_requested = pyqtSignal()
     manual_dialogue_requested = pyqtSignal(str, str)
@@ -77,7 +79,7 @@ class SettingsDialog(QDialog):
     preview_requested = pyqtSignal(bool)
     device_requested = pyqtSignal(str)
 
-    def __init__(self, local, parent=None, model_manager=None):
+    def __init__(self, local, parent=None, model_manager=None, *, long_term_memory=None):
         super().__init__(parent)
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
@@ -89,6 +91,7 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(520, 430)
         self.local_baseline = deepcopy(local)
         self.remote_baseline = None
+        self._camera_running = False
         self.pending = False
         self.log_trace_id = None
         self.close_on_success = False
@@ -105,16 +108,17 @@ class SettingsDialog(QDialog):
         self.local_baseline['character']['personality_traits'] = {
             key: control.value() / 100.0 for key, control in self.personality_trait_inputs.items()
         }
-        self._voice_page(local)
+        self._dialogue_page(local)
         self._recognition_page(local)
-        self._ai_page(local)
         self._manual_page()
         self._game_rules_page(local)
+        self.memory_view = MemoryView(long_term_memory, self)
+        self.tabs.addTab(self.memory_view, '장기기억')
         self._preview_active = False
         self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
         self.status.setWordWrap(True)
-        self.status.setMinimumHeight(40)
+        self.status.setMinimumHeight(28)
         root.addWidget(self.status)
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -131,17 +135,23 @@ class SettingsDialog(QDialog):
         self.setStyleSheet('''
             QDialog { background: #f6f8fb; color: #202936; }
             QTabWidget::pane { border: 1px solid #dce2ea; background: white; }
-            QTabBar::tab { padding: 10px 18px; background: #eef2f7; color: #607085; border: 0; border-bottom: 2px solid transparent; margin-right: 2px; }
-            QTabBar::tab:selected { color: #2463b6; background: white; border-bottom: 2px solid #2463b6; }
+            QTabBar::tab { padding: 9px 16px; background: #eef2f7; color: #435368; border: 0; border-bottom: 2px solid transparent; margin-right: 2px; }
+            QTabBar::tab:selected { color: #202936; background: white; border-bottom: 2px solid #2463b6; font-weight: 600; }
+            QTabWidget#manualTabs::pane { border: 0; border-top: 1px solid #dce2ea; }
+            QTabWidget#manualTabs QTabBar::tab { padding: 6px 16px; background: white; }
             QScrollArea { border: none; background: white; }
             QScrollArea > QWidget > QWidget { background: white; }
+            QWidget#manualPage { background: white; }
+            QToolButton#settingsSection { padding: 7px 10px; text-align: left; background: #f6f8fb; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
+            QToolButton#settingsSection:hover { background: #eef2f7; }
+            QToolButton#settingsSection:focus { border-color: #2463b6; }
             QLineEdit, QComboBox { min-height: 28px; padding: 3px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; }
             QComboBox QAbstractItemView { background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; border: 1px solid #cbd5e1; outline: 0; }
             QComboBox QAbstractItemView::item { min-height: 26px; padding: 4px 8px; }
-            QSpinBox { min-height: 28px; padding: 0 21px 0 6px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; }
-            QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: border; width: 16px; border-left: 1px solid #dce2ea; background: #f6f8fb; }
-            QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
-            QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
+            QSpinBox, QDoubleSpinBox { min-height: 28px; padding: 0 21px 0 6px; border: 1px solid #dce2ea; border-radius: 5px; background: #ffffff; color: #202936; selection-background-color: #2463b6; selection-color: #ffffff; }
+            QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { subcontrol-origin: border; width: 16px; border-left: 1px solid #dce2ea; background: #f6f8fb; }
+            QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
+            QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
             QCheckBox { color: #202936; background: transparent; spacing: 8px; }
             QCheckBox:disabled { color: #68778b; }
             QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #607085; border-radius: 3px; background: #ffffff; }
@@ -164,23 +174,51 @@ class SettingsDialog(QDialog):
         self.timeout.setSingleShot(True)
         self.timeout.timeout.connect(self._timed_out)
 
-    def _page(self, name, description):
+    @staticmethod
+    def _form():
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(10)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        return form
+
+    def _page(self, name, description='', *, tabs=None):
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(22, 22, 22, 22)
-        hint = QLabel(description)
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        form = QFormLayout()
-        form.setVerticalSpacing(12)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        if description:
+            hint = QLabel(description)
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+        form = self._form()
         layout.addLayout(form)
-        layout.addStretch()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
-        self.tabs.addTab(scroll, name)
-        return content, layout, form
+        (self.tabs if tabs is None else tabs).addTab(scroll, name)
+        return scroll, layout, form
+
+    def _section(self, layout, title):
+        button = QToolButton()
+        button.setObjectName('settingsSection')
+        button.setText(title)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setArrowType(Qt.ArrowType.RightArrow)
+        button.setCheckable(True)
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        panel = QWidget()
+        form = self._form()
+        form.setContentsMargins(10, 2, 10, 8)
+        panel.setLayout(form)
+        panel.hide()
+        button.toggled.connect(panel.setVisible)
+        button.toggled.connect(lambda opened: button.setArrowType(
+            Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
+        layout.addWidget(button)
+        layout.addWidget(panel)
+        return button, panel, form
 
     @staticmethod
     def _combo(choices, current):
@@ -191,13 +229,16 @@ class SettingsDialog(QDialog):
         return combo
 
     def _character_page(self, local):
-        _, _, form = self._page('캐릭터', '크기·이동 속도·달리기 속도는 바로 적용되고, 이동 폭은 다음 랜덤 이동부터, 점프 높이는 다음 점프부터 반영됩니다. 활동 범위와 점프는 화면 안으로 제한됩니다.')
+        _, layout, basic = self._page('캐릭터', '캐릭터의 크기, 이동 속도와 성격을 설정합니다.')
+        self.movement_section, _, movement = self._section(layout, '이동·활동 범위')
+        _, _, traits = self._section(layout, '성격 세부 조정')
+        _, _, diagnostics = self._section(layout, '진단 표시')
         self.character_sliders = {}
         self.character_inputs = {}
         for key, label, suffix in (
-            ('boredom_minutes', '지루함 최댓값 도달 시간', '분'),
             ('size_percent', '캐릭터 크기', ' %'),
             ('movement_speed', '이동 속도', ' px/초'),
+            ('boredom_minutes', '지루함 최댓값 도달 시간', '분'),
             ('running_speed', '달리기 속도', ' px/초'),
             ('movement_range_extra_percent', '추가 이동 폭 비율', ' %'),
             ('jump_height', '점프 높이', ' px'),
@@ -214,7 +255,7 @@ class SettingsDialog(QDialog):
             if key == 'boredom_minutes':
                 slider.setToolTip('0분이면 지루함이 쌓이지 않습니다.')
                 spin.setToolTip('0분이면 지루함이 쌓이지 않습니다.')
-            spin.setMinimumWidth(120)
+            spin.setFixedWidth(120)
             slider.setValue(local['character'][key])
             spin.setValue(local['character'][key])
             slider.valueChanged.connect(spin.setValue)
@@ -223,42 +264,50 @@ class SettingsDialog(QDialog):
             self.character_inputs[key] = spin
             line.addWidget(slider, 1)
             line.addWidget(spin)
+            form = basic if key in ('size_percent', 'movement_speed') else movement
             form.addRow(label, row)
-        self.size_preview = QLabel()
-        form.addRow('', self.size_preview)
-        self.character_inputs['size_percent'].valueChanged.connect(self._describe_size)
-        self._describe_size()
+        self.emotion_delta_enabled = QCheckBox('감정 변화 문구 표시')
+        self.emotion_delta_enabled.setChecked(local['character']['emotion_delta_enabled'])
+        basic.addRow(self.emotion_delta_enabled)
+        self.emotion_delta_duration = QDoubleSpinBox()
+        low, high = CHARACTER_OPTION_RANGES['emotion_delta_duration_ms']
+        self.emotion_delta_duration.setRange(low / 1000, high / 1000)
+        self.emotion_delta_duration.setDecimals(2)
+        self.emotion_delta_duration.setSingleStep(0.05)
+        self.emotion_delta_duration.setSuffix(' 초')
+        self.emotion_delta_duration.setFixedWidth(120)
+        self.emotion_delta_duration.setValue(local['character']['emotion_delta_duration_ms'] / 1000)
+        self.emotion_delta_duration.setEnabled(self.emotion_delta_enabled.isChecked())
+        self.emotion_delta_enabled.toggled.connect(self.emotion_delta_duration.setEnabled)
+        self.emotion_delta_duration.setToolTip('캐릭터 앞에 뜨는 원인과 감정 변화 문구의 표시 시간입니다. 다음 문구부터 적용됩니다.')
+        basic.addRow('감정 변화 표시 시간', self.emotion_delta_duration)
         self.movement_range_preview = QLabel()
         self.movement_range_preview.setWordWrap(True)
-        form.addRow('', self.movement_range_preview)
-        range_hint = QLabel('감정별 기본 이동 폭에 (캐릭터 크기 비율 + 추가 비율)을 적용합니다.\n'
-                           '추가 0%는 크기만 반영하고, 음수는 줄이고 양수는 늘립니다.')
+        movement.addRow(self.movement_range_preview)
+        range_hint = QLabel('이동 폭은 다음 랜덤 이동부터, 점프 높이는 다음 점프부터 반영됩니다. '
+                           '활동 범위와 점프는 화면 안으로 제한됩니다.')
         range_hint.setWordWrap(True)
-        form.addRow('', range_hint)
+        movement.addRow(range_hint)
         for key in ('size_percent', 'movement_range_extra_percent'):
             self.character_inputs[key].valueChanged.connect(self._describe_movement_range)
         self._describe_movement_range()
         self.show_hitboxes = QCheckBox('충돌 박스 표시 (개발자용)')
-        self.show_hitboxes.setToolTip('충돌 박스, 좌표, 활성 창 정보를 함께 켜거나 끕니다. 적용 버튼을 누르면 저장됩니다.')
+        self.show_hitboxes.setToolTip('캐릭터의 표시 영역, 겹치는 창 영역과 인식한 창 이름을 표시합니다.')
         self.show_hitboxes.setChecked(local['character']['show_hitboxes'])
-        form.addRow(self.show_hitboxes)
-        overlay_hint = QLabel('켜면 충돌 박스, 좌표, 활성 창 정보를 표시합니다.\n'
-                             '끄면 개발자 표시만 숨기며, 충돌 판정은 유지됩니다. 적용 버튼을 눌러 저장하세요.')
-        overlay_hint.setWordWrap(True)
-        form.addRow('', overlay_hint)
+        diagnostics.addRow(self.show_hitboxes)
         self.window_occlusion = QCheckBox('다른 창 뒤에 숨기 · 오래 가려지면 찢고 나오기')
-        self.window_occlusion.setChecked(local['character'].get('window_occlusion', True))
+        self.window_occlusion.setChecked(local['character']['window_occlusion'])
         self.window_occlusion.setToolTip('앞쪽 창에 가려진 채 8초가 지나면 종이를 찢는 효과로 나온 뒤 창이나 작업 표시줄 위를 걷습니다.')
-        form.addRow(self.window_occlusion)
+        movement.addRow(self.window_occlusion)
         self.game_spectator_enabled = QCheckBox('게임 활동에 반응하기 (관람·응원)')
-        self.game_spectator_enabled.setChecked(local['character'].get('game_spectator', True))
+        self.game_spectator_enabled.setChecked(local['character']['game_spectator'])
         self.game_spectator_enabled.setToolTip('기존 STEAM/GAME/UNITY 분류를 사용합니다. 평소 이동과 자율활동을 유지하면서 가끔 팝콘을 먹거나 응원합니다.')
-        form.addRow(self.game_spectator_enabled)
+        movement.addRow(self.game_spectator_enabled)
         self.resolution_preset = self._combo([
             ('사용자 정의', None), ('720p · 1280 × 720', (1280, 720)),
             ('1080p · 1920 × 1080', (1920, 1080)), ('1440p · 2560 × 1440', (2560, 1440)),
         ], None)
-        form.addRow('활동 범위', self.resolution_preset)
+        movement.addRow('활동 범위', self.resolution_preset)
         self.width = QSpinBox()
         self.width.setRange(640, 7680)
         self.width.setSuffix(' px')
@@ -267,17 +316,17 @@ class SettingsDialog(QDialog):
         self.height.setRange(480, 4320)
         self.height.setSuffix(' px')
         self.height.setValue(local['character']['height'])
-        form.addRow('너비', self.width)
-        form.addRow('높이', self.height)
+        movement.addRow('너비', self.width)
+        movement.addRow('높이', self.height)
         self.resolution_preset.currentIndexChanged.connect(self._set_resolution_preset)
         self.width.valueChanged.connect(self._match_resolution_preset)
         self.height.valueChanged.connect(self._match_resolution_preset)
         self._match_resolution_preset()
         self.personality = self._combo([(name, name) for name in PersonalitySystem.PERSONALITY_PRESETS], local['character']['personality'])
-        form.addRow('성격', self.personality)
+        basic.addRow('성격', self.personality)
         self.personality_description = QLabel()
         self.personality_description.setWordWrap(True)
-        form.addRow('', self.personality_description)
+        basic.addRow(self.personality_description)
         self.personality.currentIndexChanged.connect(self._describe_personality)
         self._describe_personality()
         self.personality_traits = {}
@@ -315,44 +364,44 @@ class SettingsDialog(QDialog):
             line.addWidget(slider, 1)
             line.addWidget(value)
             line.addWidget(QLabel(high_label))
-            form.addRow(label, row)
+            traits.addRow(label, row)
         self.personality.currentIndexChanged.connect(self._load_personality_preset)
+
+    def _dialogue_style_fields(self, form, local):
         self.dialogue_style = self._combo(DIALOGUE_STYLES,
             normalize_dialogue_style(local.get('dialogue', {}).get('style')))
-        form.addRow('말풍선 UI', self.dialogue_style)
+        form.addRow('말풍선 스타일', self.dialogue_style)
         self.dialogue_preview = DialogueBubble(
-            '안녕하세요! 오늘은 어떤 이야기를 나눌까요?\n선택한 말풍선으로 대화를 표시합니다.',
+            '안녕하세요! 오늘은 어떤 이야기를 나눌까요?',
             duration=0, preview=True)
         form.addRow('미리보기', self.dialogue_preview)
         self.dialogue_style.currentIndexChanged.connect(self._preview_dialogue_style)
         self._preview_dialogue_style()
-        bubble_hint = QLabel('대화 내용과 음성 출력은 그대로 유지됩니다.\n'
-                             '적용한 스타일은 다음 실행에도 유지됩니다. 긴 대화는 스크롤해서 읽을 수 있습니다.')
-        bubble_hint.setWordWrap(True)
-        form.addRow('', bubble_hint)
 
     def _preview_dialogue_style(self):
         self.dialogue_preview.set_style(self.dialogue_style.currentData())
 
-    def _describe_size(self):
-        percent = self.character_inputs['size_percent'].value()
-        self.size_preview.setText(f"크기 배율: {percent}% · 가로세로 비율 유지")
-
     def _manual_page(self):
-        _, _, form = self._page('직접 조작',
-            '버튼을 누르면 즉시 실행합니다. 속도와 점프 높이는 현재 적용된 설정값을 사용합니다. '
-            '변경한 설정으로 조작하려면 먼저 적용을 누르세요.')
-        self.manual_status = QLabel('자동 행동 중')
-        self.manual_status.setWordWrap(True)
-        self.manual_status.setStyleSheet('font-weight: 600; color: #2463b6; padding: 8px 0;')
-        form.addRow(self.manual_status)
-        self.generate_dialogue_button = QPushButton('대사 생성')
-        self.generate_dialogue_button.setAutoDefault(False)
-        self.generate_dialogue_button.clicked.connect(lambda _checked=False: self.dialogue_generation_requested.emit())
-        form.addRow(self.generate_dialogue_button)
-        heading = QLabel('말풍선 직접 입력')
-        heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
-        form.addRow(heading)
+        self.manual_page = QWidget()
+        self.manual_page.setObjectName('manualPage')
+        layout = QVBoxLayout(self.manual_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        hint = QLabel('직접 조작은 버튼을 누르면 바로 실행됩니다.')
+        hint.setContentsMargins(20, 14, 20, 4)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.manual_tabs = QTabWidget()
+        self.manual_tabs.setObjectName('manualTabs')
+        layout.addWidget(self.manual_tabs)
+        self.tabs.addTab(self.manual_page, '직접 조작')
+        _, _, dialogue = self._page('대사', tabs=self.manual_tabs)
+        _, _, motion = self._page('동작', tabs=self.manual_tabs)
+        _, _, face = self._page('표정', tabs=self.manual_tabs)
+        self._manual_dialogue_fields(dialogue)
+        self._manual_motion_fields(motion)
+        self._manual_face_fields(face)
+
+    def _manual_dialogue_fields(self, form):
         self.manual_user_text = QPlainTextEdit()
         self.manual_character_text = QPlainTextEdit()
         self.manual_user_text.setPlaceholderText('사용자 말풍선에 표시할 대사')
@@ -360,11 +409,9 @@ class SettingsDialog(QDialog):
         for label, editor in (('사용자 대사', self.manual_user_text),
                               ('캐릭터 대사', self.manual_character_text)):
             editor.setAccessibleName(label)
-            editor.setFixedHeight(70)
+            editor.setFixedHeight(62)
             form.addRow(label, editor)
-        line = QWidget()
-        buttons = QHBoxLayout(line)
-        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons = QHBoxLayout()
         self.manual_bubble_buttons = {}
         for target, label in (('user', '사용자 표시'), ('character', '캐릭터 표시'), ('both', '둘 다 표시')):
             button = QPushButton(label)
@@ -372,10 +419,8 @@ class SettingsDialog(QDialog):
             button.clicked.connect(lambda _checked=False, value=target: self._show_manual_bubbles(value))
             self.manual_bubble_buttons[target] = button
             buttons.addWidget(button)
-        form.addRow(line)
-        line = QWidget()
-        buttons = QHBoxLayout(line)
-        buttons.setContentsMargins(0, 0, 0, 0)
+        form.addRow(buttons)
+        buttons = QHBoxLayout()
         self.speak_manual_dialogue_button = QPushButton('말하기')
         self.speak_manual_dialogue_button.setAutoDefault(False)
         self.speak_manual_dialogue_button.clicked.connect(self._speak_manual_bubbles)
@@ -385,36 +430,48 @@ class SettingsDialog(QDialog):
         self.hide_manual_bubbles_button.setEnabled(False)
         self.hide_manual_bubbles_button.clicked.connect(lambda: self.manual_dialogue_hide_requested.emit())
         buttons.addWidget(self.hide_manual_bubbles_button)
-        form.addRow(line)
-        hint = QLabel('입력한 대사를 그대로 표시합니다. 설정창을 닫아도 숨기기 전까지 유지됩니다.\n'
-                      '말하기를 누르면 캐릭터 대사를 현재 설정된 음성으로 읽습니다.\n'
-                      'AI 답변은 생성하지 않으며, 일반 대화를 시작하면 직접 표시가 해제됩니다.')
+        form.addRow(buttons)
+        self.generate_dialogue_button = QPushButton('대사 생성')
+        self.generate_dialogue_button.setAutoDefault(False)
+        self.generate_dialogue_button.clicked.connect(lambda _checked=False: self.dialogue_generation_requested.emit())
+        form.addRow('AI 대사', self.generate_dialogue_button)
+        hint = QLabel('직접 표시한 말풍선은 숨기거나 일반 대화를 시작할 때까지 유지됩니다.')
         hint.setWordWrap(True)
         form.addRow(hint)
+
+    def _manual_motion_fields(self, form):
+        self.manual_status = QLabel('자동 행동 중')
+        self.manual_status.setWordWrap(True)
+        self.manual_status.setStyleSheet('font-weight: 600; color: #2463b6;')
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.manual_status, 1)
+        form.addRow(status_row)
         self.command_buttons = {}
         for row in COMMAND_ROWS:
-            line = QWidget()
-            layout = QHBoxLayout(line)
-            layout.setContentsMargins(0, 0, 0, 0)
+            layout = QHBoxLayout()
             for command, label in row:
                 button = QPushButton(label)
                 button.setAutoDefault(False)
                 button.clicked.connect(lambda _checked=False, value=command: self.character_command_requested.emit(value))
                 self.command_buttons[command] = button
-                layout.addWidget(button, 1)
-            form.addRow(line)
-        hint = QLabel('직접 조작 중에는 랜덤 이동·자동 점프·공 따라가기·자동 인사를 멈춥니다.\n'
-                      '설정창을 닫아도 유지됩니다. 자동 행동 재개를 누르면 해제됩니다.\n'
+                if command == 'resume':
+                    status_row.addWidget(button)
+                else:
+                    layout.addWidget(button, 1)
+            form.addRow(layout)
+        hint = QLabel('동작은 현재 적용된 설정값을 사용합니다. 자동 행동은 재개 버튼을 누를 때까지 멈춥니다.\n'
                       '가만히 있기는 공중에서 좌우 이동만 멈춥니다. 인사·생각·잠자기는 착지 후 실행합니다.\n'
                       '기본 위치는 앱을 시작한 가로 위치의 바닥입니다.')
         hint.setWordWrap(True)
         form.addRow(hint)
-        heading = QLabel('보이는 감정 설정')
-        heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
-        form.addRow(heading)
+
+    def _manual_face_fields(self, form):
         self.display_emotion_buttons = {}
         self.display_emotion_group = QButtonGroup(self)
         self.display_emotion_group.setExclusive(True)
+        self.display_emotion_status = QLabel()
+        self.display_emotion_status.setWordWrap(True)
+        form.addRow(self.display_emotion_status)
         buttons = QWidget()
         grid = QGridLayout(buttons)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -441,11 +498,7 @@ class SettingsDialog(QDialog):
         self.display_emotion_group.addButton(self.display_emotion_reset)
         self.display_emotion_reset.clicked.connect(lambda: self.display_emotion_requested.emit(''))
         form.addRow(self.display_emotion_reset)
-        self.display_emotion_status = QLabel()
-        self.display_emotion_status.setWordWrap(True)
-        form.addRow(self.display_emotion_status)
-        face_hint = QLabel('화면에 보이는 표정만 바꿉니다. 실제 감정값·판단·기록은 계속 갱신됩니다.\n'
-                           '설정창을 닫아도 유지되며 앱을 다시 실행하면 해제됩니다.\n'
+        face_hint = QLabel('화면의 표정만 바뀝니다. 고정한 표정은 앱을 다시 실행할 때 해제됩니다.\n'
                            'PNG 캐릭터에서는 보유한 대표 표정으로 표시합니다.')
         face_hint.setWordWrap(True)
         form.addRow(face_hint)
@@ -478,7 +531,7 @@ class SettingsDialog(QDialog):
         self.speak_manual_dialogue_button.setEnabled(available and voice_enabled)
         self.speak_manual_dialogue_button.setText('말하는 중…' if speaking else '말하기')
         self.speak_manual_dialogue_button.setToolTip(
-            '음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.' if not voice_enabled else
+            '대화·음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.' if not voice_enabled else
             '진행 중인 대화·음성 출력이 끝나면 말할 수 있어요.' if not available else
             '입력한 캐릭터 대사를 현재 설정된 음성으로 읽습니다.')
 
@@ -531,8 +584,9 @@ class SettingsDialog(QDialog):
         for key, control in self.personality_trait_inputs.items():
             control.setValue(round(preset[key] * 100))
 
-    def _voice_page(self, local):
-        _, _, form = self._page('음성', 'AI 답변을 읽는 목소리를 선택하세요. 적용 즉시 바뀌며 다음 실행에도 유지됩니다.')
+    def _dialogue_page(self, local):
+        self.dialogue_page, layout, form = self._page('대화·음성', '말풍선 모양과 AI 답변을 읽을 목소리를 설정합니다.')
+        self._dialogue_style_fields(form, local)
         self.tts_enabled = QCheckBox('AI 답변 음성으로 읽기')
         self.tts_enabled.setChecked(local['voice']['enabled'])
         self.voice = self._combo([(voice.name, voice.id) for voice in available_voices()], local['voice']['voice_id'])
@@ -540,11 +594,15 @@ class SettingsDialog(QDialog):
         self.tts_enabled.toggled.connect(self.voice.setEnabled)
         form.addRow(self.tts_enabled)
         form.addRow('목소리', self.voice)
-        self.sync_bubble = QCheckBox('말풍선과 음성 재생 동기화')
+        self.ai_section, _, ai = self._section(layout, 'AI 연결')
+        self._ai_fields(ai, local)
+        _, _, timing = self._section(layout, '말풍선 표시 시점')
+        self.sync_bubble = QCheckBox('음성 재생이 시작될 때 말풍선 표시')
         self.sync_bubble.setChecked(local['voice']['sync_bubble'])
         self.sync_bubble.setToolTip('켜면 음성이 실제로 시작될 때 말풍선을 표시합니다.\n'
                                    '끄면 답변을 먼저 표시합니다. 음성을 재생하지 못하면 텍스트만 표시합니다.')
-        form.addRow(self.sync_bubble)
+        timing.addRow(self.sync_bubble)
+        _, _, form = self._section(layout, '음성 모델 다운로드')
         self.voice_runtime_status = QLabel()
         self.voice_runtime_status.setWordWrap(True)
         form.addRow(self.voice_runtime_status)
@@ -623,67 +681,160 @@ class SettingsDialog(QDialog):
         self.model_rows[engine][1].setText(message)
 
     def _recognition_page(self, local):
-        _, layout, self.remote_form = self._page('사용자 인식', '카메라·감정 인식은 실행 중에 적용됩니다. 마이크·STT 옵션을 바꾸면 실행 중인 음성 인식을 자동으로 다시 시작합니다.')
+        self.recognition_page, layout, form = self._page('카메라·마이크', '장치를 바꾼 뒤 적용을 누르세요.')
         self.remote_status = QLabel('인식 기능에 연결하는 중…')
         self.remote_status.setWordWrap(True)
         layout.insertWidget(1, self.remote_status)
-        self.refresh_button = QPushButton('장치 새로고침')
-        self.refresh_button.clicked.connect(lambda: self.refresh_requested.emit(True))
-        layout.insertWidget(2, self.refresh_button)
-        self._hand_overlay_fields(local)
-        heading = QLabel('카메라·음성 인식')
-        heading.setStyleSheet('font-weight: 600; padding-top: 12px;')
-        self.remote_form.addRow(heading)
-        self.remote_fields = QWidget()
-        self.fields_form = QFormLayout(self.remote_fields)
-        self.fields_form.setContentsMargins(0, 0, 0, 0)
-        self.fields_form.setVerticalSpacing(10)
-        self.fields_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        self.remote_form.addRow(self.remote_fields)
-        self.remote_fields.setEnabled(False)
+        form.setVerticalSpacing(7)
+        self._device_fields(form)
+        preview_row = QHBoxLayout()
+        preview_row.setSpacing(14)
+        layout.addLayout(preview_row)
+        preview = QVBoxLayout()
+        preview.setSpacing(7)
+        preview_row.addLayout(preview, 1)
+        preview.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.preview_button = QPushButton('카메라 미리보기')
         self.preview_button.setCheckable(True)
-        self.preview_button.toggled.connect(self._sync_preview)
+        self.preview_button.setAutoDefault(False)
         self.preview_enlarge_button = QPushButton('크게 보기')
         self.preview_enlarge_button.setAutoDefault(False)
         self.preview_enlarge_button.clicked.connect(self._show_large_preview)
         preview_buttons = QHBoxLayout()
         preview_buttons.addWidget(self.preview_button, 1)
         preview_buttons.addWidget(self.preview_enlarge_button)
-        self.remote_form.insertRow(0, preview_buttons)
+        preview.addLayout(preview_buttons)
         self.preview_window = None
         self.preview_label = _PreviewImage('미리보기를 켜면 카메라 영상과 인식 결과가 표시됩니다.')
         self.preview_label.setMinimumHeight(180)
         self.preview_label.setMaximumHeight(240)
-        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-        self.preview_label.setStyleSheet('background: #15202c; color: #dce5f0; border-radius: 6px;')
-        self.remote_form.insertRow(1, self.preview_label)
+        self.preview_label.hide()
+        preview.addWidget(self.preview_label)
         self.preview_status = QLabel('')
         self.preview_status.setWordWrap(True)
-        self.remote_form.insertRow(2, self.preview_status)
+        self.preview_status.hide()
+        preview.addWidget(self.preview_status)
+        self.preview_button.toggled.connect(self._toggle_preview)
+
+        self.preview_options = QWidget()
+        self.preview_options_form = self._form()
+        self.preview_options_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.preview_options_form.setVerticalSpacing(3)
+        self.preview_options.setLayout(self.preview_options_form)
+        self.preview_options.setEnabled(False)
+        preview_row.addWidget(self.preview_options, alignment=Qt.AlignmentFlag.AlignTop)
+
+        _, self.remote_fields, self.fields_form = self._section(layout, '인식 세부 설정')
+        self.remote_fields.setEnabled(False)
+        _, _, hands = self._section(layout, '바탕화면 손 표시')
+        self._hand_overlay_fields(hands, local)
+
+    def _device_fields(self, form):
+        self.device_controls = {}
         self.device_buttons = {}
-        device_row = QHBoxLayout()
-        for operation, label in [('camera_start', '카메라 시작'), ('camera_stop', '카메라 중지'),
-                                 ('stt_start', '음성 인식 시작'), ('stt_stop', '음성 인식 중지')]:
-            button = QPushButton(label)
-            button.clicked.connect(lambda _checked=False, op=operation: self.device_requested.emit(op))
-            device_row.addWidget(button)
-            self.device_buttons[operation] = button
-        self.remote_form.insertRow(3, device_row)
-        for button in self.device_buttons.values():
-            button.setEnabled(False)
+        self.device_refresh_buttons = {}
+        self.device_refresh_status = {}
+        self.device_refresh_requests = {}
+        self.device_refresh_timers = {}
+        for key, label, prefix, action_label in (('camera', '카메라', 'camera', '카메라'),
+                                                   ('microphone', '마이크', 'stt', '음성 인식')):
+            row = QHBoxLayout()
+            combo = self._combo([('장치 목록을 불러오는 중…', None)], None)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setEnabled(False)
+            self.device_controls[key] = combo
+            device_label = QLabel(label)
+            device_label.setBuddy(combo)
+            form.addRow(device_label, row)
+            row.addWidget(combo, 1)
+            operation = f'{key}_refresh'
+            refresh = QPushButton('새로고침')
+            refresh.setAccessibleName(f'{label} 새로고침')
+            refresh.setAutoDefault(False)
+            refresh.clicked.connect(lambda _checked=False, op=operation: self.device_requested.emit(op))
+            self.device_refresh_buttons[operation] = refresh
+            row.addWidget(refresh)
+            status = QLabel()
+            status.setWordWrap(True)
+            status.hide()
+            self.device_refresh_status[operation] = status
+            form.addRow(status)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda op=operation: self._device_refresh_timer_elapsed(op))
+            self.device_refresh_timers[operation] = timer
+            actions = QHBoxLayout()
+            for suffix, title in (('start', '시작'), ('stop', '중지')):
+                command = f'{prefix}_{suffix}'
+                button = QPushButton(f'{action_label} {title}')
+                button.setAutoDefault(False)
+                button.setEnabled(False)
+                button.clicked.connect(lambda _checked=False, op=command: self.device_requested.emit(op))
+                self.device_buttons[command] = button
+                actions.addWidget(button)
+            actions.addStretch()
+            form.addRow('', actions)
+
+    def start_device_refresh(self, operation, request_id):
+        self.device_refresh_requests[operation] = request_id
+        self.device_refresh_buttons[operation].setEnabled(False)
+        self.device_refresh_status[operation].setText('장치를 검색하는 중…')
+        self.device_refresh_status[operation].show()
+        self.device_refresh_timers[operation].start(45000)
+
+    def finish_device_refresh(self, operation, message, *, success=False):
+        self.device_refresh_requests.pop(operation, None)
+        timer = self.device_refresh_timers[operation]
+        timer.stop()
+        self.device_refresh_buttons[operation].setEnabled(True)
+        self.device_refresh_status[operation].setText(message)
+        self.device_refresh_status[operation].show()
+        if success:
+            timer.start(3000)
+
+    def _device_refresh_timer_elapsed(self, operation):
+        if operation in self.device_refresh_requests:
+            self.finish_device_refresh(operation, '검색 응답이 지연됩니다. 다시 시도해 주세요.')
+        else:
+            self.device_refresh_status[operation].hide()
+            self.device_refresh_status[operation].clear()
+
+    def _toggle_preview(self, enabled):
+        self.preview_button.setText('미리보기 끄기' if enabled else '카메라 미리보기')
+        self.preview_label.setVisible(enabled)
+        self.preview_status.setVisible(enabled and bool(self.preview_status.text()))
+        self._sync_preview()
+        if enabled:
+            QTimer.singleShot(0, self._reveal_preview)
+
+    def _reveal_preview(self):
+        if self._preview_active:
+            self.recognition_page.ensureWidgetVisible(self.preview_label, 0, 8)
+
+    def _show_preview_status(self):
+        self.preview_status.clear()
+        self.preview_status.hide()
+        if self.remote_baseline is None:
+            self._preview_message(self.remote_status.text())
+        elif self._camera_running:
+            self._preview_message('카메라 화면을 기다리는 중…')
+        else:
+            self._preview_message('카메라가 중지되어 있습니다. 위에서 카메라를 시작해 주세요.')
 
     def _sync_preview(self, *_args):
         if not hasattr(self, '_preview_active'):
             return
-        enabled = (self.isVisible() and not self.isMinimized() and self.tabs.currentIndex() == 2
+        enabled = (self.isVisible() and not self.isMinimized() and self.tabs.currentWidget() is self.recognition_page
                    and self.preview_button.isChecked())
         if enabled != self._preview_active:
             self._preview_active = enabled
+            if enabled:
+                self._show_preview_status()
             self.preview_requested.emit(enabled)
             if not enabled:
                 self._preview_message('미리보기가 꺼져 있습니다. 카메라 인식은 계속됩니다.')
                 self.preview_status.clear()
+                self.preview_status.hide()
                 if self.preview_window is not None:
                     self.preview_window.close()
 
@@ -745,12 +896,10 @@ class SettingsDialog(QDialog):
         state = packet.get('state') or {}
         emotion = (state.get('emotion') or {}).get('label') or '인식 대기'
         self.preview_status.setText(f"{state.get('result', '')}\n감정: {emotion}\n음성: {state.get('speech', '')}")
+        self.preview_status.show()
 
-    def _hand_overlay_fields(self, local):
+    def _hand_overlay_fields(self, form, local):
         options = normalize_hand_overlay_options(local.get('hand_overlay'))
-        heading = QLabel('바탕화면 손 표시')
-        heading.setStyleSheet('font-weight: 600; padding-top: 8px;')
-        self.remote_form.addRow(heading)
         self.hand_display = QCheckBox('바탕화면에 손 랜드마크 표시')
         self.hand_display.setToolTip(
             '검지만 펴고 나머지는 굽힌 채 머리 윗부분에 닿으면 쓰다듬습니다.\n'
@@ -760,7 +909,7 @@ class SettingsDialog(QDialog):
             '편 손을 가로로 놓으면 캐릭터를 손 위에 태울 수 있습니다.\n'
             '공은 캐릭터 우클릭 메뉴의 공 꺼내기로 만드세요.')
         self.hand_display.setChecked(options['enabled'])
-        self.remote_form.addRow(self.hand_display)
+        form.addRow(self.hand_display)
         self.hand_inputs = {}
         self.hand_sliders = {}
         for key, label in (('size_percent', '손 표시 크기'), ('range_percent', '카메라 이동 범위')):
@@ -782,20 +931,20 @@ class SettingsDialog(QDialog):
             self.hand_inputs[key] = spin
             line.addWidget(slider, 1)
             line.addWidget(spin)
-            self.remote_form.addRow(label, row)
+            form.addRow(label, row)
         self.hand_range_preview = QLabel()
         self.hand_range_preview.setWordWrap(True)
-        self.remote_form.addRow('', self.hand_range_preview)
+        form.addRow(self.hand_range_preview)
         self.hand_inputs['range_percent'].valueChanged.connect(self._describe_hand_range)
         self._describe_hand_range()
         self.hand_count = self._combo([('한 손', 1), ('두 손', 2)], options['max_hands'])
-        self.remote_form.addRow('표시할 손 수', self.hand_count)
+        form.addRow('표시할 손 수', self.hand_count)
         self.hand_smooth = QCheckBox('손 움직임 보정')
         self.hand_smooth.setChecked(options['smooth'])
-        self.remote_form.addRow(self.hand_smooth)
+        form.addRow(self.hand_smooth)
         hint = QLabel('기존 카메라의 손 좌표를 사용합니다. 카메라가 꺼져 있거나 손을 인식하지 못하면 표시하지 않습니다.')
         hint.setWordWrap(True)
-        self.remote_form.addRow('', hint)
+        form.addRow(hint)
 
     def _describe_hand_range(self):
         percent = self.hand_inputs['range_percent'].value()
@@ -806,12 +955,23 @@ class SettingsDialog(QDialog):
     def set_remote(self, state, preserve_draft=False):
         draft = self.changes()['remote'] if preserve_draft else {}
         self.remote_baseline = deepcopy(state['values'])
-        while self.fields_form.rowCount():
-            self.fields_form.removeRow(0)
+        for form in (self.fields_form, self.preview_options_form):
+            while form.rowCount():
+                form.removeRow(0)
         self.controls = {}
         choices = state['choices']
-        labels = {'camera': '카메라', 'microphone': '마이크',
-                  'mode': '인식 도구', 'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
+        for key, combo in self.device_controls.items():
+            combo.clear()
+            for item in choices.get(key, ()):
+                combo.addItem(item['label'], item['value'])
+            has_devices = bool(combo.count())
+            combo.setEnabled(has_devices)
+            if has_devices:
+                combo.setCurrentIndex(max(0, combo.findData(state['values'].get(key))))
+            else:
+                combo.addItem('사용 가능한 장치 없음', None)
+            self.controls[key] = combo
+        labels = {'mode': '인식 도구', 'emotion_model': '감정 인식 모델', 'provider': 'STT 서비스',
                   'language': '인식 언어', 'silence': '발화 종료 대기', 'sensitivity': '마이크 민감도'}
         for key, label in labels.items():
             if key not in choices:
@@ -821,9 +981,12 @@ class SettingsDialog(QDialog):
                 combo.addItem('사용 가능한 장치 없음', None)
                 combo.setEnabled(False)
             self.controls[key] = combo
-            self.fields_form.addRow(label, combo)
             if key == 'mode':
+                combo.setToolTip('끄기를 선택하고 적용하면 인식 도구가 꺼집니다. 카메라와 마이크는 계속 사용할 수 있습니다.')
+                self.preview_options_form.addRow(label, combo)
                 combo.setEnabled(not state.get('game_active', False))
+            else:
+                self.fields_form.addRow(label, combo)
         for key, label in [('tracking', '추적 지점 표시'), ('marker_only', '검은 배경에 추적 지점 표시'),
                            ('mirror', '좌우 반전'), ('info_overlay', '영상에 상태 표시'),
                            ('cham_overlay', '영상에 참참참 방향 표시'),
@@ -833,7 +996,7 @@ class SettingsDialog(QDialog):
             check = QCheckBox(label)
             check.setChecked(bool(state['values'].get(key)))
             self.controls[key] = check
-            self.fields_form.addRow(check)
+            self.preview_options_form.addRow(check)
         for key, value in draft.items():
             if key not in self.controls:
                 continue
@@ -845,24 +1008,31 @@ class SettingsDialog(QDialog):
                 if index >= 0:
                     control.setCurrentIndex(index)
         self.remote_fields.setEnabled(True)
+        self.preview_options.setEnabled(True)
         self.remote_status.setText(state.get('status', '현재 설정을 불러왔습니다.'))
-        if not state.get('camera_running', False) and self._preview_active:
-            self._preview_message('카메라가 중지되어 있습니다. 카메라 시작을 눌러 주세요.')
+        self._camera_running = state.get('camera_running', False)
         for operation, button in self.device_buttons.items():
-            running = state.get('camera_running', False) if operation.startswith('camera_') else state.get('stt_running', False)
+            running = self._camera_running if operation.startswith('camera_') else state.get('stt_running', False)
             button.setEnabled(bool(running) != operation.endswith('_start'))
+        if self._preview_active and (not self._camera_running or self.preview_label._image.isNull()):
+            self._show_preview_status()
 
     def remote_unavailable(self, message):
         self.remote_status.setText(message)
         self.remote_fields.setEnabled(False)
+        self.preview_options.setEnabled(False)
         self.remote_baseline = None
-        self._preview_message('인식 작업에 연결하지 못했습니다. 장치 새로고침으로 다시 연결하세요.')
+        self._preview_message('인식 작업에 연결하지 못했습니다. 장치를 새로고침해 주세요.')
         self.preview_status.clear()
+        self.preview_status.hide()
+        for combo in self.device_controls.values():
+            combo.setEnabled(False)
+        for operation in tuple(self.device_refresh_requests):
+            self.finish_device_refresh(operation, message)
         for button in self.device_buttons.values():
             button.setEnabled(False)
 
-    def _ai_page(self, local):
-        _, _, form = self._page('AI', 'Gemini API 키와 모델을 설정하세요. 저장하면 이후 대화와 자동 대사 요청부터 적용됩니다.')
+    def _ai_fields(self, form, local):
         self.api_key = QLineEdit(local['ai']['api_key'])
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText('API 키 입력')
@@ -874,6 +1044,32 @@ class SettingsDialog(QDialog):
         self.model = QLineEdit(local['ai']['model'])
         self.model.setPlaceholderText('사용할 모델 ID 입력')
         form.addRow('모델 ID', self.model)
+        options = normalize_dialogue_options(local.get('dialogue'))
+        self.auto_program_detection = QCheckBox('활성 창·프로그램 감지로 자동 대화 생성')
+        self.auto_program_detection.setChecked(options['auto_program_detection'])
+        form.addRow(self.auto_program_detection)
+        hint = QLabel('끄면 주기적인 감지와 자동 대화를 중지합니다. 직접 입력·음성 대화와 직접 조작의 대사 생성은 계속 사용할 수 있습니다.')
+        hint.setWordWrap(True)
+        form.addRow('', hint)
+        self.dialogue_inputs = {}
+        for key, label in (
+            ('activity_monitor_interval', '활성 창 감지 주기'),
+            ('auto_dialogue_cooldown', '자동 대화 최소 요청 간격'),
+            ('request_cooldown', '입력·음성 대화 최소 요청 간격'),
+        ):
+            spin = QSpinBox()
+            spin.setRange(*DIALOGUE_OPTION_RANGES[key])
+            spin.setSuffix(' 초')
+            spin.setValue(options[key])
+            self.dialogue_inputs[key] = spin
+            form.addRow(label, spin)
+            if key != 'request_cooldown':
+                spin.setEnabled(self.auto_program_detection.isChecked())
+                self.auto_program_detection.toggled.connect(spin.setEnabled)
+
+    def _focus_ai_model(self):
+        self.model.setFocus()
+        self.dialogue_page.ensureWidgetVisible(self.model)
 
     def _game_rules_page(self, local):
         _, _, form = self._page('게임 목록', '게임으로 인식할 프로그램을 편집하세요. 한 줄에 하나씩 입력하고 적용을 눌러 저장합니다.')
@@ -957,6 +1153,8 @@ class SettingsDialog(QDialog):
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         local['character']['window_occlusion'] = self.window_occlusion.isChecked()
         local['character']['game_spectator'] = self.game_spectator_enabled.isChecked()
+        local['character']['emotion_delta_duration_ms'] = round(self.emotion_delta_duration.value() * 1000)
+        local['character']['emotion_delta_enabled'] = self.emotion_delta_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
         game_rules = normalize_game_rules({
             'included_processes': self.game_processes.toPlainText().splitlines(),
@@ -965,8 +1163,12 @@ class SettingsDialog(QDialog):
         })
         if game_rules != self.local_baseline['game_rules']:
             changed['game_rules'] = game_rules
-        dialogue = {'style': self.dialogue_style.currentData()}
-        baseline = {'style': normalize_dialogue_style(self.local_baseline.get('dialogue', {}).get('style'))}
+        dialogue = {'style': self.dialogue_style.currentData(),
+                    'auto_program_detection': self.auto_program_detection.isChecked(),
+                    **{key: control.value() for key, control in self.dialogue_inputs.items()}}
+        saved_dialogue = self.local_baseline.get('dialogue', {})
+        baseline = {'style': normalize_dialogue_style(saved_dialogue.get('style')),
+                    **normalize_dialogue_options(saved_dialogue)}
         if dialogue != baseline:
             changed['dialogue'] = dialogue
         hand_overlay = {'enabled': self.hand_display.isChecked(),
@@ -994,7 +1196,9 @@ class SettingsDialog(QDialog):
             return
         if 'ai' in changes['local'] and changes['local']['ai']['api_key'] and not changes['local']['ai']['model']:
             self.status.setText('API 키를 사용하려면 모델 ID를 입력하세요.')
-            self.tabs.setCurrentIndex(3)
+            self.tabs.setCurrentWidget(self.dialogue_page)
+            self.ai_section.setChecked(True)
+            QTimer.singleShot(0, self._focus_ai_model)
             return
         self.close_on_success = close
         if not changes['local'] and not changes['remote']:

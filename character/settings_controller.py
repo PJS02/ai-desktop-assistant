@@ -5,7 +5,7 @@ from PyQt6.QtCore import QObject, QTimer
 
 from .ai_settings import load_ai_settings, save_ai_settings
 from .config_manager import (load_config, load_character_options, load_personality_traits,
-                            load_dialogue_style, save_config,
+                            load_dialogue_style, load_dialogue_options, save_config,
                             load_hand_overlay_options, save_hand_overlay_options)
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
@@ -64,11 +64,12 @@ class SettingsController(QObject):
                            'sync_bubble': tts.sync_bubble},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
-        local['dialogue'] = {'style': load_dialogue_style()}
+        local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
         local['game_rules'] = load_game_rules()
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
-        self.dialog = SettingsDialog(local, self.character)
+        self.dialog = SettingsDialog(local, self.character,
+                                     long_term_memory=self.character.dialogue_system.long_term_memory)
         self.dialog.dialogue_generation_requested.connect(self._generate_dialogue)
         self.dialog.manual_dialogue_requested.connect(self._show_manual_dialogue)
         self.dialog.manual_speech_requested.connect(self._speak_manual_dialogue)
@@ -79,7 +80,6 @@ class SettingsController(QObject):
         self.dialog.finished.connect(lambda _result: self._set_preview(False))
         self.dialog.apply_requested.connect(self.apply)
         self.dialog.apply_timeout.connect(self._apply_timed_out)
-        self.dialog.refresh_requested.connect(self.refresh)
         self.dialog.character_command_requested.connect(self.character.manual_control.execute)
         self.character.manual_control.status_changed.connect(self.dialog.set_manual_status)
         self.dialog.set_manual_status(self.character.manual_control.status)
@@ -93,7 +93,7 @@ class SettingsController(QObject):
         self.dialog.show()
         self._refresh_dialogue_generation()
         self.dialogue_timer.start()
-        self.refresh(False)
+        self.refresh()
 
     def _refresh_dialogue_generation(self):
         if self.dialog is None:
@@ -126,7 +126,7 @@ class SettingsController(QObject):
     def _speak_manual_dialogue(self, user_text, character_text):
         dialogue = self.character.dialogue_system
         if not dialogue.tts.enabled:
-            self.dialog.status.setText('음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.')
+            self.dialog.status.setText('대화·음성 탭에서 AI 답변 음성으로 읽기를 켜 주세요.')
         elif (getattr(self.character, '_automatic_request_active', False)
               or not dialogue.speak_manual_dialogue(user_text, character_text)):
             self.dialog.status.setText('진행 중인 대화·음성 출력이 끝난 뒤 다시 말해 주세요.')
@@ -142,7 +142,7 @@ class SettingsController(QObject):
 
     def show_recognition(self):
         self.show()
-        self.dialog.tabs.setCurrentIndex(2)
+        self.dialog.tabs.setCurrentWidget(self.dialog.recognition_page)
         self.dialog.preview_button.setChecked(True)
         return True
 
@@ -164,16 +164,22 @@ class SettingsController(QObject):
             self.dialog.show_preview_packet(packet)
 
     def _device_command(self, operation):
-        if not self.dialog.pending:
-            self.manager.device_command(operation)
-
-    def refresh(self, devices=False):
         if self.dialog.pending:
             return
-        self.dialog.remote_status.setText('장치를 검색하는 중…' if devices else '현재 설정을 불러오는 중…')
-        self.dialog.refresh_button.setEnabled(False)
-        log_event('settings.refresh.requested', '인식 설정을 요청합니다.', devices=devices)
-        if not self.manager.request_settings(devices):
+        if operation in self.dialog.device_refresh_buttons:
+            request_id = new_trace_id('device-refresh')
+            self.dialog.start_device_refresh(operation, request_id)
+            if not self.manager.device_command(operation, request_id=request_id):
+                self.dialog.finish_device_refresh(operation, '인식 기능에 연결하지 못했습니다. 다시 시도해 주세요.')
+        elif not self.manager.device_command(operation):
+            self.dialog.status.setText('장치 명령을 보내지 못했습니다. 다시 시도해 주세요.')
+
+    def refresh(self):
+        if self.dialog.pending:
+            return
+        self.dialog.remote_status.setText('현재 설정을 불러오는 중…')
+        log_event('settings.refresh.requested', '인식 설정을 요청합니다.')
+        if not self.manager.request_settings(False):
             self.connection_timeout()
         else:
             self.load_timeout.start(45000)
@@ -182,8 +188,7 @@ class SettingsController(QObject):
         log_event('settings.refresh.unavailable', '인식 설정 응답을 확인하지 못했습니다.',
                   level='WARNING', reason='not_connected_or_timeout')
         if self.dialog is not None:
-            self.dialog.remote_unavailable('인식 기능에 연결하지 못했습니다. 장치 새로고침으로 다시 연결할 수 있습니다.')
-            self.dialog.refresh_button.setEnabled(True)
+            self.dialog.remote_unavailable('인식 기능에 연결하지 못했습니다. 카메라·마이크 탭에서 장치를 새로고침해 주세요.')
 
     def _apply_timed_out(self, operation_id):
         if operation_id in self._operations:
@@ -204,7 +209,7 @@ class SettingsController(QObject):
                     options = {key: value[key] for key in DEFAULT_CHARACTER_OPTIONS}
                     save_config(value['width'], value['height'], value['personality'],
                                 character_options=options,
-                                personality_traits=value['personality_traits'],
+                                personality_traits=value.get('personality_traits'),
                                 trace_id=self.operation_id)
                     apply_runtime = self.character.apply_character_settings
                     runtime_options = dict(options)
@@ -214,7 +219,8 @@ class SettingsController(QObject):
                         accepts_trace = False
                     if accepts_trace:
                         runtime_options['trace_id'] = self.operation_id
-                    runtime_options['personality_traits'] = value['personality_traits']
+                    if 'personality_traits' in value:
+                        runtime_options['personality_traits'] = value['personality_traits']
                     apply_runtime(value['width'], value['height'], value['personality'], **runtime_options)
                 elif section == 'voice':
                     tts = self.character.dialogue_system.tts
@@ -230,8 +236,10 @@ class SettingsController(QObject):
                 elif section == 'dialogue':
                     width, height, personality = load_config()
                     save_config(width, height, personality, dialogue_style=value['style'],
+                                dialogue_options=value,
                                 trace_id=self.operation_id)
                     self.character.dialogue_system.set_bubble_style(value['style'])
+                    self.character.apply_dialogue_options(value)
                 elif section == 'game_rules':
                     value = save_game_rules(value, trace_id=self.operation_id)
                     self.character.game_spectator.poll()
@@ -287,7 +295,12 @@ class SettingsController(QObject):
             return
         if message.get('kind') == 'device_result':
             self.dialog.set_remote(message['state'], preserve_draft=True)
-            self.dialog.status.setText(message['message'])
+            operation = message.get('operation')
+            if operation in self.dialog.device_refresh_buttons:
+                if self.dialog.device_refresh_requests.get(operation) == received_id:
+                    self.dialog.finish_device_refresh(operation, message['message'], success=message.get('ok', False))
+            else:
+                self.dialog.status.setText(message['message'])
             return
         if message.get('kind') == 'unavailable':
             self.load_timeout.stop()
@@ -297,7 +310,6 @@ class SettingsController(QObject):
                 self.dialog.complete('인식 기능이 종료되어 적용 결과를 확인하지 못했습니다. 인식 콘솔과 로그창을 확인하세요.', False, local=self.applied_local)
         elif message.get('kind') == 'state':
             self.load_timeout.stop()
-            self.dialog.refresh_button.setEnabled(True)
             self.dialog.set_remote(message['state'], preserve_draft=True)
         elif message.get('kind') == 'result' and message.get('request_id') == self.request_id:
             self.request_id = None

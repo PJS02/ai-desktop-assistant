@@ -4,6 +4,7 @@ from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrati
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
 from .dialogue_styles import normalize_dialogue_style
+from .dialogue_options import DEFAULT_DIALOGUE_OPTIONS
 from .dialogue_persona import character_voice
 from .game_detection import game_context_instruction
 from PyQt6.QtCore import QRect
@@ -94,7 +95,7 @@ class DialogueSystem(QObject):
         
         # 요청 제한 (수동 대화용)
         self.last_request_time = None  # monotonic request start; None allows the first request
-        self.request_cooldown = 10  # 수동 요청 사이 최소 10초 (자동 감지와 분리)
+        self.request_cooldown = DEFAULT_DIALOGUE_OPTIONS['request_cooldown']
         self.is_ai_responding = False  # AI 응답 중인지
     
     def _load_gemini_config(self):

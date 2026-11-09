@@ -34,7 +34,12 @@
     depressed:{label:'우울함',valence:-.65,arousal:-.65},
     tired:{label:'지침',valence:-.35,arousal:-.9},
     angry:{label:'화남',valence:-.85,arousal:.85},
-    scared:{label:'놀람',valence:0,arousal:.95}
+    fear:{label:'두려움',valence:-.6,arousal:.75},
+    scared:{label:'놀람',valence:0,arousal:.95},
+    pleasant:{label:'유쾌',valence:1,arousal:0},
+    thrilled:{label:'흥분',valence:0,arousal:1},
+    quiet:{label:'조용',valence:0,arousal:-1},
+    serene:{label:'고요한',valence:.92388,arousal:-.38268}
   };
   const expressionKeys = [...Object.keys(emotions).filter(k=>k!=='neutral').map(k=>'expr'+k[0].toUpperCase()+k.slice(1)), 'exprTalk','exprThinking','exprSleep'];
 
@@ -168,7 +173,8 @@
     proud:[3.35,.75,1.85],relieved:[3.05,.68,1.78],calm:[2.6,.5,1.7],
     anxious:[4.25,.61,1.63],hurt:[3.15,.7,1.62],displeased:[3.4,.61,1.76],
     distressed:[3.85,.89,1.9],sad:[2.7,.58,1.65],depressed:[2.2,.42,1.48],
-    tired:[2.1,.53,1.4],angry:[4.2,.94,1.95],scared:[4.4,.85,1.8]
+    tired:[2.1,.53,1.4],angry:[4.2,.94,1.95],fear:[4.3,.59,1.68],scared:[4.4,.85,1.8],
+    pleasant:[3.6,.76,1.8],thrilled:[4.7,.82,2.14],quiet:[2.5,.46,1.64],serene:[2.8,.51,1.74]
   };
   function speechAt(time,emotion='neutral') {
     const t=cycle(time,2.8)*2.8;

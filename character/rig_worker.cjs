@@ -3,10 +3,11 @@
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const crypto = require('crypto'), readline = require('readline');
 const rigRoot = path.resolve(process.argv[2]);
-const files = ['textures/parts.js', 'motion.js', 'limb-girth.js', 'emotion-fx.js',
+const files = ['textures/parts.js', 'skin-tone.js', 'motion.js', 'limb-girth.js', 'emotion-fx.js',
+  'dizzy-fx.js',
   'side-wave-skinning.js', 'side-cuff.js', 'side-cuff-roll.js',
   'side-cuff-attachment.js', 'side-cuff-motion.js', 'side-cuff-art.js',
-  'side-cuff-fit.js', 'dizzy-fx.js', 'renderer.js'];
+  'side-cuff-fit.js', 'renderer.js'];
 const context = {CLOUDY_BINARY_MESHES: true};
 context.window = context;
 context.globalThis = context;

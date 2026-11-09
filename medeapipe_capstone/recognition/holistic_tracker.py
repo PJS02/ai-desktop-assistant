@@ -287,6 +287,72 @@ def hand_anchor_point(hand_records):
     return (first_record["pixel_x"], first_record["pixel_y"])
 
 
+def open_palm_wave_anchor(hand_records):
+    """Only a fully tracked, open five-finger hand may build wave history."""
+    hand_map = records_by_name(hand_records)
+    points = {name: point_from_record(hand_map.get(name)) for name in HAND_LANDMARK_NAMES}
+    if any(point is None or not all(math.isfinite(value) for value in point)
+           for point in points.values()):
+        return None
+    wrist = points['WRIST']
+    scale = max(math.dist(wrist, points['MIDDLE_FINGER_MCP']),
+                math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
+    if scale <= 1:
+        return None
+    # Joint angles and distances work when the palm tilts or is mirrored.
+    for finger in ('INDEX_FINGER', 'MIDDLE_FINGER', 'RING_FINGER', 'PINKY'):
+        mcp, pip, dip, tip = (points[f'{finger}_{joint}'] for joint in ('MCP', 'PIP', 'DIP', 'TIP'))
+        if ((angle_between_points(mcp, pip, dip) or 0) < 160
+                or (angle_between_points(pip, dip, tip) or 0) < 160
+                or math.dist(tip, wrist) <= math.dist(pip, wrist) * 1.12):
+            return None
+    thumb_mcp, thumb_ip, thumb_tip = (points[f'THUMB_{joint}'] for joint in ('MCP', 'IP', 'TIP'))
+    if ((angle_between_points(points['THUMB_CMC'], thumb_mcp, thumb_ip) or 0) < 150
+            or (angle_between_points(thumb_mcp, thumb_ip, thumb_tip) or 0) < 150
+            or math.dist(thumb_tip, points['PINKY_MCP']) <= math.dist(thumb_mcp, points['PINKY_MCP']) * 1.1
+            or math.dist(thumb_tip, points['INDEX_FINGER_MCP']) <= scale * .35
+            or math.dist(thumb_tip, points['INDEX_FINGER_TIP']) <= scale * .55):
+        return None
+    return average_point(points['INDEX_FINGER_MCP'], points['MIDDLE_FINGER_MCP'], points['PINKY_MCP'])
+
+
+def is_thumbs_up(hand_records):
+    """Require a visibly raised thumb and four explicitly curled fingers."""
+    hand_map = records_by_name(hand_records)
+    points = {name: point_from_record(hand_map.get(name)) for name in HAND_LANDMARK_NAMES}
+    if any(point is None or not all(math.isfinite(value) for value in point)
+           for point in points.values()):
+        return False
+    wrist = points['WRIST']
+    scale = max(math.dist(wrist, points['MIDDLE_FINGER_MCP']),
+                math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
+    if scale <= 1:
+        return False
+    cmc, mcp, ip, tip = (points[f'THUMB_{joint}'] for joint in ('CMC', 'MCP', 'IP', 'TIP'))
+    length = math.dist(mcp, tip)
+    if ((angle_between_points(cmc, mcp, ip) or 0) < 145
+            or (angle_between_points(mcp, ip, tip) or 0) < 145
+            or length < scale * .4
+            or not tip[1] < ip[1] < mcp[1]
+            or mcp[1] - tip[1] < length * .5
+            or wrist[1] - tip[1] < scale * .6):
+        return False
+    axis = ((tip[0] - mcp[0]) / length, (tip[1] - mcp[1]) / length)
+    for finger in ('INDEX_FINGER', 'MIDDLE_FINGER', 'RING_FINGER', 'PINKY'):
+        base, pip, fingertip = (points[f'{finger}_{joint}'] for joint in ('MCP', 'PIP', 'TIP'))
+        bend = angle_between_points(base, pip, fingertip)
+        # Not extended is ambiguous; the fingertip must actually return toward the palm.
+        if (bend is None or bend > 135
+                or math.dist(fingertip, wrist) > math.dist(pip, wrist) * .92
+                or math.dist(fingertip, base) > scale * .6
+                or math.dist(tip, fingertip) < scale * .55):
+            return False
+        for knuckle in (base, pip):
+            if sum((tip[i] - knuckle[i]) * axis[i] for i in (0, 1)) < scale * .2:
+                return False
+    return True
+
+
 def finger_is_extended(hand_map, mcp_name, pip_name, tip_name):
     mcp = hand_map.get(mcp_name)
     pip = hand_map.get(pip_name)

@@ -287,6 +287,9 @@ def test_capture_supports_active_window_on_negative_monitor(monkeypatch, screens
     win32gui = SimpleNamespace(GetForegroundWindow=lambda: 123,
                                GetWindowRect=lambda _: (-900, 20, -260, 500))
     monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+    monkeypatch.setitem(sys.modules, "win32process", SimpleNamespace(
+        GetWindowThreadProcessId=lambda _: (7, os.getpid() + 1)))
+    monkeypatch.setattr("psutil.Process", lambda pid: SimpleNamespace(pid=pid, parents=lambda: []))
     with patch("PIL.ImageGrab.grab", return_value=screenshot) as grab:
         assert capture_active_window_image() is screenshot
     grab.assert_called_once_with(bbox=(-900, 20, -260, 500), all_screens=True)

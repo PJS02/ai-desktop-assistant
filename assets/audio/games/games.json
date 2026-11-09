@@ -1,0 +1,53 @@
+{
+  "engine": "gpt_sovits",
+  "clips": {
+    "scissors": {
+      "text": "가위.",
+      "file": "scissors.wav",
+      "duration": 0.64,
+      "sample_rate": 32000,
+      "synthesis_speed": 0.86,
+      "trailing_silence": 0.12
+    },
+    "rock": {
+      "text": "바위.",
+      "file": "rock.wav",
+      "duration": 0.68,
+      "sample_rate": 32000,
+      "synthesis_speed": 0.86,
+      "trailing_silence": 0.12
+    },
+    "paper": {
+      "text": "보!",
+      "file": "paper.wav",
+      "duration": 0.6183,
+      "sample_rate": 32000,
+      "synthesis_speed": 0.86,
+      "trailing_silence": 0.12
+    },
+    "cham_1": {
+      "text": "참.",
+      "file": "cham_1.wav",
+      "duration": 0.64,
+      "sample_rate": 32000,
+      "synthesis_speed": 0.86,
+      "trailing_silence": 0.12
+    },
+    "cham_2": {
+      "text": "참.",
+      "file": "cham_2.wav",
+      "duration": 0.64,
+      "sample_rate": 32000,
+      "synthesis_speed": 0.86,
+      "trailing_silence": 0.12
+    },
+    "cham_final": {
+      "text": "참!",
+      "file": "cham_final.wav",
+      "duration": 0.64,
+      "sample_rate": 32000,
+      "synthesis_speed": 0.86,
+      "trailing_silence": 0.12
+    }
+  }
+}

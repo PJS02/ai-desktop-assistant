@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 import re
+import numpy as np
+from PIL import Image, ImageFilter
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage,
                          QLinearGradient, QPainter, QPainterPath, QPen,
@@ -114,8 +116,73 @@ def _shade(recipe, head):
                   QImage.Format.Format_RGBA8888).copy()
 
 
-def build_effect(name, recipe, headImage=None):
+def _dizzy_skin(recipe, head, skin):
+    """Apply the authored eyeless painting with the browser effect's skin mask."""
+    if head is None or skin is None or head.isNull() or skin.isNull():
+        raise ValueError('Dizzy skin needs its original head and eyeless painting')
+    command = recipe['commands'][0]
+    width, height = recipe['width'], recipe['height']
+    x, y, _, _ = command['bounds']
+
+    def pixels(image):
+        image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        pointer = image.constBits()
+        pointer.setsize(image.sizeInBytes())
+        return np.frombuffer(pointer, np.uint8).reshape(image.height(), image.bytesPerLine())[:, :image.width()*4].reshape(image.height(), image.width(), 4).copy()
+
+    def mask(paths, expansion=0):
+        image = QImage(width, height, QImage.Format.Format_RGBA8888_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.scale(4, 4)
+        painter.translate(-x, -y)
+        for shape in paths:
+            path = QPainterPath(QPointF(*shape['start']))
+            for curve in shape['curves']:
+                path.cubicTo(*curve)
+            path.closeSubpath()
+            painter.fillPath(path, Qt.GlobalColor.black)
+            if expansion:
+                pen = QPen(Qt.GlobalColor.black, expansion * 2)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                painter.strokePath(path, pen)
+        painter.end()
+        return pixels(image)[:, :, 3]
+
+    core = mask(command['covers'])
+    soft = np.maximum(core, np.asarray(Image.fromarray(core).filter(ImageFilter.GaussianBlur(6)))) / 255.0
+    eye = mask(command['apertures'], 3.5) / 255.0
+    painted = QImage(width, height, QImage.Format.Format_RGBA8888_Premultiplied)
+    painted.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(painted)
+    a, b, c, d, e, f = command['toAtlas']
+    painter.setWorldTransform(QTransform(4*a, 4*b, 4*c, 4*d, 4*(e-x), 4*(f-y)))
+    painter.drawImage(QPointF(), skin)
+    painter.end()
+    result = pixels(painted)
+    source = pixels(head)
+    bx, by = command['headBounds'][:2]
+    sx = np.floor(x + np.arange(width)/4 - bx).astype(int)
+    sy = np.floor(y + np.arange(height)/4 - by).astype(int)
+    valid = ((sy[:, None] >= 0) & (sy[:, None] < source.shape[0])
+             & (sx[None, :] >= 0) & (sx[None, :] < source.shape[1]))
+    sample = source[np.clip(sy, 0, source.shape[0]-1)[:, None],
+                    np.clip(sx, 0, source.shape[1]-1)[None, :]].astype(float)
+    red, green, blue, alpha = np.moveaxis(sample, -1, 0)
+    warm = (alpha > 240) & (red > 220) & (green > 202) & (blue > 188) & (red-green > 3) & (green-blue > 2)
+    hair = (green > 135) & (green-red > 5) & (blue-red > -4) & (green >= blue-10)
+    skin_weight = np.clip((red-blue-6)/8, 0, 1) * np.clip((green-192)/18, 0, 1) * np.clip((red-green-1)/6, 0, 1)
+    mask_alpha = soft * np.where(valid, alpha/255 * (1-skin_weight*(1-eye)), 1)
+    mask_alpha[valid & ((hair & (eye < .01)) | ((core < 2.55) & ~warm))] = 0
+    result[:, :, 3] = np.rint(255 * np.clip(mask_alpha, 0, 1)).astype(np.uint8)
+    return QImage(result.tobytes(), width, height, width*4, QImage.Format.Format_RGBA8888).copy()
+
+
+def build_effect(name, recipe, headImage=None, skinImage=None):
     del name
+    if recipe['commands'] and recipe['commands'][0]['op'] == 'dizzySkin':
+        return _dizzy_skin(recipe, headImage, skinImage)
     if recipe["commands"] and recipe["commands"][0]["op"] == "originalShade":
         return _shade(recipe, headImage)
     image = QImage(recipe["width"], recipe["height"], QImage.Format.Format_RGBA8888_Premultiplied)
@@ -126,7 +193,8 @@ def build_effect(name, recipe, headImage=None):
     try:
         for command in recipe["commands"]:
             state, op = command.get("state", {}), command["op"]
-            painter.setTransform(QTransform(*state.get('transform', [1, 0, 0, 1, 0, 0])))
+            sx, sy, tx, ty = state.get('transform', (1, 1, 0, 0))
+            painter.setWorldTransform(QTransform(sx, 0, 0, sy, tx, ty))
             painter.setOpacity(state.get("globalAlpha", 1))
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn
                 if state.get("globalCompositeOperation") == "destination-in"

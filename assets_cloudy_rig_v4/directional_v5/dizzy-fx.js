@@ -95,7 +95,8 @@ function createSprites(images={},parts={},options={}){
   }
   sprites['fx_dizzy_whites_'+direction]=canvas;
  }
- if(!options.skipPlain)for(const [direction,view] of Object.entries(plainViews)){
+ for(const [direction,view] of Object.entries(plainViews)){
+  if(options.skipSkin)continue; // Native Qt builds pixel-dependent skin masks.
   const [x,y,w,h]=view.skinBounds;
   const canvas=document.createElement('canvas');canvas.width=w*4;canvas.height=h*4;
   const c=canvas.getContext('2d');
