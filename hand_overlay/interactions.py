@@ -139,7 +139,8 @@ class DisplayedHand:
     def supports(self):
         wrist, knuckle = self.points[0], self.points[9]
         dx, dy = abs(knuckle[0] - wrist[0]), abs(knuckle[1] - wrist[1])
-        return self.all_open and dx >= 8 and dx >= dy * 1.5
+        # Either side can support the feet with a relaxed thumb or one bent finger.
+        return sum(self.extended) >= 3 and dx >= 8 and dx >= dy * .8
 
 
 class HandInteractionEngine:
@@ -154,12 +155,13 @@ class HandInteractionEngine:
     GRAB_OPEN_SECONDS = .30
     OPEN_SAMPLES = 4
     SWING_SPEED = 1050.  # Logical screen pixels per second.
+    BALL_RELEASE_MIN_SPEED = 40.  # Ignore small tracking jitter.
 
     def __init__(self, actions):
         self.actions = actions
         self.active = None
         self._pinched = {}
-        self._last = {}
+        self._ball_grips = {}
         self._candidate = None
         self._candidate_at = 0.
         self._candidate_seen_at = 0.
@@ -186,8 +188,8 @@ class HandInteractionEngine:
         self._candidate = None
         self._missing_at = None
         self._pets.clear()
-        self._last.clear()
         self._pinched.clear()
+        self._ball_grips.clear()
         self._poke_candidates.clear()
         self._poke_latched.clear()
         self._token = None
@@ -203,6 +205,7 @@ class HandInteractionEngine:
     def _release(self, now, reason, velocity=(0., 0.)):
         self.actions.end_hold(reason, velocity)
         self.active = None
+        self._ball_grips.clear()
         self._candidate = None
         self._missing_at = None
         self._open_at = None
@@ -275,6 +278,32 @@ class HandInteractionEngine:
         self._rebind = None
         return best
 
+    def _ball_contact(self, hand, ball, now, fresh):
+        """Confirm two fresh gripping poses and include motion between camera samples."""
+        if ball is None:
+            self._ball_grips.pop(hand.track_id, None)
+            return False
+        if not fresh:
+            return False
+        previous = self._ball_grips.pop(hand.track_id, None)
+        if hand.open_for_grab or not (hand.pinch_ratio <= .45 or hand.grasp_pose):
+            return False
+        relative = tuple(a - b for a, b in zip(hand.pinch_point, ball.center))
+        self._ball_grips[hand.track_id] = now, relative
+        if previous is None or not 0 < now - previous[0] <= .20:
+            return False
+        radius = max(ball.width, ball.height) / 2 + max(24., min(40., self._size(hand) * .55))
+        if math.hypot(*relative) <= radius:
+            return True
+        # Sweep relative hand/ball motion so a fast ball cannot skip the catch area.
+        start = previous[1]
+        delta = tuple(a - b for a, b in zip(relative, start))
+        length_sq = sum(value * value for value in delta)
+        if not length_sq:
+            return False
+        fraction = max(0., min(1., -sum(a * b for a, b in zip(start, delta)) / length_sq))
+        return math.hypot(*(a + fraction * b for a, b in zip(start, delta))) <= radius
+
     def update(self, hands, now, source_token):
         if not self.actions.available():
             self.reset('character_busy', now)
@@ -283,27 +312,13 @@ class HandInteractionEngine:
         self._token = source_token
         present = {hand.track_id for hand in hands}
         self._pinched = {key: value for key, value in self._pinched.items() if key in present}
+        self._ball_grips = {key: value for key, value in self._ball_grips.items() if key in present}
         self._pets = {key: value for key, value in self._pets.items() if key in present}
         self._poke_latched.intersection_update(present)
         self._poke_candidates = {k: v for k, v in self._poke_candidates.items() if k in present}
-        release_velocities = {}
         for hand in hands:
-            previous = self._last.get(hand.track_id)
-            release_velocities[hand.track_id] = (previous[2] if previous and now - previous[0] <= .12
-                                                 else (0., 0.))
-            velocity = (0., 0.)
-            if previous and fresh:
-                dt = now - previous[0]
-                if .005 <= dt <= .2:
-                    raw = tuple((a - b) / dt for a, b in zip(hand.pinch_point, previous[1]))
-                    velocity = tuple(previous[2][i] * .5 + raw[i] * .5 for i in (0, 1))
-            elif previous:
-                velocity = previous[2]
-            if fresh:
-                self._last[hand.track_id] = now, hand.pinch_point, velocity
             was = self._pinched.get(hand.track_id, False)
             self._pinched[hand.track_id] = hand.pinch_ratio < (.40 if was else .25)
-        self._last = {k: v for k, v in self._last.items() if k in present}
 
         if self.active:
             mode, identity = self.active
@@ -333,39 +348,56 @@ class HandInteractionEngine:
                     return
                 identity = hand.track_id
                 self.active = mode, identity
-                # No throw speed may be carried across an identity interruption.
-                release_velocities[identity] = (0., 0.)
-                self._last.pop(identity, None)
             self._missing_at = None
             self._rebind = None
             self._held_hand = hand
             if fresh:
                 self._last_seen_at = now
             self._other_ids.update(h.track_id for h in hands if h.track_id != identity)
+            if mode == 'ball':
+                if hand.all_open or hand.open_for_grab:
+                    if fresh:
+                        if self._open_at is not None and now - self._open_at <= .15:
+                            self._release(now, 'released', self._release_velocity)
+                        else:
+                            # Keep the grip's velocity until a second fresh frame confirms release.
+                            self._open_at = now
+                            last_grip, self._swing_sample = self._swing_sample, None
+                            self._release_velocity = (0., 0.)
+                            if (last_grip and now - last_grip[0] <= .12
+                                    and math.hypot(*last_grip[2]) >= self.BALL_RELEASE_MIN_SPEED):
+                                self._release_velocity = last_grip[2]
+                    return
+                self._open_at = None
+                self.actions.move_hold(mode, hand.pinch_point)
+                if fresh:
+                    swing = self._swing_velocity(hand, now)
+                    if any(swing):
+                        self._release(now, 'thrown', swing)
+                return
             if mode == 'palm' and not hand.supports:
-                self._release(now, 'palm_closed')
+                if self._open_at is None:
+                    self._open_at, self._open_samples = now, 0
+                self._open_samples += int(fresh)
+                if (fresh and now - self._open_at >= self.OPEN_SECONDS
+                        and self._open_samples >= 2):
+                    self._release(now, 'palm_closed')
             else:
-                opened = hand.open_for_grab if mode == 'grab' else hand.all_open
-                if mode != 'palm' and opened:
-                    open_seconds = self.GRAB_OPEN_SECONDS if mode == 'grab' else self.OPEN_SECONDS
+                if mode == 'grab' and hand.open_for_grab:
                     if self._open_at is None:
                         self._open_at = now
                         self._open_samples = 0
-                        if mode == 'grab':
-                            self._release_velocity = self._swing_velocity(hand, now) if fresh else (0., 0.)
-                            self._swing_sample = None
-                        else:
-                            self._release_velocity = release_velocities[identity]
+                        self._release_velocity = self._swing_velocity(hand, now) if fresh else (0., 0.)
+                        self._swing_sample = None
                     self._open_samples += int(fresh)
-                    if (fresh and now - self._open_at >= open_seconds
+                    if (fresh and now - self._open_at >= self.GRAB_OPEN_SECONDS
                             and self._open_samples >= self.OPEN_SAMPLES):
-                        thrown = mode == 'grab' and any(self._release_velocity)
+                        thrown = any(self._release_velocity)
                         self._release(now, 'thrown' if thrown else 'released', self._release_velocity)
                     return
                 self._open_at = None
                 self._open_samples = 0
-                point = (hand.palm if mode == 'palm' else
-                         hand.grip_point if mode == 'grab' else hand.pinch_point)
+                point = hand.palm if mode == 'palm' else hand.grip_point
                 self.actions.move_hold(mode, point)
                 if mode == 'grab' and fresh:
                     swing = self._swing_velocity(hand, now)
@@ -381,10 +413,9 @@ class HandInteractionEngine:
                         body.width * .82, body.height * .37)
             for hand in hands:
                 point = hand.pinch_point
-                if self._pinched[hand.track_id]:
-                    if ball and ball.contains(point, 9):
-                        candidate = 'ball', hand.track_id, point
-                        break
+                if self._ball_contact(hand, ball, now, fresh):
+                    candidate = 'ball', hand.track_id, point
+                    break
                 if (hand.grasp_pose and torso.contains(hand.points[4])
                         and torso.contains(hand.points[8])
                         and (self._pinched[hand.track_id] or not hand.petting_tips)):
@@ -393,9 +424,9 @@ class HandInteractionEngine:
                 if hand.supports:
                     px, py = hand.palm
                     left, right = hand.support_span
-                    span = (right - left) / 2 + 8
+                    span = (right - left) / 2 + max(12., body.width * .20)
                     if (abs(body.center[0] - px) <= span
-                            and -max(14., body.height * .30) <= py - body.bottom <= 35):
+                            and -max(14., body.height * .30) <= py - body.bottom <= max(35., body.height * .16)):
                         candidate = 'palm', hand.track_id, hand.palm
                         break
         key = candidate[:2] if candidate else None
@@ -405,20 +436,21 @@ class HandInteractionEngine:
                 self._candidate_samples = 0
             self._candidate_seen_at = now
             self._candidate_samples += int(fresh)
-            dwell = {'grab': .055, 'ball': .12, 'palm': .18}[candidate[0]]
-            if now - self._candidate_at >= dwell and self._candidate_samples >= 2:
+            dwell = .055 if candidate[0] == 'grab' else .12
+            # Ball contact already confirms two fresh poses; it needs no stationary dwell.
+            if candidate[0] == 'ball' or (now - self._candidate_at >= dwell and self._candidate_samples >= 2):
                 if self.actions.begin_hold(candidate[0], candidate[2]):
                     self.active = candidate[:2]
                     self._held_hand = next(h for h in hands if h.track_id == candidate[1])
                     self._last_seen_at = now
                     self._other_ids = {h.track_id for h in hands if h.track_id != candidate[1]}
                     self._rebind = None
-                    if candidate[0] == 'grab':
+                    if candidate[0] in ('grab', 'ball'):
                         self._swing_velocity(self._held_hand, now)
                     self._pets.clear()
                     return
         elif (self._candidate is not None
-              and (self._candidate[0] != 'grab' or now - self._candidate_seen_at > .10
+              and (self._candidate[0] not in ('grab', 'palm') or now - self._candidate_seen_at > .10
                    or self._candidate[1] not in present)):
             self._candidate = None
         if key is None:

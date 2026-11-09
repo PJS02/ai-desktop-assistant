@@ -147,6 +147,12 @@ class ManualControl(QObject):
             log_event('character.manual.rejected', '종료 중인 캐릭터 조작 요청을 보류합니다.',
                       category='캐릭터 상태', trace_id=self.log_trace_id, command=command, reason='closing')
             return
+        cancel_pointer = getattr(host, '_cancel_pointer_input', None)
+        if cancel_pointer is not None:
+            cancel_pointer()
+        action_menu = getattr(host, 'action_menu', None)
+        if action_menu is not None:
+            action_menu.dismiss('manual_command')
         if host.is_dragging:
             log_event('character.manual.rejected', '드래그 중인 캐릭터 조작 요청을 보류합니다.',
                       category='캐릭터 상태', trace_id=self.log_trace_id, command=command, reason='dragging')

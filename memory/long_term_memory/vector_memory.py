@@ -90,6 +90,8 @@ class LongTermMemory:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_name = model_name
         self._embedder = embedder
+        self._embedding_lock = RLock()
+        self._embedding_prepared = False
         # 대화 응답은 별도 스레드에서 처리하므로 SQLite의 스레드 검사를 해제하고 잠근다.
         self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
         self._lock = RLock()
@@ -480,14 +482,23 @@ class LongTermMemory:
         with self._lock:
             self._connection.close()
 
+    def prepare(self) -> None:
+        """워커에서 모델과 첫 추론을 준비한다. 기억 DB에는 쓰지 않는다."""
+        with self._embedding_lock:
+            if not self._embedding_prepared:
+                self._embed("query: 기억 모델 준비 확인")
+
     def _embed(self, text: str) -> list[float]:
         """모델을 처음 필요할 때만 불러와 텍스트 하나를 벡터화한다."""
-        if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
+        with self._embedding_lock:
+            if self._embedder is None:
+                from sentence_transformers import SentenceTransformer
 
-            self._embedder = SentenceTransformer(self.model_name)
-        vector = self._embedder.encode(text, normalize_embeddings=True)
-        return [float(value) for value in vector]
+                self._embedder = SentenceTransformer(self.model_name)
+            vector = self._embedder.encode(text, normalize_embeddings=True)
+            result = [float(value) for value in vector]
+            self._embedding_prepared = True
+            return result
 
     @staticmethod
     def _cosine(left: Iterable[float], right: Iterable[float]) -> float:

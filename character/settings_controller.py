@@ -45,10 +45,15 @@ class SettingsController(QObject):
             self.dialog.deleteLater()
         self.request_id = None
         width, height, personality = load_config()
-        personality_traits = load_personality_traits()
-        if personality_traits is None:
-            from .personality_system import PersonalitySystem
-            personality_traits = PersonalitySystem(personality).personality.to_dict()
+        personality_system = getattr(self.character, 'personality_system', None)
+        if personality_system is not None:
+            personality = personality_system.preset_name
+            personality_traits = personality_system.personality.to_dict()
+        else:
+            personality_traits = load_personality_traits()
+            if personality_traits is None:
+                from .personality_system import PersonalitySystem
+                personality_traits = PersonalitySystem(personality).personality.to_dict()
         tts = self.character.dialogue_system.tts
         try:
             ai = load_ai_settings()
@@ -139,6 +144,9 @@ class SettingsController(QObject):
         self._refresh_dialogue_generation()
         if not accepted:
             self.dialog.status.setText('대사 생성을 시작하지 못했습니다. AI 설정과 진행 중인 대화를 확인해 주세요.')
+        else:
+            seconds = self.character.MANUAL_WINDOW_SELECTION_SECONDS
+            self.dialog.status.setText(f'{seconds:g}초 안에 분석할 다른 창을 클릭해 주세요. 선택하면 대사를 생성합니다.')
 
     def show_recognition(self):
         self.show()

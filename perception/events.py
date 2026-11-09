@@ -43,6 +43,9 @@ class EmotionObservation:
     label: str
     confidence: float
     scores: dict[str, float] = field(default_factory=dict)
+    observation_id: str | int | None = None
+    observed_at: float | None = None
+    model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,11 @@ class PerceptionEvent:
     speech_session: str | None = None
     speech_recognized_at: float | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+    session: str | None = None
+    observation_id: str | int | None = None
+    observed_at: float | None = None
+    camera_status: str | None = None
+    present_fields: frozenset[str] | None = None
 
     @property
     def trace_id(self) -> str | None:
@@ -104,6 +112,8 @@ def _clamp_confidence(value: Any, default: float = 0.0) -> float:
         confidence = float(value)
     except (TypeError, ValueError):
         confidence = default
+    if not math.isfinite(confidence):
+        return default
     return max(0.0, min(1.0, confidence))
 
 
@@ -132,6 +142,9 @@ def _parse_emotion(value: Any) -> EmotionObservation | None:
         label=label,
         confidence=_clamp_confidence(confidence),
         scores=scores,
+        observation_id=_observation_id(value.get('observation_id')),
+        observed_at=_optional_time(value.get('observed_at')),
+        model=str(value['model']) if value.get('model') is not None else None,
     )
 
 
@@ -174,6 +187,10 @@ def _parse_native_event(payload: Mapping[str, Any]) -> PerceptionEvent:
         speech=speech,
         speech_id=speech_id,
         **_speech_metadata(payload.get("speech")),
+        **_observation_metadata(payload),
+        present_fields=frozenset(
+            {'gestures' if key in ('motion', 'motions') else key for key in payload}
+            & {'emotion', 'gestures', 'head_motion', 'attention', 'speech', 'camera_status'}),
         raw=dict(payload),
     )
 
@@ -218,16 +235,50 @@ def _parse_legacy_recognition_state(payload: Mapping[str, Any]) -> PerceptionEve
         speech=speech,
         speech_id=speech_id,
         **_speech_metadata(speech_group),
+        **_observation_metadata(payload),
+        present_fields=frozenset(
+            ({'gestures'} if 'wave' in always or 'hand_gesture' in always else set())
+            | ({'head_motion'} if 'head' in always else set())
+            | ({'emotion'} if 'emotion' in always else set())
+            | ({'attention'} if 'attention' in always else set())
+            | ({'speech'} if 'speech' in payload else set())
+            | ({'camera_status'} if 'camera_status' in payload else set())),
         raw=dict(payload),
     )
 
 
 def _parse_timestamp(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        # 타임스탬프가 없는 기존 송신기와도 호환되도록 수신 시각을 사용한다.
+    if value is None:
         return time.time()
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        raise ValueError('invalid perception timestamp') from None
+    if not math.isfinite(stamp):
+        raise ValueError('invalid perception timestamp')
+    return stamp
+
+
+def _optional_time(value):
+    return None if value is None else _parse_timestamp(value)
+
+
+def _observation_id(value):
+    if value is None or type(value) is int and value >= 0:
+        return value
+    if isinstance(value, str) and 0 < len(value) <= 128:
+        return value
+    raise ValueError('invalid observation identifier')
+
+
+def _observation_metadata(payload):
+    observation = payload.get('observation')
+    observation = observation if isinstance(observation, Mapping) else {}
+    session = observation.get('session')
+    return {'session': str(session) if session is not None else None,
+            'observation_id': _observation_id(observation.get('sequence')),
+            'observed_at': _optional_time(observation.get('observed_at')),
+            'camera_status': _canonical_label(payload.get('camera_status'))}
 
 
 def _parse_speech(value: Any) -> str | None:

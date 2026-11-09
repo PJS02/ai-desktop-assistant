@@ -6,6 +6,8 @@ import math
 import re
 import threading
 
+from app_logging import log_event
+
 
 class ScreenPrivacyError(RuntimeError):
     """A screenshot could not be checked safely; the request must be blocked."""
@@ -29,6 +31,7 @@ KOREAN_PATTERNS = {
 _lock = threading.Lock()
 _analyzer = None
 _ocr = None
+_models_prepared = False
 _PRIVATE_MENU = re.compile(
     r"(?:비밀번호|password|아이디|로그인\s*ID|api[_\s-]?key|access[_\s-]?token)\s*"
     r"(?:변경|바꾸기|수정|설정|재설정|찾기|입력|검색|확인|복사)", re.I,
@@ -92,6 +95,34 @@ def _redact_text(text, known_values):
     for start, end in reversed(merged):
         text = text[:start] + "[REDACTED]" + text[end:]
     return text
+
+
+def prepare(*, cancelled=lambda: False) -> bool:
+    """합성 입력으로 OCR·이름 인식을 차례로 준비한다. 화면 캡처나 API 호출은 없다."""
+    global _ocr, _models_prepared
+    with _lock:
+        if cancelled():
+            return False
+        if _models_prepared:
+            return True
+        import cv2
+        import numpy as np
+        from .ocr_worker import OCRWorker
+
+        if _ocr is None:
+            _ocr = OCRWorker()
+        pixels = np.full((64, 256, 3), 255, dtype=np.uint8)
+        cv2.putText(pixels, "warmup", (8, 45), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9, (0, 0, 0), 2, cv2.LINE_AA)
+        if len(list(_ocr.predict(pixels, return_word_box=True))) != 1:
+            raise ScreenPrivacyError("화면 글자 인식 모델을 준비하지 못했어요")
+        log_event('screen.models.progress', '글자 인식 준비 완료', category='대화·AI',
+                  completed=1, total=2, detail='글자 인식 완료 · 개인정보 인식을 준비하는 중')
+        if cancelled():
+            return False
+        _get_analyzer().analyze(text="모델준비확인", language="ko")
+        _models_prepared = True
+        return True
 
 
 def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None):

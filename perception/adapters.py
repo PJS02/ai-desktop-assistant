@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import uuid
+import math
 from typing import Any, Mapping, Protocol
 
 from .events import SCHEMA_VERSION
@@ -24,6 +26,8 @@ class EmotionModelAdapter:
     ) -> None:
         self.predictor = predictor
         self.source = source
+        self.session = uuid.uuid4().hex
+        self.sequence = 0
         # 외부 모델의 고유 라벨을 내부 라벨로 바꾸되 원본 모델 코드는 수정하지 않는다.
         self.label_aliases = {
             str(key).strip().lower(): str(value).strip().lower()
@@ -48,14 +52,24 @@ class EmotionModelAdapter:
             # confidence를 따로 주지 않는 모델은 클래스별 점수에서 신뢰도를 구한다.
             confidence = scores.get(raw_label, max(scores.values(), default=0.0))
 
+        self.sequence += 1
+        observed_at = time.time() if timestamp is None else float(timestamp)
+        if not math.isfinite(observed_at):
+            raise ValueError('invalid observation timestamp')
+        confidence = float(confidence)
         return {
             "type": "perception",
             "version": SCHEMA_VERSION,
             "source": self.source,
-            "timestamp": time.time() if timestamp is None else float(timestamp),
+            "timestamp": observed_at,
+            "observation": {"session": self.session, "sequence": self.sequence,
+                            "observed_at": observed_at},
             "emotion": {
                 "label": label,
-                "confidence": max(0.0, min(1.0, float(confidence))),
+                "confidence": max(0.0, min(1.0, confidence)) if math.isfinite(confidence) else 0.,
                 "scores": scores,
+                "observation_id": self.sequence,
+                "observed_at": observed_at,
+                "model": self.source,
             },
         }

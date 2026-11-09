@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 import math
 import time
 import json
@@ -20,7 +20,7 @@ class PerceptionController:
         on_dialogue: Callable[[str], None] | None = None,
         emotion_confidence: float = 0.55,
         emotion_samples: int = 3,
-        emotion_cooldown: float = 4.0,
+        emotion_cooldown: float = 8.0,
         reaction_cooldown: float = 3.0,
         max_event_age: float = 5.0,
         time_provider: Callable[[], float] = time.time,
@@ -29,6 +29,7 @@ class PerceptionController:
         on_speech: Callable[[str], None] | None = None,
         on_speech_with_context: Callable[[str, dict], None] | None = None,
         on_dialogue_with_context: Callable[[str, dict], None] | None = None,
+        on_affect: Callable[..., dict] | None = None,
     ) -> None:
         self.mood_system = mood_system
         self.on_dialogue = on_dialogue or (lambda _text: None)
@@ -42,17 +43,13 @@ class PerceptionController:
         self.on_speech = on_speech or (lambda _text: None)
         self.on_speech_with_context = on_speech_with_context
         self.on_dialogue_with_context = on_dialogue_with_context
+        self.on_affect = on_affect
         self.current_trace_id = None
-        self._greeting_sources = {}
         self._last_greeting_at = -math.inf
-        # 얼굴 감정은 프레임마다 흔들릴 수 있으므로 최근 결과를 모아 안정성을 확인한다.
-        self._emotion_history: deque[str] = deque(maxlen=max(1, emotion_samples))
-        self._last_emotion: str | None = None
-        self._last_emotion_at = 0.0
-        self._active_gestures: set[tuple[str, str | None, str]] = set()
-        self._last_reaction_at: dict[str, float] = {}
-        self._last_head_motion: str | None = None
-        self._last_attention: str | None = None
+        self.emotion_samples = max(3, emotion_samples)
+        self._last_emotion_at = -math.inf
+        self._observations = OrderedDict()
+        self._retired_sessions = deque(maxlen=64)
         self._last_speech_key = None
         self._speech_keys = set()
         self._speech_key_history = deque()
@@ -69,16 +66,89 @@ class PerceptionController:
         now = self.time_provider()
         self.current_trace_id = event.trace_id or new_trace_id('perception')
         # 송신기 지연이나 재연결 뒤 밀려온 과거 이벤트가 뒤늦게 반응하지 않도록 한다.
-        if event.timestamp > 0 and now - event.timestamp > self.max_event_age:
+        if not math.isfinite(event.timestamp) or not -.5 <= now - event.timestamp <= self.max_event_age:
             self._reject('event', 'stale', event, age=now - event.timestamp)
             return
         self.last_event = event
-        self._handle_emotion(event, now)
-        self._handle_gestures(event, now)
-        self._handle_head_motion(event, now)
-        self._handle_attention(event)
-        self._handle_speech(event)
-        self._handle_greeting(event, now)
+        fields = event.present_fields
+        if fields is None:
+            fields = {'emotion', 'gestures', 'head_motion', 'attention', 'speech'}
+        if 'speech' in fields:
+            self._handle_speech(event)
+        if event.camera_status in ('off', 'error', 'disconnected'):
+            if event.session is not None and (event.source, event.session) not in self._retired_sessions:
+                self._retired_sessions.append((event.source, event.session))
+            self.reset_observations(event.source)
+            return
+        if not fields.intersection({'emotion', 'gestures', 'head_motion', 'attention'}):
+            return
+        state = self._source_state(event)
+        if state is None:
+            return
+        direct = False
+        if 'gestures' in fields and self._fresh(state, 'gestures', event):
+            direct = self._handle_gestures(event, now, state)
+        if 'head_motion' in fields and self._fresh(state, 'head', event):
+            direct = self._handle_head_motion(event, now, state) or direct
+        if 'attention' in fields and self._fresh(state, 'attention', event):
+            self._handle_attention(event, state)
+        if 'emotion' in fields:
+            self._handle_emotion(event, now, state, .25 if direct else 1.)
+
+    def reset_observations(self, source=None):
+        if source is None:
+            self._observations.clear()
+        else:
+            self._observations.pop(source, None)
+
+    def reset_connection(self, client):
+        for source, state in list(self._observations.items()):
+            if state.get('client') == client:
+                self._observations.pop(source)
+
+    def _source_state(self, event):
+        key = (event.source, event.session)
+        if key in self._retired_sessions:
+            self._reject('event', 'retired_session', event)
+            return None
+        state = self._observations.get(event.source)
+        if state is not None and state['session'] != event.session:
+            self._retired_sessions.append((event.source, state['session']))
+            state = None
+        if state is None:
+            state = {'session': event.session, 'cursors': {}, 'face': None,
+                     'face_applied': None, 'model': None, 'episodes': {},
+                     'model_at': -math.inf, 'cooldowns': {}, 'presence': None, 'attention': None}
+            self._observations[event.source] = state
+        if event.timestamp >= state.get('client_at', -math.inf):
+            state['client'], state['client_at'] = event.raw.get('_perception_client'), event.timestamp
+        self._observations.move_to_end(event.source)
+        while len(self._observations) > 16:
+            self._observations.popitem(last=False)
+        return state
+
+    def _fresh(self, state, channel, event, observation=None):
+        observed = (observation.observed_at if observation is not None else event.observed_at)
+        observed = event.timestamp if observed is None else observed
+        identity = observation.observation_id if observation is not None else event.observation_id
+        if observation is not None and identity is None:
+            self._reject(channel, 'missing_inference_id', event)
+            return False
+        identity = observed if identity is None else identity
+        now = self.time_provider()
+        if not math.isfinite(observed) or not -.5 <= now - observed <= self.max_event_age:
+            self._reject(channel, 'stale_observation', event)
+            return False
+        previous = state['cursors'].get(channel)
+        if previous is not None:
+            stamp, token = previous
+            if (identity == token or observed < stamp
+                    or isinstance(identity, (int, float)) and isinstance(token, (int, float))
+                    and identity <= token):
+                self._reject(channel, 'duplicate_or_out_of_order', event)
+                return False
+        state['cursors'][channel] = observed, identity
+        return True
 
     def _reject(self, kind, reason, event, **data):
         log_throttled('perception.rejected', '인식 결과 적용 생략',
@@ -107,104 +177,188 @@ class PerceptionController:
                   source=event.source)
         return result
 
-    def _handle_emotion(self, event: PerceptionEvent, now: float) -> None:
+    def _handle_emotion(self, event, now, state, scale=1.):
         observation = event.emotion
-        if observation is None or observation.confidence < self.emotion_confidence:
-            self._emotion_history.clear()
-            if observation is not None:
-                self._reject('emotion', 'low_confidence', event,
-                             label=observation.label, confidence=observation.confidence,
-                             threshold=self.emotion_confidence)
+        if observation is None:
+            if self._fresh(state, 'face_missing', event):
+                state['face'] = state['face_applied'] = None
             return
-        if observation.label == "neutral":
-            self._emotion_history.clear()
-            self._reject('emotion', 'neutral', event)
+        if observation.observation_id is None:
+            state['face'] = state['face_applied'] = None
+            self._reject('face', 'missing_inference_id', event)
             return
+        observed = observation.observed_at if observation.observed_at is not None else event.timestamp
+        if not -.5 <= now - observed <= self.max_event_age:
+            self._reject('face', 'stale_observation', event)
+            return
+        if observation.model != state['model']:
+            latest = state['cursors'].get('face', (-math.inf, None))[0]
+            if observed < max(state['model_at'], latest):
+                self._reject('face', 'old_model_observation', event)
+                return
+            state['model_at'] = observed
+            state['model'] = observation.model
+            state['face'] = state['face_applied'] = None
+            state['cursors'].pop('face', None)
+        if not self._fresh(state, 'face', event, observation):
+            return
+        if observation.confidence < self.emotion_confidence or observation.label == 'neutral':
+            state['face'] = state['face_applied'] = None
+            self._reject('face', 'neutral' if observation.label == 'neutral' else 'low_confidence',
+                         event, label=observation.label, confidence=observation.confidence)
+            return
+        observed = observation.observed_at if observation.observed_at is not None else event.timestamp
+        face = state['face']
+        if face is None or face['label'] != observation.label or observed - face['last'] > 1.5:
+            face = {'label': observation.label, 'since': observed, 'last': observed, 'samples': 0}
+            state['face'] = face
+            state['face_applied'] = None
+        face['last'], face['samples'] = observed, face['samples'] + 1
+        if face['samples'] < self.emotion_samples or observed - face['since'] < 1.:
+            return
+        if now - self._last_emotion_at < self.emotion_cooldown:
+            self._reject('emotion', 'cooldown', event, label=observation.label)
+            return
+        maintenance = .25 if state['face_applied'] == observation.label else 1.
+        self._last_emotion_at = now
+        state['face_applied'] = observation.label
+        self._affect(event, 'face', label=observation.label, quality=observation.confidence,
+                     maintenance=maintenance * scale, observation=observation)
 
-        self._emotion_history.append(observation.label)
-        if len(self._emotion_history) < self._emotion_history.maxlen:
-            self._reject('emotion', 'samples_pending', event,
-                         samples=len(self._emotion_history), required=self._emotion_history.maxlen)
-            return
-        if len(set(self._emotion_history)) != 1:
-            self._reject('emotion', 'unstable', event, samples=list(self._emotion_history))
-            return
-        # 동일 감정이 연속으로 확인된 경우에만 캐릭터 기분에 반영한다.
-        if self._last_emotion == observation.label and now - self._last_emotion_at < self.emotion_cooldown:
-            self._reject('emotion', 'cooldown', event, label=observation.label,
-                         remaining=self.emotion_cooldown - (now - self._last_emotion_at))
-            return
+    def _handle_gestures(self, event, now, state):
+        active = {item.label for item in event.gestures if item.label in ('heart', 'thumbs_up', 'ok')}
+        waving = any((item.kind == 'wave' and item.label == 'hello') or item.label == 'wave'
+                     for item in event.gestures)
+        if waving:
+            always = event.raw.get('always', {})
+            wave = always.get('wave', {}) if isinstance(always, dict) else {}
+            started = wave.get('started_at') if isinstance(wave, dict) else None
+            started = self._observation_time(started, event.observed_at or event.timestamp)
+            if -.5 <= now - started <= self.max_event_age:
+                active.add('greeting')
+            else:
+                self._reject('greeting', 'stale_wave', event, started_at=started)
+        return self._episodes(event, now, state, 'hand', active)
 
-        if self.mood_system.on_external_emotion(observation.label, observation.confidence):
-            self._last_emotion = observation.label
-            self._last_emotion_at = now
-            log_event('perception.emotion.applied', '외부 감정 반영', category='사용자 인식',
-                      trace_id=self.current_trace_id, label=observation.label,
-                      confidence=observation.confidence, source=event.source)
-            print(
-                f"[외부 감정 인식] {observation.label} "
-                f"(신뢰도: {observation.confidence:.2f}, 출처: {event.source})"
-            )
+    def _handle_head_motion(self, event, now, state):
+        active = {'head_' + event.head_motion} if event.head_motion in ('agree', 'negative') else set()
+        return self._episodes(event, now, state, 'head', active)
+
+    def _episodes(self, event, now, state, family, active):
+        observed = event.observed_at if event.observed_at is not None else event.timestamp
+        episodes, accepted = state['episodes'], False
+        for key, episode in list(episodes.items()):
+            if key[0] != family:
+                continue
+            if key[1] not in active:
+                if episode['missing'] is None or observed - episode.get('missing_last', observed) > 1.5:
+                    episode['missing'] = observed
+                episode['missing_last'] = observed
+                if not episode['latched'] or observed - episode['missing'] >= .4:
+                    episodes.pop(key)
+        for signal in sorted(active):
+            key = family, signal
+            episode = episodes.get(key)
+            if episode is not None and episode['missing'] is not None:
+                if not episode['latched']:
+                    episode = None
+                else:
+                    episode['missing'] = None
+            if episode is None:
+                episode = {'since': observed, 'last': observed, 'samples': 0,
+                           'latched': False, 'missing': None}
+                episodes[key] = episode
+            if observed - episode['last'] > 1.5:
+                # Tracking gaps do not prove release; require explicit absence to rearm.
+                if not episode['latched']:
+                    episode['since'], episode['samples'] = observed, 0
+            episode['last'], episode['samples'] = observed, episode['samples'] + 1
+            if episode['latched']:
+                continue
+            if signal != 'greeting' and (episode['samples'] < 2 or observed - episode['since'] < .25):
+                continue
+            episode['latched'] = True
+            if signal == 'greeting':
+                sides = sorted({item.side or 'unknown' for item in event.gestures
+                                if item.kind == 'wave' or item.label == 'wave'})
+                log_event('perception.wave.detected', '손 흔들기 감지', category='사용자 인식',
+                          trace_id=self.current_trace_id, sides=sides, source=event.source)
+                print(f"[외부 동작 인식] 손 흔들기 wave/hello ({', '.join(sides)}, 출처: {event.source})")
+            last = self._last_greeting_at if signal == 'greeting' else state['cooldowns'].get(signal, -math.inf)
+            cooldown = self.greeting_cooldown if signal == 'greeting' else self.reaction_cooldown
+            if now - last < cooldown:
+                self._reject(signal, 'cooldown', event)
+                if signal == 'greeting':
+                    print('[사용자 인사] 재인사 대기 중: 반복 재생을 생략함')
+                continue
+            state['cooldowns'][signal] = now
+            if signal == 'greeting':
+                self._last_greeting_at = now
+            confidences = [item.confidence for item in event.gestures
+                           if item.label == signal and item.confidence is not None]
+            result = self._affect(event, signal, quality=min(confidences, default=1.))
+            accepted = result.get('accepted', False) or accepted
+            if signal == 'greeting' and result.get('accepted'):
+                self._callback(self.on_greeting, event, 'greeting')
+        return accepted
+
+    def _handle_attention(self, event, state):
+        observed = event.observed_at if event.observed_at is not None else event.timestamp
+        attention = event.attention if event.attention in ('screen', 'away') else None
+        previous = state['attention']
+        if previous is None or previous['value'] != attention or observed - previous['last'] > 1.5:
+            previous = {'value': attention, 'since': observed, 'last': observed}
+            state['attention'] = previous
+        previous['last'] = observed
+        if attention is None:
+            if state['presence'] is not None:
+                log_event('perception.attention.changed', '사용자 관측 상태 불명',
+                          category='사용자 인식', trace_id=self.current_trace_id,
+                          previous=state['presence'], current=None, source=event.source)
+            state['presence'] = None
+            return
+        if observed - previous['since'] < (5. if attention == 'away' else 1.):
+            return
+        if state['presence'] != attention:
+            log_event('perception.attention.changed', '사용자 주의 상태 변경',
+                      category='사용자 인식', trace_id=self.current_trace_id,
+                      previous=state['presence'], current=attention, source=event.source)
+            state['presence'] = attention
+        # Existing character-idle pressure owns absence; no second OCC penalty.
+
+    def _affect(self, event, signal, *, label=None, quality=1., maintenance=1., observation=None):
+        identity = observation.observation_id if observation is not None else event.observation_id
+        identity = event.timestamp if identity is None else identity
+        model = observation.model if observation is not None else ''
+        event_id = f'{event.source}:{event.session}:{model}:{identity}:{signal}:{label or ""}'
+        context = {'event_id': event_id, 'label': label, 'quality': quality,
+                   'maintenance': maintenance,
+                   'perception_context': {'source': event.source, 'session': event.session,
+                                          'observed_at': (observation.observed_at if observation is not None
+                                                          else event.observed_at) or event.timestamp,
+                                          'trace_id': self.current_trace_id}}
+        handler = self.on_affect or getattr(self.mood_system, 'on_interaction', None)
+        if handler is not None:
+            result = handler('user_' + signal, **context)
+        # Compatibility for lightweight consumers without an OCC implementation.
+        elif signal == 'face':
+            accepted = self.mood_system.on_external_emotion(label, quality)
+            result = {'accepted': accepted}
+        elif signal.startswith('head_'):
+            result = {'accepted': False}
         else:
-            self._reject('emotion', 'mood_rejected', event, label=observation.label)
-
-    def _handle_gestures(self, event: PerceptionEvent, now: float) -> None:
-        active = {(item.kind, item.side, item.label) for item in event.gestures}
-        # 현재 프레임에서 새로 시작된 동작만 처리해 손을 든 동안 말풍선이 반복되지 않게 한다.
-        for kind, side, label in active - self._active_gestures:
-            reaction_key = f"{kind}:{side}:{label}"
-            if now - self._last_reaction_at.get(reaction_key, 0.0) < self.reaction_cooldown:
-                self._reject('gesture', 'cooldown', event, gesture=reaction_key)
-                continue
-            message = self._gesture_message(kind, label)
-            if message is None:
-                if kind != 'wave' and label not in ('hello', 'wave'):
-                    self._reject('gesture', 'unmapped', event, gesture=reaction_key)
-                continue
-            # 실제 MoodSystem은 제스처 이름까지 XAI 판단 근거로 남기고,
-            # 단순 테스트/외부 구현체는 기존 on_click 계약을 그대로 사용한다.
-            self._record_positive_gesture(label)
-            self._callback(self.on_dialogue, event, 'gesture', message)
-            self._last_reaction_at[reaction_key] = now
-            print(f"[외부 동작 인식] {kind}/{label} ({side or 'unknown'})")
-        self._active_gestures = active
-
-    def _handle_head_motion(self, event: PerceptionEvent, now: float) -> None:
-        label = event.head_motion
-        if label is None:
-            self._last_head_motion = None
-            return
-        if label == self._last_head_motion:
-            # 여러 프레임에 유지되는 동일한 고개 동작은 한 번만 반응한다.
-            self._reject('head_motion', 'duplicate', event, label=label)
-            return
-        self._last_head_motion = label
-        reaction_key = f"head:{label}"
-        if now - self._last_reaction_at.get(reaction_key, 0.0) < self.reaction_cooldown:
-            self._reject('head_motion', 'cooldown', event, label=label)
-            return
-        message = {
-            "agree": "응, 그렇게 해보자!",
-            "negative": "알겠어. 다른 방법을 생각해볼게.",
-        }.get(label)
-        if message:
-            self._callback(self.on_dialogue, event, 'head_motion', message)
-            self._last_reaction_at[reaction_key] = now
-            print(f"[외부 고개 동작 인식] {label}")
-
-    def _handle_attention(self, event: PerceptionEvent) -> None:
-        attention = event.attention
-        if attention == self._last_attention:
-            # 자리를 비운 상태 자체가 아니라 상태가 바뀌는 순간만 처리한다.
-            return
-        previous = self._last_attention
-        self._last_attention = attention
-        log_event('perception.attention.changed', '사용자 주의 상태 변경',
-                  category='사용자 인식', trace_id=self.current_trace_id,
-                  previous=previous, current=attention, source=event.source)
-        if attention == "away":
-            self.mood_system.on_idle()
-            print("[외부 상태 인식] 사용자가 자리를 비움")
+            self.mood_system.on_click()
+            result = {'accepted': True}
+        if not isinstance(result, dict):
+            result = {'accepted': bool(result)}
+        log_event('perception.affect.result', '인식 감정 처리 결과', category='사용자 인식',
+                  trace_id=self.current_trace_id, event_id=event_id, signal=signal, label=label,
+                  source=event.source, quality=quality, maintenance=maintenance,
+                  outcome='accepted' if result.get('accepted') else 'blocked',
+                  reason=result.get('appraisal', {}).get('reason'),
+                  applied=bool(result.get('applied')), occ_changes=result.get('changes', {}),
+                  arousal_change=result.get('appraisal', {}).get('applied_arousal', 0.))
+        return result
 
     def _handle_speech(self, event: PerceptionEvent) -> bool:
         if event.speech is None or not event.speech_final:
@@ -235,7 +389,7 @@ class PerceptionController:
             self._reject('speech', 'tts_suppressed', event, ignore_until=self._speech_ignore_until)
             return False
         if observed is not None and (
-                now - observed > self.max_event_age or observed < self._speech_ignore_until):
+                not -.5 <= now - observed <= self.max_event_age or observed < self._speech_ignore_until):
             self._reject('speech', 'stale_or_playback_tail', event, recognized_at=observed)
             return False
         speech_trace_id = event.speech_trace_id or self.current_trace_id
@@ -260,50 +414,6 @@ class PerceptionController:
                   category='사용자 인식', speaking=self._speech_suppressed,
                   ignore_until=self._speech_ignore_until)
 
-    def _record_positive_gesture(self, label):
-        if hasattr(self.mood_system, "on_positive_gesture"):
-            self.mood_system.on_positive_gesture(label)
-        else:
-            self.mood_system.on_click()
-
     @staticmethod
     def _observation_time(value, fallback):
         return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else fallback
-
-    def _handle_greeting(self, event, now):
-        state = self._greeting_sources.setdefault(event.source, {'active': False})
-        waving = any((item.kind == 'wave' and item.label == 'hello')
-                     or item.label == 'wave' for item in event.gestures)
-        newly_waving = waving and not state['active']
-        state['active'] = waving
-        if not newly_waving:
-            return
-        always = event.raw.get('always', {})
-        wave = always.get('wave', {}) if isinstance(always, dict) else {}
-        observed = wave.get('started_at') if isinstance(wave, dict) else None
-        started_at = self._observation_time(observed, event.timestamp)
-        if not 0 <= now - started_at <= self.max_event_age:
-            self._reject('greeting', 'stale_wave', event, started_at=started_at)
-            return
-        # Detection is logged even if animation is suppressed by the cooldown.
-        sides = sorted({item.side or 'unknown' for item in event.gestures
-                        if item.kind == 'wave' or item.label == 'wave'})
-        log_event('perception.wave.detected', '손 흔들기 감지', category='사용자 인식',
-                  trace_id=self.current_trace_id, sides=sides, source=event.source)
-        print(f"[외부 동작 인식] 손 흔들기 wave/hello ({', '.join(sides)}, 출처: {event.source})")
-        if now - self._last_greeting_at < self.greeting_cooldown:
-            self._reject('greeting', 'cooldown', event,
-                         remaining=self.greeting_cooldown - (now - self._last_greeting_at))
-            print("[사용자 인사] 재인사 대기 중: 손 흔들기는 감지했지만 반복 재생을 생략함")
-            return
-        self._last_greeting_at = now
-        self._record_positive_gesture('greeting')
-        self._callback(self.on_greeting, event, 'greeting')
-
-    @staticmethod
-    def _gesture_message(kind: str, label: str) -> str | None:
-        return {
-            "thumbs_up": "좋아! 👍",
-            "heart": "나도 반가워! 💛",
-            "ok": "확인했어! 👌",
-        }.get(label)
