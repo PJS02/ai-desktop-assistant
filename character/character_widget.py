@@ -699,6 +699,8 @@ class CharacterWidget(QLabel):
 
     @pyqtSlot(object)
     def _handle_perception_payload(self, payload):
+        if getattr(self, '_startup_choice_pending', False):
+            return
         if self.rps_game is not None and self.rps_game.isVisible():
             self.rps_game.handle_payload(payload)
         if CharacterWidget._cham_game_active(self):
@@ -1142,6 +1144,8 @@ class CharacterWidget(QLabel):
     
     def _on_activity_monitor(self, *, manual=False):
         """Start ambient work only when the user conversation has released the UI."""
+        if getattr(self, '_startup_choice_pending', False):
+            return False
         reason = ('detection_disabled' if not manual and not getattr(self, 'auto_program_detection', True)
                   else 'context_unavailable' if not HAS_CONTEXT else 'api_key_missing' if not self.gemini_config.get('api_key')
                   else 'closing' if getattr(self, '_character_closing', False)
@@ -1424,6 +1428,8 @@ class CharacterWidget(QLabel):
             experience(self, "wake", follow="wake_settle")
 
     def update_mood(self):
+        if getattr(self, '_startup_choice_pending', False):
+            return
         if self.is_dragging or self.is_moving:
             if self.rig_view is not None:
                 self.update_action(self.mood_system.decide_emotion())

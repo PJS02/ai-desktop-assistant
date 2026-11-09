@@ -393,9 +393,6 @@ class PreparationOverlay(QWidget):
         if not self.status.settled:
             self._completed = False
             self.hide_timer.stop()
-        elif (not self._completed and not self.hide_timer.isActive()
-              and not self.details_popup.isVisible()):
-            self.hide_timer.start()
         self.reposition()
 
     def _show_details(self):
@@ -461,6 +458,7 @@ class PreparationOverlay(QWidget):
 
     def hideEvent(self, event):
         self.details_popup.hide()
+        self.hide_timer.stop()
         super().hideEvent(event)
 
     def reposition(self):
@@ -478,6 +476,8 @@ class PreparationOverlay(QWidget):
         self.move(place_above_character(anchor, self.size(), screen.availableGeometry(), avoid, gap=8))
         if not self.isVisible():
             self.show()
+        if self.status.settled and not self.hide_timer.isActive() and not self.details_popup.isVisible():
+            self.hide_timer.start()
         if not self.follow_timer.isActive():
             self.follow_timer.start()
         if self.details_popup.isVisible():

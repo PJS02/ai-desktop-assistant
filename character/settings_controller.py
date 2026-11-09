@@ -44,10 +44,15 @@ class SettingsController(QObject):
             self.dialog.deleteLater()
         self.request_id = None
         width, height, personality = load_config()
-        personality_traits = load_personality_traits()
-        if personality_traits is None:
-            from .personality_system import PersonalitySystem
-            personality_traits = PersonalitySystem(personality).personality.to_dict()
+        personality_system = getattr(self.character, 'personality_system', None)
+        if personality_system is not None:
+            personality = personality_system.preset_name
+            personality_traits = personality_system.personality.to_dict()
+        else:
+            personality_traits = load_personality_traits()
+            if personality_traits is None:
+                from .personality_system import PersonalitySystem
+                personality_traits = PersonalitySystem(personality).personality.to_dict()
         tts = self.character.dialogue_system.tts
         try:
             ai = load_ai_settings()

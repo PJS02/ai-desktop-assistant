@@ -342,6 +342,7 @@ def main():
                                           load_hand_overlay_options, load_personality_traits,
                                           load_dialogue_options)
     from character.settings_controller import SettingsController
+    from character.startup_personality import StartupPersonalityDialog
     from hand_overlay.controller import HandOverlayController
     from hand_overlay.interaction_host import HandInteractionController
     from character.log_console import AppLogManager, LogWindow
@@ -371,16 +372,32 @@ def main():
         on_rps_command=mediapipe_manager.send_game_command,
         character_options=load_character_options(),
     )
+    character._startup_choice_pending = True
     character.preparation_status = preparation
     preparation.configure_hands(load_hand_overlay_options()['enabled'])
     hand_overlay = HandOverlayController(character.perception_receiver, mediapipe_manager,
                                          character, load_hand_overlay_options())
+    hand_overlay.timer.stop()
     character.hand_overlay = hand_overlay
     character.hand_interactions = HandInteractionController(character, hand_overlay)
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
     character.preparation_overlay = PreparationOverlay(preparation, character)
-    character.show()
+    picker = StartupPersonalityDialog(personality)
+
+    def start_character(selected):
+        if selected != personality:
+            character.personality_system.load_preset(selected)
+        character._startup_choice_pending = False
+        character._mark_character_interaction(appraise_wake=False)
+        character.show()
+        if hand_overlay.options['enabled']:
+            hand_overlay.timer.start()
+        picker.accept()
+
+    picker.start_requested.connect(start_character)
+    picker.rejected.connect(app.quit)
+    picker.show()
     QTimer.singleShot(0, character.dialogue_system.tts.prepare)
 
     # 캐릭터의 인식 수신기가 준비된 다음 인식 작업을 실행한다.
@@ -397,6 +414,8 @@ def main():
         return exit_code
     finally:
         # 예외나 외부 종료로 aboutToQuit 신호가 누락되어도 자식 프로세스를 정리한다.
+        if character._startup_choice_pending:
+            character.close()
         hand_overlay.stop()
         mediapipe_manager.stop()
         log_window.shutdown()
