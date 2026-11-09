@@ -14,7 +14,7 @@ from app_logging import log_event
 from PIL import Image
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
-from PyQt6.QtGui import QImage, QPainter, QPixmap, QSurfaceFormat, QVector2D, QVector3D
+from PyQt6.QtGui import QImage, QPainter, QPainterPath, QPixmap, QSurfaceFormat, QVector2D, QVector3D, QVector4D
 from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
                            QOpenGLTexture, QOpenGLVersionFunctionsFactory,
                            QOpenGLVersionProfile, QOpenGLFramebufferObject)
@@ -25,17 +25,24 @@ from .texture_cache import BoundedTextureCache
 
 
 _VERTEX = """attribute vec2 pos;attribute vec2 uv;uniform vec2 viewport;
-varying vec2 tex;void main(){gl_Position=vec4(pos.x/viewport.x*2.0-1.0,
-1.0-pos.y/viewport.y*2.0,0.0,1.0);tex=uv;}"""
+uniform vec2 sceneOffset;varying vec2 stagePoint;
+varying vec2 tex;void main(){stagePoint=pos+sceneOffset;
+gl_Position=vec4(stagePoint.x/viewport.x*2.0-1.0,
+1.0-stagePoint.y/viewport.y*2.0,0.0,1.0);tex=uv;}"""
 _FRAGMENT = """uniform sampler2D image;uniform sampler2D replacement;
 uniform sampler2D bodyNegativeLower;uniform sampler2D bodyNegativeUpper;
 uniform float replacementAmount;uniform float bodyBlendEnabled;
 uniform float bodyPositiveWeight;uniform float sourceClipEnabled;
 uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;
+uniform vec4 occlusion0;uniform vec4 occlusion1;uniform vec4 occlusion2;uniform vec4 occlusion3;
+uniform vec4 revealEllipse;varying vec2 stagePoint;
 uniform vec3 skinOffset;uniform vec3 replacementSkinOffset;
 uniform vec2 skinCenter;uniform vec2 skinRadius;
 uniform vec2 replacementSkinCenter;uniform vec2 replacementSkinRadius;
 varying vec2 tex;
+bool covered(vec4 rect){
+ return stagePoint.x>=rect.x&&stagePoint.y>=rect.y&&stagePoint.x<=rect.z&&stagePoint.y<=rect.w;
+}
 vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
  if(color.a<0.001||dot(abs(offset),vec3(1.0))<0.000001)return color;
  vec3 rgb=color.rgb/color.a;
@@ -47,7 +54,14 @@ vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
  if(mask<0.001)return color;
  return vec4(clamp(rgb+offset*mask,0.0,1.0)*color.a,color.a);
 }
-void main(){if(sourceClipEnabled>0.5){float axial=
+void main(){
+bool reveal=false;
+if(revealEllipse.z>0.0&&revealEllipse.w>0.0){
+ vec2 q=(stagePoint-revealEllipse.xy)/revealEllipse.zw;
+ reveal=dot(q,q)<1.0;
+}
+if(!reveal&&(covered(occlusion0)||covered(occlusion1)||covered(occlusion2)||covered(occlusion3)))discard;
+if(sourceClipEnabled>0.5){float axial=
 dot(tex,sourceClipAxis.xy)+sourceClipAxis.z;if(axial<sourceClipBounds.x||
 axial>sourceClipBounds.y)discard;}
 vec4 base=skinTone(texture2D(image,tex),skinOffset,skinCenter,skinRadius);
@@ -64,7 +78,7 @@ _GL_BLEND, _GL_DEPTH_TEST, _GL_CULL_FACE = 0x0BE2, 0x0B71, 0x0B44
 _GL_ONE, _GL_ONE_MINUS_SRC_ALPHA = 1, 0x0303
 _GL_FLOAT, _GL_TRIANGLES = 0x1406, 0x0004
 _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
-_ACTIONS = {"idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land"}
+_ACTIONS = {"idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate"}
 
 
 def _texture_storage_bytes(part):
@@ -78,6 +92,7 @@ def _texture_storage_bytes(part):
 
 
 class CloudyRigView(QOpenGLWidget):
+    frame_requested = pyqtSignal()
     animation_finished = pyqtSignal()
     pose_bounds_changed = pyqtSignal()
     failed = pyqtSignal(str)
@@ -129,9 +144,11 @@ class CloudyRigView(QOpenGLWidget):
         self._finished = False
         self._fixed_state = None
         self._last_plan = None
+        self._scene_layers = {}
         self._last_paint_time = time.perf_counter()
         self._overlay = QPixmap()
         self._debug_painter = None
+        self._decoration_painter = None
         self._contact_painter = None
         self._diagnostic_fbo = None
         self._character_pixel_rect = None
@@ -142,6 +159,58 @@ class CloudyRigView(QOpenGLWidget):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
         self._timer.start(33)
+
+    def set_decoration_painter(self, callback):
+        self._decoration_painter = callback
+        self.update()
+
+    def set_scene_layer(self, name, *, offset=(0., 0.), occlusions=(), reveal=None, animated=False, input_margin=0.):
+        """Compose in logical widget pixels without moving/masking the native window."""
+        self._scene_layers[name] = dict(offset=offset, occlusions=tuple(QRectF(r) for r in occlusions),
+                                        reveal=reveal, animated=animated, input_margin=input_margin)
+        interval = 16 if any(v['animated'] for v in self._scene_layers.values()) else 33
+        if self._timer.interval() != interval:
+            self._timer.setInterval(interval)
+        self.update()
+
+    def clear_scene_layer(self, name):
+        self._scene_layers.pop(name, None)
+        interval = 16 if any(v['animated'] for v in self._scene_layers.values()) else 33
+        if self._timer.interval() != interval:
+            self._timer.setInterval(interval)
+        self.update()
+
+    def scene_contains(self, point, body):
+        dx = sum(v['offset'][0] for v in self._scene_layers.values())
+        dy = sum(v['offset'][1] for v in self._scene_layers.values())
+        margin = max((v.get('input_margin', 0.) for v in self._scene_layers.values()), default=0.)
+        if not QRectF(body).adjusted(-margin, 0, margin, 0).translated(dx, dy).contains(point.x(), point.y()):
+            return False
+        for layer in self._scene_layers.values():
+            if any(r.contains(point.x(), point.y()) for r in layer['occlusions']):
+                reveal = layer['reveal']
+                if not reveal or reveal[2] <= 0 or reveal[3] <= 0:
+                    return False
+                if ((point.x()-reveal[0])/reveal[2])**2 + ((point.y()-reveal[1])/reveal[3])**2 >= 1:
+                    return False
+        return True
+
+    def _scene_uniforms(self, width, height, dpr, enabled):
+        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
+        sx, sy = 360 * dpr / max(1, vw), 540 * dpr / max(1, vh)
+        ox, oy = (width-vw)/2/dpr, (height-vh)/2/dpr
+        layers = tuple(self._scene_layers.values()) if enabled else ()
+        dx = sum(v['offset'][0] for v in layers)
+        dy = sum(v['offset'][1] for v in layers)
+        self._program.setUniformValue(self._locations['sceneOffset'], QVector2D(dx*sx, dy*sy))
+        rects = [r for layer in layers for r in layer['occlusions']][:4]
+        for i in range(4):
+            r = rects[i] if i < len(rects) else None
+            values = ((r.left()-ox)*sx, (r.top()-oy)*sy, (r.right()-ox)*sx, (r.bottom()-oy)*sy) if r else (0, 0, -1, -1)
+            self._program.setUniformValue(self._locations[f'occlusion{i}'], QVector4D(*values))
+        reveal = next((v['reveal'] for v in layers if v['reveal']), None)
+        values = ((reveal[0]-ox)*sx, (reveal[1]-oy)*sy, reveal[2]*sx, reveal[3]*sy) if reveal else (0,0,0,0)
+        self._program.setUniformValue(self._locations['revealEllipse'], QVector4D(*values))
 
     def set_action(self, action: str, loop: bool = True):
         action = action if action in _ACTIONS else "idle"
@@ -280,6 +349,7 @@ class CloudyRigView(QOpenGLWidget):
     def _tick(self):
         if self._released or self._error:
             return
+        self.frame_requested.emit()
         duration = _DURATIONS.get(self._action)
         if not self._loop and duration and self._time() >= duration:
             # Clamp just before the periodic source pose wraps back to its start.
@@ -334,6 +404,7 @@ class CloudyRigView(QOpenGLWidget):
                 ("viewport", "image", "replacement", "bodyNegativeLower", "bodyNegativeUpper",
                  "replacementAmount", "bodyBlendEnabled", "bodyPositiveWeight", "opacity",
                  "sourceClipEnabled", "sourceClipAxis", "sourceClipBounds",
+                 "sceneOffset", "occlusion0", "occlusion1", "occlusion2", "occlusion3", "revealEllipse",
                  "skinOffset", "skinCenter", "skinRadius", "replacementSkinOffset",
                  "replacementSkinCenter", "replacementSkinRadius")}
             self._pos = self._program.attributeLocation("pos")
@@ -454,8 +525,13 @@ class CloudyRigView(QOpenGLWidget):
             self._buffer.bind()
             program.enableAttributeArray(self._pos)
             program.enableAttributeArray(self._uv)
-            self._character_pixel_rect = None
-            self._measure_character_pixels(plan, width, height, dpr)
+            self._scene_uniforms(width, height, dpr, False)
+            # Controlled peeks use stable physics bounds; avoid GPU readback on
+            # every animated frame (and don't measure the clipped silhouette).
+            if not any(v['animated'] for v in self._scene_layers.values()) or self._character_pixel_rect is None:
+                self._character_pixel_rect = None
+                self._measure_character_pixels(plan, width, height, dpr)
+            self._scene_uniforms(width, height, dpr, True)
             self._draw_commands(plan['commands'])
             program.disableAttributeArray(self._pos)
             program.disableAttributeArray(self._uv)
@@ -467,14 +543,36 @@ class CloudyRigView(QOpenGLWidget):
             # Publish this frame's body bounds before Qt presents the host. A
             # landing pose can extend the feet beyond the previous fall bounds.
             self.pose_bounds_changed.emit()
-            if not self._overlay.isNull() or self._debug_painter is not None or self._contact_painter is not None:
+            show_diagnostics = not self._scene_layers and (
+                not self._overlay.isNull() or self._debug_painter is not None
+            )
+            if show_diagnostics or self._contact_painter is not None or self._decoration_painter is not None:
                 painter = QPainter(self)
-                if not self._overlay.isNull():
+                if show_diagnostics and not self._overlay.isNull():
                     painter.drawPixmap(self.rect(), self._overlay)
-                if self._debug_painter is not None:
+                if show_diagnostics and self._debug_painter is not None:
                     self._debug_painter(painter)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                if self._scene_layers:
+                    allowed = QPainterPath()
+                    allowed.addRect(QRectF(self.rect()))
+                    for layer in self._scene_layers.values():
+                        clipped = QPainterPath()
+                        for r in layer['occlusions']:
+                            clipped.addRect(r)
+                        reveal = layer['reveal']
+                        if reveal:
+                            hole = QPainterPath()
+                            hole.addEllipse(QRectF(reveal[0]-reveal[2], reveal[1]-reveal[3], reveal[2]*2, reveal[3]*2))
+                            clipped = clipped.subtracted(hole)
+                        allowed = allowed.subtracted(clipped)
+                    painter.setClipPath(allowed)
                 if self._contact_painter is not None:
                     self._contact_painter(painter)
+                if self._decoration_painter is not None:
+                    painter.translate((width-vw)//2/dpr, (height-vh)//2/dpr)
+                    painter.scale(vw/dpr/360, vh/dpr/540)
+                    self._decoration_painter(painter, plan)
                 painter.end()
             self._draw_ms = (time.perf_counter() - t0) * 1000 - self._plan_ms
             self._frames += 1

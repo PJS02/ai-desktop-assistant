@@ -9,6 +9,7 @@ from .config_manager import (load_config, load_character_options, load_personali
                             load_hand_overlay_options, save_hand_overlay_options)
 from .settings_dialog import SettingsDialog
 from .motion_options import DEFAULT_CHARACTER_OPTIONS
+from .game_rules import load_game_rules, save_game_rules
 
 
 class SettingsController(QObject):
@@ -64,6 +65,7 @@ class SettingsController(QObject):
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
+        local['game_rules'] = load_game_rules()
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character,
@@ -238,6 +240,9 @@ class SettingsController(QObject):
                                 trace_id=self.operation_id)
                     self.character.dialogue_system.set_bubble_style(value['style'])
                     self.character.apply_dialogue_options(value)
+                elif section == 'game_rules':
+                    value = save_game_rules(value, trace_id=self.operation_id)
+                    self.character.game_spectator.poll()
                 elif section == 'ai':
                     save_ai_settings(value['api_key'], value['model'], trace_id=self.operation_id)
                     self.character._load_gemini_config()

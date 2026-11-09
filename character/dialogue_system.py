@@ -5,6 +5,8 @@ from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
 from .dialogue_styles import normalize_dialogue_style
 from .dialogue_options import DEFAULT_DIALOGUE_OPTIONS
+from .dialogue_persona import character_voice
+from .game_detection import game_context_instruction
 from PyQt6.QtCore import QRect
 from typing import Optional, List
 import threading
@@ -496,6 +498,7 @@ class DialogueSystem(QObject):
             # receive plain snapshots and never touch character/UI objects.
             prompt = self._build_user_prompt(turn['text'])
             config = dict(self.gemini_config)
+            config['character_voice'] = character_voice(self.character_widget.personality_system)
             register_secret(config.get('api_key', ''))
             completed = sorted(
                 (item for item in self.conversation_history if item['state'] == 'completed'),
@@ -572,7 +575,11 @@ class DialogueSystem(QObject):
         mood = self.character_widget.mood_system
         personality = self.character_widget.personality_system
         history = self.conversation_memory.build_context() or '(이전 대화 없음)'
-        return f"""당신은 사용자의 데스크톱 어시스턴트 AI 캐릭터입니다.
+        spectator = getattr(self.character_widget, 'game_spectator', None)
+        game_context = (game_context_instruction()
+                        if spectator and spectator.activity else '')
+        return f"""{character_voice(personality)}
+{game_context}
 
 캐릭터 성격 (Big Five):
 {personality.get_personality_for_prompt()}
@@ -622,7 +629,7 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                       trace_id=(log_context or {}).get('trace_id'), model=config.get('model'))
             return self._response_provider(prompt, config)
         return request_gemini(prompt, config, response_schema=DIALOGUE_RESPONSE_SCHEMA,
-                              system_instruction=DIALOGUE_SYSTEM_INSTRUCTION,
+                              system_instruction=DIALOGUE_SYSTEM_INSTRUCTION+'\n\n'+config.get('character_voice', character_voice()),
                               log_context=log_context)
 
     @staticmethod

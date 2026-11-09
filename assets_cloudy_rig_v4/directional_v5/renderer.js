@@ -189,12 +189,13 @@ class Renderer{
    let b=a+orientation*bend*(cfg.prefix==='front'&&!near?-1:1);
    const forearmScale=sideWave?1-Math.max(0,Math.min(.2,pose.waveForearmShorten||0)):1;
    let elbow=end(shoulder,38,a),wrist=end(elbow,46*forearmScale,b);
-   if(near&&pose.thinkGesture>0){
+   const chinGesture=Math.max(pose.thinkGesture||0,pose.snackGesture||0);
+   if(near&&chinGesture>0){
     const chinSource={front:[171,282],left:[117,277],right:[253,270]}[cfg.prefix];
     const [,hx,hy,hs]=cfg.head,head=this.bodyPoint({x:180,y:250},pose);
     const chin=rotate({x:head.x+(chinSource[0]-hx)*hs,y:head.y+(chinSource[1]-hy)*hs},pose.lean+pose.headAngle,head);
     const target={x:chin.x+(cfg.prefix==='right'?-18:18),y:chin.y+24};
-    const ik=M.solveIK(shoulder,target,38,46,cfg.prefix==='right'?1:-1),t=M.smoothstep(pose.thinkGesture);
+    const ik=M.solveIK(shoulder,target,38,46,cfg.prefix==='right'?1:-1),t=M.smoothstep(chinGesture);
     elbow={x:mix(elbow.x,ik.knee.x,t),y:mix(elbow.y,ik.knee.y,t)};wrist={x:mix(wrist.x,ik.ankle.x,t),y:mix(wrist.y,ik.ankle.y,t)};
     b=Math.atan2(-(wrist.x-elbow.x),wrist.y-elbow.y)*180/Math.PI;
    }

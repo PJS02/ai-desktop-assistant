@@ -204,15 +204,16 @@ def extract_dialogue(text):
     return ""
 
 
-def build_system_instruction():
+def build_system_instruction(voice=None):
     # 모델 출력 형식을 강제하는 시스템 규칙입니다.
-    return (
+    from character.dialogue_persona import BASE_VOICE
+    return (str(voice or BASE_VOICE) + '\n\n' +
         "당신은 사용자의 PC 활동을 관찰하는 캐릭터입니다. "
         "반드시 아래 JSON 스키마 형식으로만 응답하세요. 다른 설명은 금지합니다.\n\n"
         "스키마: {\"dialogue\": \"문자열\"}\n"
         "규칙:\n"
         "1. 한국어 1~2문장으로 작성.\n"
-        "2. 메타 상황(개발 중) 적극 반영.\n"
+        "2. 입력된 활동에만 반응하고, 개발 중이라는 설정이나 보이지 않는 상황을 지어내지 마세요.\n"
         "3. 활동 분류가 프로세스/창 제목/URL과 맞지 않으면 스스로 적절한 활동으로 재분류하세요.\n"
         "4. JSON 외의 텍스트(인사말, 마크다운 코드 블록 등) 절대 포함 금지.\n"
         "5. 옵션/후보/초안/목록 형태로 나열하지 마세요.\n"
@@ -239,7 +240,7 @@ def call_gemini(prompt, config, image=None, *, log_context=None):
         config,
         image=image,
         response_schema=build_response_schema(),
-        system_instruction=build_system_instruction(),
+        system_instruction=build_system_instruction(config.get('character_voice')),
         log_context=log_context,
     )
 

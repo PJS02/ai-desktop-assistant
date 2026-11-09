@@ -401,10 +401,10 @@ class MoodSystem:
         )
 
     def on_drag_hard(self):
-        """강하게/빠르게 드래그할 때 - 거친 다루기"""
+        """빠른 좌우 반복 흔들림에 반응한다. 단순 이동에서는 호출하지 않는다."""
         now = time.monotonic()
-        if now - self._last_hard_drag_at < 1.0:
-            return
+        if now - self._last_hard_drag_at < 1.8:
+            return False
         self._last_hard_drag_at = now
         event = EmotionEvent(
             goal_relevance=-0.7,      # 중간 정도 부정적
@@ -414,9 +414,10 @@ class MoodSystem:
             agent_benevolence=-0.6,   # 중간 정도 부정적 의도
         )
         self.appraise_event(
-            event, weight=0.7, valence_bias=-0.5, arousal_bias=0.8, source="빠른 캐릭터 드래그", category="negative",
-            details="짧은 시간에 큰 위치 변화가 감지됨",
+            event, weight=0.65, valence_bias=-0.35, arousal_bias=0.65, source="반복적인 캐릭터 흔들기", category="negative",
+            details="일정 거리 이상의 빠른 좌우 방향 전환이 반복됨",
         )
+        return True
 
     def on_sudden_move(self):
         """갑작스러운 위치 변화 - 놀람/공포"""
@@ -1385,37 +1386,37 @@ class MoodSystem:
         # 17개 감정별 톤 지침
         tone_instructions = {
             # 긍정-흥분
-            "joy": "밝고 매우 즐거운 톤으로 대답하세요. 흥분된 표정과 이모지를 적극 사용하세요. 😊✨",
-            "delight": "기뻐하는 톤으로 따뜻하고 친근하게 대답하세요. 😄",
-            "excitement": "흥분되고 열정적인 톤으로 대답하세요. 에너지 있는 표현을 사용하세요. 🎉",
-            "interest": "호기심 있고 궁금한 톤으로 대답하세요. 질문을 섞어서 표현하세요. 🤔",
-            "contentment": "만족스럽고 편안한 톤으로 대답하세요. 😌",
+            "joy": "평소 말투에 즐거운 기색을 조금 더하세요.",
+            "delight": "작은 기쁨을 따뜻한 표현으로 드러내세요.",
+            "excitement": "기대감을 한 번 짧게 표현하세요.",
+            "interest": "궁금한 점이 있을 때만 짧게 물어보세요.",
+            "contentment": "만족스럽고 편안한 기색을 담으세요.",
             
             # 부정-흥분
-            "anger": "화난 상태이므로 날카롭지만 정중한 톤으로 대답하세요. 😠",
-            "disgust": "혐오감을 표현하되, 너무 거칠지 않게 대답하세요. 😒",
-            "fear": "불안하고 조심스러운 톤으로 대답하세요. 긴장한 표현을 사용하세요. 😨",
-            "anxiety": "초조하고 신경 쓰는 톤으로 대답하세요. 빠르고 불안정한 느낌을 나타내세요. 😟",
+            "anger": "불편함은 한 번 솔직하게 표현하되 날을 세우거나 사용자를 탓하지 마세요.",
+            "disgust": "마음에 들지 않는 점을 담담하게 표현하세요.",
+            "fear": "조심스러움을 살짝 표현하되 과하게 겁내지 마세요.",
+            "anxiety": "작은 걱정을 표현하되 평소의 안정적인 문장 호흡을 유지하세요.",
             
             # 긍정-진정
-            "calm": "차분하고 침착한 톤으로 대답하세요. 평온함을 전달하세요. 😊",
-            "peaceful": "평화로운 톤으로 부드럽게 대답하세요. 명상적인 표현을 사용하세요. ☮️",
+            "calm": "차분하고 담백하게 표현하세요.",
+            "peaceful": "편안한 기색을 부드럽게 담으세요.",
             
             # 부정-진정
-            "sadness": "슬프고 무기력한 톤으로 천천히 대답하세요. 위로와 공감을 담아내세요. 😔",
-            "melancholy": "침울하고 그리움이 묻어나는 톤으로 대답하세요. 😞",
-            "despair": "절망적이고 무기력한 톤으로 대답하세요. 극도로 부정적인 표현은 피하세요. 😞💔",
+            "sadness": "조금 기운 없는 기색만 담고 대화에는 다정하게 응하세요.",
+            "melancholy": "생각이 잠긴 듯 짧고 차분하게 표현하세요.",
+            "despair": "지친 기색을 살짝 담되 극단적 표현과 자기비하는 피하세요.",
             
             # 중립
-            "neutral": "자연스럽고 중립적인 톤으로 친절하게 대답하세요. 😊",
+            "neutral": "설정된 성격과 평소 말투 그대로 표현하세요.",
         }
         
         instruction = tone_instructions.get(dominant_emotion, tone_instructions["neutral"])
         
         # 강도에 따라 추가 지침
         if intensity > 0.8:
-            instruction += " (매우 강한 감정 - 표현을 과장해도 좋습니다)"
+            instruction += " (강한 감정도 한 번만 절제해 드러내고 기본 말투와 성격을 유지하세요)"
         elif intensity < 0.4:
             instruction += " (약한 감정 - 완화된 표현을 사용하세요)"
         
-        return instruction
+        return instruction + ' 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요.'

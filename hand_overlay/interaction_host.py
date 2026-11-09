@@ -114,6 +114,8 @@ class CharacterHandActions:
     def available(self):
         c = self.character
         return (not c._character_closing and c.isVisible()
+                and not getattr(getattr(c, 'hide_and_seek', None), 'is_active', False)
+                and not getattr(getattr(c, 'window_presence', None), 'blocks_physics', False)
                 and not c._manual_control_active()
                 and not getattr(c, '_hand_throw_active', False)
                 and QApplication.activePopupWidget() is None
