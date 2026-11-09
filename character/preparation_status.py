@@ -11,6 +11,7 @@ from app_logging import subscribe
 LABELS = {
     'character': '캐릭터 화면', 'tracker': '얼굴·자세 인식', 'emotion': '감정 인식',
     'camera': '카메라', 'microphone': '음성 입력', 'voice': '음성 출력', 'hands': '손 추적',
+    'memory': '장기기억', 'screen': '화면 분석',
 }
 STATE_TEXT = {'waiting': '대기', 'loading': '준비 중', 'ready': '완료',
               'idle': '사용 시 준비', 'off': '꺼짐', 'error': '확인 필요'}
@@ -52,6 +53,12 @@ EVENTS = {
     'tts.model_ready': ('voice', 'ready', '음성 모델 준비 완료'),
     'tts.model_failed': ('voice', 'error', '음성 모델을 준비하지 못했어요'),
     'tts.model_unloaded': ('voice', 'waiting', '음성 모델 준비를 기다리는 중'),
+    'memory.model.loading': ('memory', 'loading', '기억 모델과 첫 검색을 준비하는 중'),
+    'memory.model.ready': ('memory', 'ready', '기억 모델 준비 완료'),
+    'memory.model.failed': ('memory', 'error', '기억 모델을 준비하지 못했어요'),
+    'screen.models.loading': ('screen', 'loading', '글자 인식·개인정보 보호 모델을 준비하는 중'),
+    'screen.models.ready': ('screen', 'ready', '글자 인식·개인정보 보호 준비 완료'),
+    'screen.models.failed': ('screen', 'error', '화면 분석 모델을 준비하지 못했어요'),
 }
 
 
@@ -65,11 +72,15 @@ class PreparationStatus(QObject):
         self.states['character'] = ('loading', '그림과 동작을 불러오는 중')
         self.states['voice'] = ('waiting', '선택한 음성 모델을 준비해요')
         self.states['hands'] = ('off', '손 표시를 켜면 준비해요')
+        self.states['memory'] = ('waiting', '기억 모델을 준비해요')
+        self.states['screen'] = ('idle', '화면 분석을 사용할 때 준비해요')
         self.stage_progress = {key: None for key in LABELS}
         self.voice_enabled = True
         self.voice_model = 'supertonic-3'
         self.ready_voice_models = set()
         self.hands_enabled = False
+        self.screen_enabled = False
+        self.screen_ready = False
         self._event_received.connect(self.accept)
         self._unsubscribe = subscribe(self._receive)
 
@@ -79,6 +90,7 @@ class PreparationStatus(QObject):
     def _receive(self, event):
         if event.event in EVENTS or event.event in (
                 'tts.configuration', 'tts.model_progress', 'tts.synthesis_failed', 'hand_overlay.settings.applied',
+                'screen.models.configuration', 'screen.models.progress',
                 'recognition.process_started', 'recognition.process_exited',
                 'recognition.process_start_failed', 'recognition.process.failed',
                 'recognition.recovery.exhausted'):
@@ -103,7 +115,19 @@ class PreparationStatus(QObject):
 
     def accept(self, event):
         name, data = event.event, event.data
-        if name == 'tts.configuration':
+        if name == 'screen.models.configuration':
+            self.screen_enabled = bool(data['enabled'])
+            state = ('ready' if self.screen_ready else 'waiting') if self.screen_enabled else 'idle'
+            self.set_state('screen', state, '글자 인식·개인정보 보호 준비 완료' if state == 'ready' else
+                           '기억 모델 다음에 화면 분석을 준비해요' if self.screen_enabled else
+                           '화면 분석을 사용할 때 준비해요')
+        elif name == 'screen.models.progress':
+            done, total = data.get('completed'), data.get('total')
+            if (self.screen_enabled and type(done) is int and type(total) is int
+                    and 0 <= done < total):
+                self.set_state('screen', 'loading', str(data.get('detail', '화면 분석을 준비하는 중'))[:160],
+                               progress=(done, total))
+        elif name == 'tts.configuration':
             self.voice_enabled = data['enabled']
             voice = data['voice_id']
             self.voice_model = voice if voice in ('gpt_sovits', 'openvoice_v2') else 'supertonic-3'
@@ -146,6 +170,10 @@ class PreparationStatus(QObject):
                     return
             if key == 'hands' and not self.hands_enabled:
                 return
+            if key == 'screen':
+                self.screen_ready = state == 'ready'
+                if not self.screen_enabled:
+                    return
             # Reopening a camera first releases the old stream.
             if name == 'device.camera.released' and self.states['camera'][0] == 'loading':
                 return

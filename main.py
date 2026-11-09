@@ -337,7 +337,8 @@ def main():
     from character.preparation_status import PreparationOverlay, PreparationStatus
     preparation = PreparationStatus(app)
 
-    from character.character_widget import CharacterWidget
+    from character.character_widget import CharacterWidget, HAS_CONTEXT
+    from character.model_preparation import ModelPreparation
     from character.config_manager import (load_config, load_character_options,
                                           load_hand_overlay_options, load_personality_traits,
                                           load_dialogue_options)
@@ -383,6 +384,9 @@ def main():
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
     character.preparation_overlay = PreparationOverlay(preparation, character)
+    model_preparation = ModelPreparation(character.dialogue_system.long_term_memory,
+                                        screen_enabled=HAS_CONTEXT and character.auto_program_detection)
+    character.model_preparation = model_preparation
     picker = StartupPersonalityDialog(personality)
 
     def start_character(selected):
@@ -399,10 +403,12 @@ def main():
     picker.rejected.connect(app.quit)
     picker.show()
     QTimer.singleShot(0, character.dialogue_system.tts.prepare)
+    QTimer.singleShot(0, model_preparation.start)
 
     # 캐릭터의 인식 수신기가 준비된 다음 인식 작업을 실행한다.
     mediapipe_manager.start()
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
+    app.aboutToQuit.connect(model_preparation.close)
     app.aboutToQuit.connect(hand_overlay.stop)
     app.aboutToQuit.connect(mediapipe_manager.stop)
     app.aboutToQuit.connect(character.preparation_overlay.hide)
@@ -416,6 +422,7 @@ def main():
         # 예외나 외부 종료로 aboutToQuit 신호가 누락되어도 자식 프로세스를 정리한다.
         if character._startup_choice_pending:
             character.close()
+        model_preparation.close()
         hand_overlay.stop()
         mediapipe_manager.stop()
         log_window.shutdown()

@@ -873,6 +873,9 @@ class CharacterWidget(QLabel):
                 log_event('dialogue.automatic_cancelled', '앱 종료로 자동 응답 무효화', category='대화·AI', trace_id=context.get('trace_id'))
             getattr(self, '_automatic_log_contexts', {}).clear()
         self._character_closing = True
+        model_preparation = getattr(self, 'model_preparation', None)
+        if model_preparation is not None:
+            model_preparation.close()
         if (reactions := getattr(self, 'reactions', None)) is not None:
             reactions.cancel()
         self._automatic_request_generation = getattr(self, '_automatic_request_generation', 0) + 1
@@ -1130,6 +1133,9 @@ class CharacterWidget(QLabel):
             self._activity_monitor_timer.stop()
         self.dialogue_system.request_cooldown = options['request_cooldown']
         self.dialogue_system._process_next_input()
+        model_preparation = getattr(self, 'model_preparation', None)
+        if model_preparation is not None:
+            model_preparation.configure_screen(HAS_CONTEXT and self.auto_program_detection)
 
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
