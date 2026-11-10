@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled, new_trace_id
+from character.reactions import react, reaction_mood
 from .interactions import Box, HandInteractionEngine
 
 
@@ -20,46 +21,87 @@ class ContactFeedback(QWidget):
         self.timer.timeout.connect(self.advance)
         self.hide()
 
-    def pulse(self, kind, point):
+    def pulse(self, kind, point=None):
+        if kind == 'pet' and self.timer.isActive():
+            return False
+        character = self.parent()
         self.kind, self.started = kind, time.monotonic()
-        self.point = QPointF(point[0] - self.parent().x(), point[1] - self.parent().y())
-        self.setGeometry(self.parent().rect())
+        self.duration = .8 if kind == 'pet' else .55
+        if kind == 'pet':
+            body = character._physics_body_rect()
+            self.point = QPointF(body.center().x(), max(45, body.top() + 8))
+        else:
+            self.point = QPointF(point[0] - character.x(), point[1] - character.y())
+        self.setGeometry(character.rect())
         self.show()
         self.raise_()
         self.timer.start()
-        self.update()
-
-    def advance(self):
-        if time.monotonic() - self.started >= .55:
-            self.clear()
+        if character.rig_view is not None:
+            character.rig_view.set_contact_painter(self.paint_feedback)
         else:
             self.update()
+        return True
+
+    def advance(self):
+        if time.monotonic() - self.started >= self.duration:
+            self.clear()
+        else:
+            (self.parent().rig_view or self).update()
 
     def clear(self):
+        rig = self.parent().rig_view
+        if self.timer.isActive() and rig is not None:
+            rig.set_contact_painter(None)
         self.timer.stop()
         self.hide()
 
     def paintEvent(self, _event):
-        phase = min(1., (time.monotonic() - self.started) / .55)
+        if self.parent().rig_view is not None:
+            return  # The OpenGL widget composites above sibling QWidgets.
         painter = QPainter(self)
+        self.paint_feedback(painter)
+        painter.end()
+
+    def paint_feedback(self, painter):
+        phase = min(1., (time.monotonic() - self.started) / self.duration)
+        painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setOpacity(1 - phase)
-        p = self.point + QPointF(14 if self.kind == 'pet' else 0, -phase * 18)
         if self.kind == 'pet':
-            path = QPainterPath(p + QPointF(0, 4))
-            path.cubicTo(p + QPointF(-18, -6), p + QPointF(-10, -20), p + QPointF(0, -10))
-            path.cubicTo(p + QPointF(10, -20), p + QPointF(18, -6), p + QPointF(0, 4))
-            painter.setPen(QPen(QColor('#b97589'), 1.2))
-            painter.setBrush(QColor('#ffc6d4'))
-            painter.drawPath(path)
+            path = QPainterPath(QPointF(0, 6))
+            path.cubicTo(QPointF(-27, -10), QPointF(-12, -26), QPointF(0, -14))
+            path.cubicTo(QPointF(12, -26), QPointF(27, -10), QPointF(0, 6))
+            painter.setPen(QPen(QColor('#fff2f6'), 2.))
+            painter.setBrush(QColor('#f34b86'))
+            scale = min(1., self.width() / 150)
+            hearts = (
+                (0, 0, 1., 0., 24),
+                (-24, -1, .70, .06, 12),
+                (24, 1, .54, .12, 20),
+                (-14, -22, .48, .17, 11),
+                (15, -22, .60, .22, 6),
+                (-43, -7, .34, .26, 31),
+                (43, 10, .40, .30, 15),
+            )
+            for offset, height, size, delay, rise in hearts:
+                if phase < delay:
+                    continue
+                flight = (phase - delay) / (1. - delay)
+                painter.save()
+                painter.setOpacity(min(1., (1. - flight) * 2.5))
+                painter.translate(self.point + QPointF(offset * (1 + .15 * flight), height - rise * flight) * scale)
+                painter.scale(size * scale, size * scale)
+                painter.drawPath(path)
+                painter.restore()
         else:
+            p = self.point + QPointF(0, -phase * 18)
+            painter.setOpacity(1 - phase)
             painter.setPen(QPen(QColor('#f0b058'), 2.2, Qt.PenStyle.SolidLine,
                                 Qt.PenCapStyle.RoundCap))
             for i in range(6):
                 angle = i * math.pi / 3
                 ray = QPointF(math.cos(angle), math.sin(angle))
                 painter.drawLine(p + ray * (5 + phase * 8), p + ray * (11 + phase * 8))
-        painter.end()
+        painter.restore()
 
 
 class CharacterHandActions:
@@ -67,8 +109,7 @@ class CharacterHandActions:
         self.character = character
         self.mode = None
         self.ball = None
-        self.feedback = ContactFeedback(character)
-        self._last_feedback = -math.inf
+        self.feedback = character.contact_feedback
 
     def available(self):
         c = self.character
@@ -76,6 +117,7 @@ class CharacterHandActions:
                 and not getattr(getattr(c, 'hide_and_seek', None), 'is_active', False)
                 and not getattr(getattr(c, 'window_presence', None), 'blocks_physics', False)
                 and not c._manual_control_active()
+                and not getattr(c, '_hand_throw_active', False)
                 and QApplication.activePopupWidget() is None
                 and QApplication.activeModalWidget() is None
                 and not (getattr(c, 'rps_game', None) and c.rps_game.isVisible())
@@ -125,6 +167,10 @@ class CharacterHandActions:
             c.update_render(c.current_action)
         self.mode = mode
         c._mark_character_interaction()
+        if mode == 'palm':
+            reactions = getattr(c, 'reactions', None)
+            if reactions is None or not reactions.safe():
+                react(c, "palm")
         log_event('hand_interaction.hold.started', '손으로 대상 잡기 시작',
                   category='캐릭터 상태', mode=mode)
         self.move_hold(mode, point)
@@ -166,18 +212,29 @@ class CharacterHandActions:
             if c._character_closing:
                 c.is_dragging = False
             elif c.is_dragging:
-                c.mouseReleaseEvent(None)  # Existing jump reset, gravity and landing path.
+                if mode == 'grab' and reason == 'thrown':
+                    c.mouseReleaseEvent(None, hand_throw_velocity=velocity)
+                else:
+                    c.mouseReleaseEvent(None)  # Existing jump reset, gravity and landing path.
         if mode:
             log_event('hand_interaction.hold.finished', '손으로 잡은 대상 놓기',
                       category='캐릭터 상태', mode=mode, reason=reason)
 
     def pet(self, speed, elapsed, point):
         c = self.character
+        before = reaction_mood(c)
         c._mark_character_interaction()
-        self.react('pet', point)
+        react(c, "pet", before=before, sustain=True)
+        if self.feedback.pulse('pet'):
+            log_throttled('hand_interaction.head.petted', '손으로 머리 쓰다듬기 인식', interval=2,
+                          category='캐릭터 상태')
 
     def poke(self, point):
         c = self.character
+        before = reaction_mood(c)
+        now = time.monotonic()
+        repeated = now - getattr(self, '_last_poke', -math.inf) <= 3.2
+        self._last_poke = now
         body = self.body_rect()
         direction = 1 if point[0] < body.center[0] else -1
         c._move_timer.stop()
@@ -192,15 +249,12 @@ class CharacterHandActions:
         c.animation_controller.update_base_pos(c.pos())
         c.dialogue_system.update_dialogue_position()
         c._mark_character_interaction()
-        self.react('poke', point)
+        self.feedback.pulse('poke', point)
+        if repeated:
+            react(c, "poke_discomfort" if before[0] < -.24 else "poke_play", before=before)
+        else:
+            react(c, "poke_start", before=before, follow="poke_play" if before[0] >= 0 else None)
         log_event('hand_interaction.cheek.poked', '손끝으로 볼 콕 찌르기', category='캐릭터 상태')
-
-    def react(self, kind, point):
-        now = time.monotonic()
-        if kind == 'pet' and now - self._last_feedback < .4:
-            return
-        self._last_feedback = now
-        self.feedback.pulse(kind, point)
 
 
 class HandInteractionController(QObject):
@@ -216,7 +270,6 @@ class HandInteractionController(QObject):
 
     def interrupt_tracking(self):
         self.engine.interrupt_tracking(self._clock())
-        self.actions.feedback.clear()
 
     def cancel(self, reason='tracking_reset'):
         self.engine.reset(reason, self._clock())

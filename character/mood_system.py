@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
+from .russell_sectors import russell_face
+
 
 class OccEmotionToMood(Enum):
     """OCC 감정 모델과 Mood 시스템 간의 매핑"""
@@ -22,6 +24,19 @@ class OccEmotionToMood(Enum):
     SHAME = "shame"
     GRATITUDE = "gratitude"
     ANGER = "anger"
+
+
+NEGATIVE_OCC_EMOTIONS = frozenset({
+    OccEmotionToMood.DISTRESS, OccEmotionToMood.FEAR,
+    OccEmotionToMood.ANGER, OccEmotionToMood.SHAME,
+})
+
+
+OCC_EMOTION_NAMES = {
+    "joy": "기쁨", "distress": "고통", "hope": "희망", "fear": "두려움",
+    "satisfaction": "만족", "relief": "안도", "pride": "자부심",
+    "shame": "수치심", "gratitude": "감사", "anger": "분노",
+}
 
 
 @dataclass
@@ -133,7 +148,7 @@ class MoodSystem:
     _NEGATIVE_EMOTION_RETENTION = 0.95
     _POSITIVE_EMOTION_RETENTION = 0.94
     
-    def __init__(self, personality_system=None):
+    def __init__(self, personality_system=None, *, on_occ_change=None):
         # Russell 감정 좌표 (Valence, Arousal)
         self.russell = RussellState()
         
@@ -142,6 +157,7 @@ class MoodSystem:
         
         # OCC 감정 강도 (combined_emotion_system과의 연계)
         self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
+        self._on_occ_change = on_occ_change
         
         # Russell 공간에서 17개 감정의 위치 (Valence, Arousal)
         # 코드 상 감정을 정의하는 구간
@@ -902,6 +918,10 @@ class MoodSystem:
             log_event('mood.influence', '감정 사건을 평가했습니다.', category='캐릭터 상태',
                       trace_id=self._last_influence_trace_id, **data)
 
+        # A continuous input can merge into the history item. Report only this step.
+        if occ_changes and category != "recovery" and self._on_occ_change is not None:
+            self._on_occ_change(source, occ_changes)
+
 
     def _apply_occ_to_mood(self) -> None:
         """OCC 강도를 Russell 목표 좌표로 변환하고 짧은 반응만 적용한다."""
@@ -1027,14 +1047,12 @@ class MoodSystem:
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
         # OCC 강도 감소 (부정 감정을 더 천천히 감소)
-        negative_emotions = [OccEmotionToMood.DISTRESS, OccEmotionToMood.FEAR, 
-                            OccEmotionToMood.ANGER, OccEmotionToMood.SHAME]
         positive_emotions = [OccEmotionToMood.JOY, OccEmotionToMood.HOPE, 
                             OccEmotionToMood.SATISFACTION, OccEmotionToMood.RELIEF, 
                             OccEmotionToMood.PRIDE, OccEmotionToMood.GRATITUDE]
         
         for emotion in self.occ_intensities:
-            if emotion in negative_emotions:
+            if emotion in NEGATIVE_OCC_EMOTIONS:
                 self.occ_intensities[emotion] = max(
                     0.0, self.occ_intensities[emotion] * self._NEGATIVE_EMOTION_RETENTION
                 )
@@ -1156,6 +1174,9 @@ class MoodSystem:
         emotion_info = self.decide_emotion()
         self._last_dominant_emotion = emotion_info["emotion"]
         return emotion_info["emotion"]
+
+    def get_display_emotion(self) -> str:
+        return russell_face(self.russell.valence, self.russell.arousal)
 
     def get_russell_state(self) -> Dict[str, float]:
         """현재 Russell 좌표 반환"""

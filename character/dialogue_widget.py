@@ -4,7 +4,7 @@ from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMet
 from PyQt6.QtCore import QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
 from pathlib import Path
 from .dialogue_styles import normalize_dialogue_style
-from .overlay_geometry import place_above_character, place_near_ankles
+from .overlay_geometry import place_above_character, place_beside_character
 
 
 class DialogueBubble(QWidget):
@@ -146,8 +146,7 @@ class DialogueBubble(QWidget):
 
 
 class UserDialogueBubble(DialogueBubble):
-    """Independent user speech with a round body and a right-facing tail: 0>."""
-    TAIL_WIDTH = 14
+    """Independent user speech with a rounded body and no speaker tail."""
 
     def set_style(self, style):
         super().set_style('rounded')
@@ -159,20 +158,14 @@ class UserDialogueBubble(DialogueBubble):
         height_limit = max(70, min(160, self._anchor[3] // 2)) if self._anchor else 160
         self.bubble_height = min(self.bubble_height, height_limit - 10)
         self.text_view.resize(self.text_view.width(), self.bubble_height - self.padding_y * 2)
-        self.setFixedSize(self.bubble_width + 10 + self.TAIL_WIDTH, self.bubble_height + 10)
+        self.setFixedSize(self.bubble_width + 10, self.bubble_height + 10)
 
     def _bubble_path(self):
         body = QRectF(5, 5, self.bubble_width, self.bubble_height)
         radius = min(24, self.bubble_height / 2)
         path = QPainterPath()
         path.addRoundedRect(body, radius, radius)
-        tail = QPainterPath()
-        center = body.center().y()
-        tail.moveTo(body.right() - 2, center - 8)
-        tail.lineTo(body.right() + self.TAIL_WIDTH, center)
-        tail.lineTo(body.right() - 2, center + 8)
-        tail.closeSubpath()
-        return path.united(tail)
+        return path
 
     def set_position_below_character(self, character_x, character_y, character_width,
                                      character_height=100, avoid=None):
@@ -181,7 +174,9 @@ class UserDialogueBubble(DialogueBubble):
         screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
         bounds = screen.geometry() if screen else QRect(0, 0, 1280, 720)
         self._calculate_size(bounds)
-        self.move(place_near_ankles(anchor, self.size(), bounds, avoid))
+        self.move(place_beside_character(anchor, self.size(), bounds, avoid))
+        self.text_view.move(5 + self.padding_x, 5 + self.padding_y)
+        self.update()
 
 
 class DialogueNarrationBox(QWidget):

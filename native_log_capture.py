@@ -169,7 +169,11 @@ class StartupCapture:
         sys.excepthook = self.old_hook
         threading.excepthook = self.old_thread_hook
         for fd, duplicate, reader, terminal in self.redirects:
-            reader.join(2)
+            try:
+                reader.join(2)
+            except KeyboardInterrupt:
+                # A console interrupt during shutdown must not abort restoration.
+                pass
             if reader.is_alive():
                 log_event('logging.native_shutdown_pending', '네이티브 출력 수집 종료 지연', category='오류', level='WARNING', fd=fd)
             else:

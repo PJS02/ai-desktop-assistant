@@ -310,6 +310,22 @@ class LongTermMemory:
         with self._lock:
             return self._connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
 
+    def list_memories(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """저장된 기억을 최신순으로 조회한다. 망각·대체 이력도 포함하며 강화하지 않는다."""
+        if type(limit) is not int or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a nonnegative integer")
+        with self._lock:
+            cursor = self._connection.execute(
+                """SELECT id, text, original_text, created_at, speaker, importance,
+                          emotional_intensity, recall_count, last_recalled_at,
+                          memory_type, retention_policy, strength, superseded_by
+                   FROM memories ORDER BY id DESC LIMIT ? OFFSET ?""", (limit, offset),
+            )
+            columns = [column[0] for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
     def search(self, query: str, limit: int | None = None) -> list[MemorySearchResult]:
         """회상 점수 상위 답변용 후보를 반환한다. 의미 관련성 검증이나 강화는 하지 않는다."""
         limit = self.settings.recall_limit if limit is None else limit

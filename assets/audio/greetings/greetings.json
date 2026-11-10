@@ -1,0 +1,155 @@
+{
+  "engine": "gpt_sovits",
+  "personalities": {
+    "(Default)": [
+      {
+        "text": "안녕. 오늘도 만나서 반가워.",
+        "file": "default/01.wav"
+      },
+      {
+        "text": "안녕. 오늘은 뭘 같이 해볼까?",
+        "file": "default/02.wav"
+      },
+      {
+        "text": "안녕. 오늘도 잘 부탁해.",
+        "file": "default/03.wav"
+      },
+      {
+        "text": "안녕. 지금 무슨 일 하고 있어?",
+        "file": "default/04.wav"
+      },
+      {
+        "text": "안녕. 잘 지냈어?",
+        "file": "default/05.wav"
+      },
+      {
+        "text": "안녕. 필요한 게 있으면 말해 줘.",
+        "file": "default/06.wav"
+      },
+      {
+        "text": "안녕. 오늘도 함께 시작해 보자.",
+        "file": "default/07.wav"
+      }
+    ],
+    "밝고 활발": [
+      {
+        "text": "안녕! 오늘도 신나게 시작해 보자!",
+        "file": "cheerful/01.wav"
+      },
+      {
+        "text": "안녕! 오늘은 무슨 재미있는 일 없어?",
+        "file": "cheerful/02.wav"
+      },
+      {
+        "text": "안녕! 만나니까 기분이 확 좋아졌어!",
+        "file": "cheerful/03.wav"
+      },
+      {
+        "text": "반가워! 오늘도 힘차게 가보자!",
+        "file": "cheerful/04.wav"
+      },
+      {
+        "text": "안녕! 나랑 잠깐 수다 떨래?",
+        "file": "cheerful/05.wav"
+      },
+      {
+        "text": "안녕! 오늘은 뭐부터 해볼까?",
+        "file": "cheerful/06.wav"
+      },
+      {
+        "text": "손 흔들어 줬네! 나도 반갑게 인사할게!",
+        "file": "cheerful/07.wav"
+      }
+    ],
+    "진중하고 신중": [
+      {
+        "text": "안녕. 오늘도 차근차근 시작해 보자.",
+        "file": "thoughtful/01.wav"
+      },
+      {
+        "text": "안녕. 필요한 일이 있으면 말해 줘.",
+        "file": "thoughtful/02.wav"
+      },
+      {
+        "text": "반가워. 오늘 할 일부터 정리해 볼까?",
+        "file": "thoughtful/03.wav"
+      },
+      {
+        "text": "안녕. 서두르지 말고 천천히 해도 괜찮아.",
+        "file": "thoughtful/04.wav"
+      },
+      {
+        "text": "안녕. 집중할 준비가 되면 함께 시작하자.",
+        "file": "thoughtful/05.wav"
+      },
+      {
+        "text": "안녕. 오늘도 잘 부탁해.",
+        "file": "thoughtful/06.wav"
+      },
+      {
+        "text": "안녕. 막히는 일이 있다면 같이 살펴보자.",
+        "file": "thoughtful/07.wav"
+      }
+    ],
+    "친근하고 따뜻": [
+      {
+        "text": "안녕. 오늘 하루는 어땠어?",
+        "file": "warm/01.wav"
+      },
+      {
+        "text": "안녕. 오늘도 네 곁에 있을게.",
+        "file": "warm/02.wav"
+      },
+      {
+        "text": "안녕. 만나서 정말 반가워.",
+        "file": "warm/03.wav"
+      },
+      {
+        "text": "반가워. 오늘 기분은 좀 어때?",
+        "file": "warm/04.wav"
+      },
+      {
+        "text": "안녕. 잠깐 쉬면서 이야기 나눌까?",
+        "file": "warm/05.wav"
+      },
+      {
+        "text": "안녕. 하고 싶은 이야기 있으면 들려줘.",
+        "file": "warm/06.wav"
+      },
+      {
+        "text": "안녕. 오늘도 편하게 지내자.",
+        "file": "warm/07.wav"
+      }
+    ],
+    "창의적이고 자유로움": [
+      {
+        "text": "안녕! 오늘은 뭔가 색다른 걸 해볼까?",
+        "file": "creative/01.wav"
+      },
+      {
+        "text": "안녕! 방금 재미있는 생각이 떠올랐어.",
+        "file": "creative/02.wav"
+      },
+      {
+        "text": "안녕! 오늘은 어떤 아이디어를 펼쳐볼까?",
+        "file": "creative/03.wav"
+      },
+      {
+        "text": "반가워! 익숙한 일도 새롭게 해보면 어때?",
+        "file": "creative/04.wav"
+      },
+      {
+        "text": "안녕! 엉뚱한 생각 하나 나눠도 될까?",
+        "file": "creative/05.wav"
+      },
+      {
+        "text": "안녕! 오늘은 마음 가는 대로 시작해 보자.",
+        "file": "creative/06.wav"
+      },
+      {
+        "text": "반가워! 우리만의 재미있는 일을 찾아보자.",
+        "file": "creative/07.wav"
+      }
+    ]
+  }
+}

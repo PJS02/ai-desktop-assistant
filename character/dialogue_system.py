@@ -4,6 +4,7 @@ from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrati
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
 from .dialogue_styles import normalize_dialogue_style
+from .dialogue_options import DEFAULT_DIALOGUE_OPTIONS
 from .dialogue_persona import character_voice
 from .game_detection import game_context_instruction
 from PyQt6.QtCore import QRect
@@ -94,7 +95,7 @@ class DialogueSystem(QObject):
         
         # 요청 제한 (수동 대화용)
         self.last_request_time = None  # monotonic request start; None allows the first request
-        self.request_cooldown = 10  # 수동 요청 사이 최소 10초 (자동 감지와 분리)
+        self.request_cooldown = DEFAULT_DIALOGUE_OPTIONS['request_cooldown']
         self.is_ai_responding = False  # AI 응답 중인지
     
     def _load_gemini_config(self):
@@ -575,7 +576,7 @@ class DialogueSystem(QObject):
         personality = self.character_widget.personality_system
         history = self.conversation_memory.build_context() or '(이전 대화 없음)'
         spectator = getattr(self.character_widget, 'game_spectator', None)
-        game_context = (game_context_instruction()
+        game_context = (game_context_instruction(spectator.activity)
                         if spectator and spectator.activity else '')
         return f"""{character_voice(personality)}
 {game_context}
@@ -709,8 +710,16 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
     def _flush_ai_response(self, reason):
         pending, self._pending_ai_response = self._pending_ai_response, None
         if pending is None or self._closed:
-            return
+            return False
         text, context, legacy = pending
+        if context.get('game_process') and reason != 'ai_error':
+            spectator = getattr(self.character_widget, 'game_spectator', None)
+            if spectator is None or not spectator.response_is_current(context):
+                log_event('dialogue.automatic_discarded', '음성 대기 중 오래된 게임 반응 폐기',
+                          category='대화·AI', trace_id=context.get('trace_id'), reason='stale_game_response')
+                if context.get('source') and callable(getattr(type(self.tts), 'stop_clip', None)):
+                    self.tts.stop_clip(context['source'])
+                return False
         if reason != 'ai_error':
             self.ai_motion_changed.emit('idle')
         # Count the normal reading interval from display, including delayed audio.
@@ -719,6 +728,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.show_dialogue(text, duration=5000)
         else:
             self.show_dialogue(text, duration=5000, log_context=context)
+        if context.get('game_reaction') and reason != 'ai_error':
+            self.character_widget.game_spectator.play_ai_reaction(context)
         if self.current_user_dialogue is not None:
             self.current_user_dialogue.duration = 5000
             if not self._speaking and not self.current_user_dialogue.is_hovering:
@@ -726,6 +737,7 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.current_user_dialogue.raise_()
         log_event('dialogue.output_displayed', 'AI 답변 말풍선 표시', category='대화·AI',
                   trace_id=context['trace_id'], reason=reason, text=text)
+        return True
 
     def is_conversation_busy(self, *, include_hold=True, include_manual=True):
         """Reserve the character for admitted user turns and their full output."""
@@ -769,7 +781,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         wait_for_audio = (getattr(self.tts, 'sync_bubble', False) is True
                           and getattr(self.tts, 'enabled', True) is not False)
         if not wait_for_audio:
-            self._flush_ai_response('immediate')
+            if self._flush_ai_response('immediate') is False:
+                return
         log_event('dialogue.tts_requested', '대화 음성 출력 요청', category='대화·AI',
                   trace_id=context['trace_id'], text=response_text)
         # Only opt into an explicitly implemented API; Mock/dynamic providers keep speak(text).
@@ -850,7 +863,9 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             return normalized("API 키가 잘못된 것 같아요... 설정을 확인해주시겠어요?", 'error_fallback', status=401)
         elif error and ("403" in response or "Forbidden" in response):
             return normalized("접근 권한이 없네요... 설정을 다시 확인해주세요.", 'error_fallback', status=403)
-        elif error and ("500" in response or "Internal Server Error" in response):
+        elif error and ("503" in response or "Service Unavailable" in response):
+            return normalized("지금 AI 서버가 붐비고 있어. 잠시 후 '실패한 대화 다시 보내기'를 눌러줘.", 'error_fallback', status=503)
+        elif error and ("500" in response or "502" in response or "504" in response or "Internal Server Error" in response):
             return normalized("AI 서버에 문제가 생겼어요... 잠시 후에 다시 시도해주세요.", 'error_fallback', status=500)
         elif error:
             # 일반적인 Gemini 에러

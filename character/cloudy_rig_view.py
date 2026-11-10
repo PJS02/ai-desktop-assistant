@@ -36,18 +36,41 @@ uniform float bodyPositiveWeight;uniform float sourceClipEnabled;
 uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;
 uniform vec4 occlusion0;uniform vec4 occlusion1;uniform vec4 occlusion2;uniform vec4 occlusion3;
 uniform vec4 revealEllipse;varying vec2 stagePoint;
-bool covered(vec4 r){return stagePoint.x>=r.x&&stagePoint.y>=r.y&&stagePoint.x<=r.z&&stagePoint.y<=r.w;}
-varying vec2 tex;void main(){bool reveal=false;
-if(revealEllipse.z>0.0&&revealEllipse.w>0.0){vec2 q=(stagePoint-revealEllipse.xy)/revealEllipse.zw;reveal=dot(q,q)<1.0;}
+uniform vec3 skinOffset;uniform vec3 replacementSkinOffset;
+uniform vec2 skinCenter;uniform vec2 skinRadius;
+uniform vec2 replacementSkinCenter;uniform vec2 replacementSkinRadius;
+varying vec2 tex;
+bool covered(vec4 rect){
+ return stagePoint.x>=rect.x&&stagePoint.y>=rect.y&&stagePoint.x<=rect.z&&stagePoint.y<=rect.w;
+}
+vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
+ if(color.a<0.001||dot(abs(offset),vec3(1.0))<0.000001)return color;
+ vec3 rgb=color.rgb/color.a;
+ float warmth=smoothstep(0.004,0.025,rgb.r-rgb.g)*smoothstep(0.012,0.045,rgb.r-rgb.b);
+ float lightness=smoothstep(0.62,0.82,min(rgb.g,rgb.b));
+ float chroma=max(rgb.r,max(rgb.g,rgb.b))-min(rgb.r,min(rgb.g,rgb.b));
+ float area=1.0-smoothstep(0.88,1.0,length((tex-center)/radius));
+ float mask=warmth*lightness*(1.0-smoothstep(0.14,0.28,chroma))*area;
+ if(mask<0.001)return color;
+ return vec4(clamp(rgb+offset*mask,0.0,1.0)*color.a,color.a);
+}
+void main(){
+bool reveal=false;
+if(revealEllipse.z>0.0&&revealEllipse.w>0.0){
+ vec2 q=(stagePoint-revealEllipse.xy)/revealEllipse.zw;
+ reveal=dot(q,q)<1.0;
+}
 if(!reveal&&(covered(occlusion0)||covered(occlusion1)||covered(occlusion2)||covered(occlusion3)))discard;
 if(sourceClipEnabled>0.5){float axial=
 dot(tex,sourceClipAxis.xy)+sourceClipAxis.z;if(axial<sourceClipBounds.x||
-axial>sourceClipBounds.y)discard;}vec4 base=texture2D(image,tex);
-if(bodyBlendEnabled>0.5){vec4 positive=base+(texture2D(replacement,tex)-base)*
+axial>sourceClipBounds.y)discard;}
+vec4 base=skinTone(texture2D(image,tex),skinOffset,skinCenter,skinRadius);
+vec4 next=skinTone(texture2D(replacement,tex),replacementSkinOffset,replacementSkinCenter,replacementSkinRadius);
+if(bodyBlendEnabled>0.5){vec4 positive=base+(next-base)*
 replacementAmount;vec4 negativeBase=texture2D(bodyNegativeLower,tex);
 vec4 negative=negativeBase+(texture2D(bodyNegativeUpper,tex)-negativeBase)*
 replacementAmount;gl_FragColor=(negative+(positive-negative)*bodyPositiveWeight)*
-opacity;}else{gl_FragColor=(base+(texture2D(replacement,tex)-base)*
+opacity;}else{gl_FragColor=(base+(next-base)*
 replacementAmount)*opacity;}}"""
 
 _GL_COLOR_BUFFER_BIT = 0x4000
@@ -55,7 +78,7 @@ _GL_BLEND, _GL_DEPTH_TEST, _GL_CULL_FACE = 0x0BE2, 0x0B71, 0x0B44
 _GL_ONE, _GL_ONE_MINUS_SRC_ALPHA = 1, 0x0303
 _GL_FLOAT, _GL_TRIANGLES = 0x1406, 0x0004
 _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
-_ACTIONS = {"idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate"}
+_ACTIONS = {"idle", "walk", "run", "wave", "stretch", "arrive", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate", "game_cheer", "game_oops"}
 
 
 def _texture_storage_bytes(part):
@@ -126,6 +149,7 @@ class CloudyRigView(QOpenGLWidget):
         self._overlay = QPixmap()
         self._debug_painter = None
         self._decoration_painter = None
+        self._contact_painter = None
         self._diagnostic_fbo = None
         self._character_pixel_rect = None
         self._frames = 0
@@ -238,6 +262,10 @@ class CloudyRigView(QOpenGLWidget):
         self._debug_painter = callback
         self.update()
 
+    def set_contact_painter(self, callback):
+        self._contact_painter = callback
+        self.update()
+
     def character_rect(self):
         """Map current character meshes to the same viewport used by OpenGL."""
         if self._character_pixel_rect is not None:
@@ -262,6 +290,10 @@ class CloudyRigView(QOpenGLWidget):
                 program.setUniformValue(self._locations[name], float(command[name]))
             program.setUniformValue(self._locations['sourceClipAxis'], QVector3D(*command['sourceClipAxis']))
             program.setUniformValue(self._locations['sourceClipBounds'], QVector2D(*command['sourceClipBounds']))
+            for name in ('skinOffset', 'replacementSkinOffset'):
+                program.setUniformValue(self._locations[name], QVector3D(*command.get(name, (0, 0, 0))))
+            for name in ('skinCenter', 'replacementSkinCenter', 'skinRadius', 'replacementSkinRadius'):
+                program.setUniformValue(self._locations[name], QVector2D(*command.get(name, (.5, .5) if name.endswith('Center') else (1, 1))))
             data = command.get('vertexBytes')
             if data is None:
                 data = array('f', command['vertices']).tobytes()
@@ -372,7 +404,9 @@ class CloudyRigView(QOpenGLWidget):
                 ("viewport", "image", "replacement", "bodyNegativeLower", "bodyNegativeUpper",
                  "replacementAmount", "bodyBlendEnabled", "bodyPositiveWeight", "opacity",
                  "sourceClipEnabled", "sourceClipAxis", "sourceClipBounds",
-                 "sceneOffset", "occlusion0", "occlusion1", "occlusion2", "occlusion3", "revealEllipse")}
+                 "sceneOffset", "occlusion0", "occlusion1", "occlusion2", "occlusion3", "revealEllipse",
+                 "skinOffset", "skinCenter", "skinRadius", "replacementSkinOffset",
+                 "replacementSkinCenter", "replacementSkinRadius")}
             self._pos = self._program.attributeLocation("pos")
             self._uv = self._program.attributeLocation("uv")
             self.context().aboutToBeDestroyed.connect(self._cleanup_gl)
@@ -428,7 +462,9 @@ class CloudyRigView(QOpenGLWidget):
                 head = QImage(self._identities[head_name])
                 if head.isNull():
                     raise RuntimeError(f"Cannot decode effect mask: {head_name}")
-            image = build_effect(name, recipe, head)
+            skin_name = next((c.get('skin') for c in recipe['commands'] if c.get('skin')), None)
+            skin = QImage(self._identities[skin_name]) if skin_name else None
+            image = build_effect(name, recipe, head, skin)
         else:
             image = QImage(identity)
         if image.isNull():
@@ -507,14 +543,17 @@ class CloudyRigView(QOpenGLWidget):
             # Publish this frame's body bounds before Qt presents the host. A
             # landing pose can extend the feet beyond the previous fall bounds.
             self.pose_bounds_changed.emit()
-            if self._decoration_painter or (not self._scene_layers and (not self._overlay.isNull() or self._debug_painter is not None)):
+            show_diagnostics = not self._scene_layers and (
+                not self._overlay.isNull() or self._debug_painter is not None
+            )
+            if show_diagnostics or self._contact_painter is not None or self._decoration_painter is not None:
                 painter = QPainter(self)
-                if not self._scene_layers and not self._overlay.isNull():
+                if show_diagnostics and not self._overlay.isNull():
                     painter.drawPixmap(self.rect(), self._overlay)
-                if not self._scene_layers and self._debug_painter is not None:
+                if show_diagnostics and self._debug_painter is not None:
                     self._debug_painter(painter)
-                if self._decoration_painter:
-                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                if self._scene_layers:
                     allowed = QPainterPath()
                     allowed.addRect(QRectF(self.rect()))
                     for layer in self._scene_layers.values():
@@ -528,6 +567,9 @@ class CloudyRigView(QOpenGLWidget):
                             clipped = clipped.subtracted(hole)
                         allowed = allowed.subtracted(clipped)
                     painter.setClipPath(allowed)
+                if self._contact_painter is not None:
+                    self._contact_painter(painter)
+                if self._decoration_painter is not None:
                     painter.translate((width-vw)//2/dpr, (height-vh)//2/dpr)
                     painter.scale(vw/dpr/360, vh/dpr/540)
                     self._decoration_painter(painter, plan)
@@ -566,6 +608,7 @@ class CloudyRigView(QOpenGLWidget):
                       trace_id=getattr(self.planner, 'log_trace_id', None), **self._diagnostic_snapshot())
             self._released = True
             self._debug_painter = None
+            self._contact_painter = None
             self._timer.stop()
             self._cleanup_gl()
             if hasattr(self.planner, "close"):

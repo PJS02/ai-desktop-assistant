@@ -267,6 +267,7 @@ $RECYCLE.BIN/
 
 # Local Codex experiments and validation
 /integration-validation/
+/output/
 /hand_landmark_lab/verification/
 /hand_landmark_lab/verify_ui.py
 /hand_landmark_lab/live_check.py
@@ -274,12 +275,16 @@ $RECYCLE.BIN/
 /hand_landmark_lab/test_detection_stability.py
 /assets_cloudy_rig_v4/directional_v5/tests/
 /assets_cloudy_rig_v4/directional_v5/validation-*/
+/assets_cloudy_rig_v4/directional_v5/exports/previews-v34/
+/assets_cloudy_rig_v4/directional_v5/textures/tears-v32/
+/assets_cloudy_rig_v4/directional_v5/textures/tears-v33/
 /scripts/validate_cloudy_native.py
 
 # Installed TTS environments, model weights and unpublished release assets
 /.tts-runtime/
 /.tts-models/
 /tts-release/
+/tts_runtime/vendor/GPT_SoVITS/pretrained_models/
 
 
 # End of https://www.toptal.com/developers/gitignore/api/python,windows,visualstudiocode

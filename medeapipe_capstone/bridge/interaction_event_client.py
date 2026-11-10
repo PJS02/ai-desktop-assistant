@@ -33,7 +33,7 @@ class InteractionEventClient:
         if payload.get('type') == 'hand_landmarks':
             return
         # Detailed first/changed observations plus periodic traffic summaries;
-        # fluctuating model scores and air path point counts are not UI events.
+        # fluctuating model scores are not UI events.
         def object_value(value):
             return value if isinstance(value, dict) else {}
         always = object_value(payload.get('always'))
@@ -46,7 +46,7 @@ class InteractionEventClient:
             'emotion': object_value(always.get('emotion')).get('label'),
             'speech': [speech.get('session'), speech.get('sequence')],
             'mode': mode.get('active'),
-            'result': mode.get('result') if mode.get('active') != 'air' else None,
+            'result': mode.get('result'),
             'rps_game': {'session': game.get('session'), 'hands': game.get('hands')} if game else None},
             sort_keys=True, ensure_ascii=False, default=str)
         arguments = dict(category='사용자 인식', trace_id=payload.get('trace_id'),

@@ -3,6 +3,9 @@ from dataclasses import dataclass
 import math
 
 
+PET_HEAD_HEIGHT_RATIO = .40
+
+
 def distance(a, b):
     return math.dist(a, b)
 
@@ -36,6 +39,7 @@ class DisplayedHand:
     track_id: int
     points: tuple  # The actual interpolated desktop positions, in logical pixels.
     landmarks: tuple  # Normalized 3D coordinates, for scale-independent gestures.
+    label: str | None = None
 
     @property
     def pinch_ratio(self):
@@ -73,22 +77,44 @@ class DisplayedHand:
                 and distance(p[4], p[5]) > size * .35)
 
     @property
-    def head_grasp(self):
+    def grasp_pose(self):
         # Both thumb and index bend a little; a fully clenched fist or an open
         # hand is a different gesture. Joint angles are independent of rotation.
-        return (not self.all_open and .20 <= self.finger_bend(1) <= 2.45
+        return (not self.all_open and not self.open_for_grab
+                and .20 <= self.finger_bend(1) <= 2.45
                 and .25 <= self.finger_bend(5) <= 2.45)
 
     @property
-    def pointing(self):
-        return (self.extended[0] and self.finger_bend(5) < .45
-                and not self.thumb_open and self.finger_bend(1) >= .65
-                and all(not self.extended[i] and self.finger_bend(base) >= .65
-                        for i,base in ((1,9),(2,13),(3,17))))
+    def petting_tips(self):
+        wrist, knuckle = self.points[0], self.points[9]
+        dx, dy = knuckle[0] - wrist[0], knuckle[1] - wrist[1]
+        if abs(dx) < 8 or abs(dx) < abs(dy):
+            return ()
+        length_sq = dx * dx + dy * dy
+        tips = []
+        for base in (5, 9, 13, 17):
+            x, y = self.points[base + 3]
+            bx, by = self.points[base]
+            if dx * (x - bx) + dy * (y - by) >= length_sq * .18:
+                tips.append((x, y))
+        # One finger can be hidden or flexed in the edge-on camera view.
+        if len(tips) < 3:
+            return ()
+        across = tuple(dx * y - dy * x for x, y in tips)
+        # A sideways hand shows the fingertips close together in projection.
+        if max(across) - min(across) > length_sq * .55:
+            return ()
+        return tuple(tips)
 
     @property
     def all_open(self):
         return all(self.extended) and self.thumb_open and self.pinch_ratio > .55
+
+    @property
+    def open_for_grab(self):
+        # A relaxed open hand can keep the thumb and index close together.
+        return (all(self.extended) and self.pinch_ratio >= .40
+                and self.finger_bend(1) < .55 and self.finger_bend(5) < .45)
 
     @property
     def fingertips(self):
@@ -119,12 +145,15 @@ class DisplayedHand:
 class HandInteractionEngine:
     """One held target, stable acquisition, release hysteresis and short dropouts.
 
-    Actions are supplied by the character host. Only displayed hands may act;
-    source tokens prevent frozen packets from starting new contacts.
+    Actions are supplied by the character host. Holds require fresh camera
+    samples, while strokes follow the displayed motion between samples.
     """
     HOLD_GRACE_SECONDS = .75
+    GRAB_GRACE_SECONDS = 1.25
     OPEN_SECONDS = .18
+    GRAB_OPEN_SECONDS = .30
     OPEN_SAMPLES = 4
+    SWING_SPEED = 1050.  # Logical screen pixels per second.
 
     def __init__(self, actions):
         self.actions = actions
@@ -133,6 +162,7 @@ class HandInteractionEngine:
         self._last = {}
         self._candidate = None
         self._candidate_at = 0.
+        self._candidate_seen_at = 0.
         self._candidate_samples = 0
         self._missing_at = None
         self._blocked_until = 0.
@@ -147,6 +177,7 @@ class HandInteractionEngine:
         self._last_seen_at = None
         self._other_ids = set()
         self._rebind = None
+        self._swing_sample = None
 
     def reset(self, reason='tracking_lost', now=0.):
         if self.active:
@@ -166,6 +197,7 @@ class HandInteractionEngine:
         self._last_seen_at = None
         self._other_ids.clear()
         self._rebind = None
+        self._swing_sample = None
         self._blocked_until = now + .35
 
     def _release(self, now, reason, velocity=(0., 0.)):
@@ -179,6 +211,7 @@ class HandInteractionEngine:
         self._last_seen_at = None
         self._other_ids.clear()
         self._rebind = None
+        self._swing_sample = None
         self._blocked_until = now + .35
 
     def interrupt_tracking(self, now):
@@ -187,6 +220,7 @@ class HandInteractionEngine:
             self._missing_at = self._last_seen_at if self._last_seen_at is not None else now
         self._open_at = None
         self._open_samples = 0
+        self._swing_sample = None
 
     @staticmethod
     def _anchor(hand):
@@ -198,18 +232,38 @@ class HandInteractionEngine:
         return max(distance(hand.points[0], hand.points[9]),
                    distance(hand.points[5], hand.points[17]), 8.)
 
-    def _near_held_hand(self, hand):
+    def _swing_velocity(self, hand, now):
+        # A moving palm distinguishes a swing from the fingers opening in place.
+        center = self._anchor(hand)
+        previous = self._swing_sample
+        velocity = (0., 0.)
+        swing = (0., 0.)
+        if previous:
+            elapsed = now - previous[0]
+            if .01 <= elapsed <= .15:
+                velocity = tuple((end - start) / elapsed for start, end in zip(previous[1], center))
+                prior = previous[2]
+                speed, prior_speed = math.hypot(*velocity), math.hypot(*prior)
+                if (min(speed, prior_speed) >= self.SWING_SPEED
+                        and sum(a * b for a, b in zip(prior, velocity)) >= .75 * speed * prior_speed):
+                    swing = velocity
+        self._swing_sample = now, center, velocity
+        return swing
+
+    def _near_held_hand(self, hand, now):
         old = self._held_hand
         if old is None:
             return False
         ratio = self._size(hand) / self._size(old)
-        return (.45 <= ratio <= 2.2 and distance(self._anchor(hand), self._anchor(old))
-                <= max(90., self._size(old) * 2.))
+        reach = max(90., self._size(old) * 2.)
+        if self.active[0] == 'grab' and old.label is not None and hand.label == old.label:
+            reach += min(180., (now - self._missing_at) * 450.)
+        return .45 <= ratio <= 2.2 and distance(self._anchor(hand), self._anchor(old)) <= reach
 
     def _find_reappeared_hand(self, hands, now, fresh):
         # A hand already visible alongside the held hand cannot take its place.
         candidates = [h for h in hands if h.track_id not in self._other_ids
-                      and self._near_held_hand(h)]
+                      and self._near_held_hand(h, now)]
         if not candidates or not fresh:
             return None
         best = min(candidates, key=lambda h: distance(self._anchor(h), self._anchor(self._held_hand)))
@@ -253,23 +307,25 @@ class HandInteractionEngine:
 
         if self.active:
             mode, identity = self.active
+            grace = self.GRAB_GRACE_SECONDS if mode == 'grab' else self.HOLD_GRACE_SECONDS
             if not self.actions.hold_valid(mode):
                 self._release(now, 'target_changed')
                 return
             if (self._missing_at is not None
-                    and now - self._missing_at >= self.HOLD_GRACE_SECONDS):
+                    and now - self._missing_at >= grace):
                 self._release(now, 'tracking_lost')
                 return
             hand = next((h for h in hands if h.track_id == identity), None)
-            if hand is not None and self._missing_at is not None and not self._near_held_hand(hand):
+            if hand is not None and self._missing_at is not None and not self._near_held_hand(hand, now):
                 hand = None
             if hand is None:
                 self._candidate = None
                 self._open_at = None
                 self._open_samples = 0
+                self._swing_sample = None
                 if self._missing_at is None:
                     self._missing_at = self._last_seen_at if self._last_seen_at is not None else now
-                if now - self._missing_at >= self.HOLD_GRACE_SECONDS:
+                if now - self._missing_at >= grace:
                     self._release(now, 'tracking_lost')
                     return
                 hand = self._find_reappeared_hand(hands, now, fresh)
@@ -289,36 +345,49 @@ class HandInteractionEngine:
             if mode == 'palm' and not hand.supports:
                 self._release(now, 'palm_closed')
             else:
-                if mode != 'palm' and hand.all_open:
+                opened = hand.open_for_grab if mode == 'grab' else hand.all_open
+                if mode != 'palm' and opened:
+                    open_seconds = self.GRAB_OPEN_SECONDS if mode == 'grab' else self.OPEN_SECONDS
                     if self._open_at is None:
                         self._open_at = now
                         self._open_samples = 0
-                        self._release_velocity = release_velocities[identity]
+                        if mode == 'grab':
+                            self._release_velocity = self._swing_velocity(hand, now) if fresh else (0., 0.)
+                            self._swing_sample = None
+                        else:
+                            self._release_velocity = release_velocities[identity]
                     self._open_samples += int(fresh)
-                    if (now - self._open_at >= self.OPEN_SECONDS
+                    if (fresh and now - self._open_at >= open_seconds
                             and self._open_samples >= self.OPEN_SAMPLES):
-                        self._release(now, 'released', self._release_velocity)
+                        thrown = mode == 'grab' and any(self._release_velocity)
+                        self._release(now, 'thrown' if thrown else 'released', self._release_velocity)
                     return
                 self._open_at = None
                 self._open_samples = 0
                 point = (hand.palm if mode == 'palm' else
                          hand.grip_point if mode == 'grab' else hand.pinch_point)
                 self.actions.move_hold(mode, point)
+                if mode == 'grab' and fresh:
+                    swing = self._swing_velocity(hand, now)
+                    if any(swing):
+                        self._release(now, 'thrown', swing)
             return
 
         body = self.actions.body_rect()
         candidate = None
         if now >= self._blocked_until:
             ball = self.actions.ball_rect()
+            torso = Box(body.x + body.width * .09, body.y + body.height * .45,
+                        body.width * .82, body.height * .37)
             for hand in hands:
                 point = hand.pinch_point
                 if self._pinched[hand.track_id]:
                     if ball and ball.contains(point, 9):
                         candidate = 'ball', hand.track_id, point
                         break
-                head = Box(body.x, body.y, body.width, body.height * .40)
-                if (hand.head_grasp and head.contains(hand.points[4], 4)
-                        and head.contains(hand.points[8], 4)):
+                if (hand.grasp_pose and torso.contains(hand.points[4])
+                        and torso.contains(hand.points[8])
+                        and (self._pinched[hand.track_id] or not hand.petting_tips)):
                     candidate = 'grab', hand.track_id, hand.grip_point
                     break
                 if hand.supports:
@@ -330,13 +399,13 @@ class HandInteractionEngine:
                         candidate = 'palm', hand.track_id, hand.palm
                         break
         key = candidate[:2] if candidate else None
-        if key != self._candidate:
-            self._candidate, self._candidate_at = key, now
-            self._candidate_samples = int(fresh)
-        elif fresh:
-            self._candidate_samples += 1
         if candidate:
-            dwell = .18 if candidate[0] == 'palm' else .12
+            if key != self._candidate:
+                self._candidate, self._candidate_at = key, now
+                self._candidate_samples = 0
+            self._candidate_seen_at = now
+            self._candidate_samples += int(fresh)
+            dwell = {'grab': .055, 'ball': .12, 'palm': .18}[candidate[0]]
             if now - self._candidate_at >= dwell and self._candidate_samples >= 2:
                 if self.actions.begin_hold(candidate[0], candidate[2]):
                     self.active = candidate[:2]
@@ -344,50 +413,60 @@ class HandInteractionEngine:
                     self._last_seen_at = now
                     self._other_ids = {h.track_id for h in hands if h.track_id != candidate[1]}
                     self._rebind = None
+                    if candidate[0] == 'grab':
+                        self._swing_velocity(self._held_hand, now)
                     self._pets.clear()
                     return
-        if fresh:
+        elif (self._candidate is not None
+              and (self._candidate[0] != 'grab' or now - self._candidate_seen_at > .10
+                   or self._candidate[1] not in present)):
+            self._candidate = None
+        if key is None:
             for hand in hands:
-                if key is None:
-                    self._touch(hand, body, now)
+                self._touch(hand, body, now, fresh)
 
-    def _touch(self, hand, body, now):
-        tip = hand.points[8]
-        head = Box(body.x, body.y + body.height * .04, body.width, body.height * .23)
-        cheek = Box(body.x + body.width * .12, body.y + body.height * .27,
-                    body.width * .76, body.height * .14)
-        # Stay out of the middle of the face; cheek contact uses a pointed index.
-        on_cheek = (cheek.contains(tip) and abs(tip[0] - body.center[0]) > body.width * .12
-                    and hand.extended[0])
+    def _touch(self, hand, body, now, fresh):
+        margin = max(4, body.width * .10)
+        head = Box(body.x - margin, body.y - margin,
+                   body.width + margin * 2, body.height * PET_HEAD_HEIGHT_RATIO + margin)
+        tips = hand.petting_tips
+        contact = next((tip for tip in tips if head.contains(tip)), None)
         identity = hand.track_id
-        if on_cheek:
-            entered = self._poke_candidates.setdefault(identity, now)
-            if (identity not in self._poke_latched and now - entered >= .07
-                    and now - self._poke_at >= 1.):
-                self.actions.poke(tip)
-                self._poke_latched.add(identity)
-                self._poke_at = now
-        else:
-            self._poke_candidates.pop(identity, None)
-            self._poke_latched.discard(identity)
-        contact = tip if hand.pointing and head.contains(tip) else None
-        if contact is None:
-            self._pets.pop(identity, None)
-            return
+        if fresh:
+            tip = hand.points[8]
+            cheek = Box(body.x + body.width * .12, body.y + body.height * .27,
+                        body.width * .76, body.height * .14)
+            # Stay out of the middle of the face; cheek contact uses a pointed index.
+            on_cheek = (not tips and cheek.contains(tip)
+                        and abs(tip[0] - body.center[0]) > body.width * .12 and hand.extended[0])
+            if on_cheek:
+                entered = self._poke_candidates.setdefault(identity, now)
+                if (identity not in self._poke_latched and now - entered >= .07
+                        and now - self._poke_at >= 1.):
+                    self.actions.poke(tip)
+                    self._poke_latched.add(identity)
+                    self._poke_at = now
+            else:
+                self._poke_candidates.pop(identity, None)
+                self._poke_latched.discard(identity)
         previous = self._pets.get(identity)
+        if contact is None:
+            if previous and now - previous[1] > .10:
+                self._pets.pop(identity, None)
+            return
+        anchor = self._anchor(hand)
         if previous is None:
-            self._pets[identity] = now, now, contact, 0., None
+            self._pets[identity] = now, now, anchor, 0., None
             return
         started, last_time, last_point, traveled, feedback_at = previous
         dt = now - last_time
-        movement = distance(contact, last_point)
-        if dt <= 0 or dt > .2 or movement / dt > 650:
-            self._pets.pop(identity, None)
+        movement = distance(anchor, last_point)
+        if dt <= 0 or dt > .35 or movement / dt > 1600:
+            self._pets[identity] = now, now, anchor, 0., None
             return
-        traveled += movement
+        traveled += abs(anchor[0] - last_point[0])
         elapsed = now - (feedback_at if feedback_at is not None else started)
-        if ((feedback_at is None and now - started >= .08)
-                or (feedback_at is not None and elapsed >= .15 and traveled >= 3)):
+        if (feedback_at is None or elapsed >= .15) and traveled >= 5:
             self.actions.pet(traveled / max(elapsed, .001), min(elapsed, .2), contact)
             feedback_at, traveled = now, 0.
-        self._pets[identity] = started, now, contact, traveled, feedback_at
+        self._pets[identity] = started, now, anchor, traveled, feedback_at

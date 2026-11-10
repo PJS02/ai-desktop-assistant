@@ -14,6 +14,8 @@ from .events import PerceptionEvent, parse_perception_event
 class PerceptionController:
     """공통 인식 이벤트를 중복과 노이즈가 제거된 캐릭터 반응으로 바꾼다."""
 
+    IDLE_REACTION_DELAY = 5.0
+
     def __init__(
         self,
         mood_system,
@@ -29,6 +31,7 @@ class PerceptionController:
         on_speech: Callable[[str], None] | None = None,
         on_speech_with_context: Callable[[str, dict], None] | None = None,
         on_dialogue_with_context: Callable[[str, dict], None] | None = None,
+        get_character_idle_time: Callable[[], float] | None = None,
     ) -> None:
         self.mood_system = mood_system
         self.on_dialogue = on_dialogue or (lambda _text: None)
@@ -42,6 +45,7 @@ class PerceptionController:
         self.on_speech = on_speech or (lambda _text: None)
         self.on_speech_with_context = on_speech_with_context
         self.on_dialogue_with_context = on_dialogue_with_context
+        self.get_character_idle_time = get_character_idle_time
         self.current_trace_id = None
         self._greeting_sources = {}
         self._last_greeting_at = -math.inf
@@ -53,6 +57,7 @@ class PerceptionController:
         self._last_reaction_at: dict[str, float] = {}
         self._last_head_motion: str | None = None
         self._last_attention: str | None = None
+        self._away_reacted = False
         self._last_speech_key = None
         self._speech_keys = set()
         self._speech_key_history = deque()
@@ -76,9 +81,10 @@ class PerceptionController:
         self._handle_emotion(event, now)
         self._handle_gestures(event, now)
         self._handle_head_motion(event, now)
-        self._handle_attention(event)
         self._handle_speech(event)
         self._handle_greeting(event, now)
+        # A user turn in this same packet must refresh interaction time first.
+        self._handle_attention(event)
 
     def _reject(self, kind, reason, event, **data):
         log_throttled('perception.rejected', '인식 결과 적용 생략',
@@ -194,17 +200,26 @@ class PerceptionController:
 
     def _handle_attention(self, event: PerceptionEvent) -> None:
         attention = event.attention
-        if attention == self._last_attention:
-            # 자리를 비운 상태 자체가 아니라 상태가 바뀌는 순간만 처리한다.
+        if attention != self._last_attention:
+            previous = self._last_attention
+            self._last_attention = attention
+            self._away_reacted = False
+            log_event('perception.attention.changed', '사용자 주의 상태 변경',
+                      category='사용자 인식', trace_id=self.current_trace_id,
+                      previous=previous, current=attention, source=event.source)
+        if attention != "away" or self._away_reacted:
             return
-        previous = self._last_attention
-        self._last_attention = attention
-        log_event('perception.attention.changed', '사용자 주의 상태 변경',
-                  category='사용자 인식', trace_id=self.current_trace_id,
-                  previous=previous, current=attention, source=event.source)
-        if attention == "away":
-            self.mood_system.on_idle()
-            print("[외부 상태 인식] 사용자가 자리를 비움")
+        # Camera attention cannot override recent petting, clicking or dialogue.
+        # Recheck deferred away frames so a real absence still reacts once.
+        if self.get_character_idle_time is not None:
+            idle_seconds = self.get_character_idle_time()
+            if idle_seconds < self.IDLE_REACTION_DELAY:
+                self._reject('attention', 'recent_interaction', event,
+                             idle_seconds=idle_seconds, required_seconds=self.IDLE_REACTION_DELAY)
+                return
+        self._away_reacted = True
+        self.mood_system.on_idle()
+        print("[외부 상태 인식] 사용자가 자리를 비움")
 
     def _handle_speech(self, event: PerceptionEvent) -> bool:
         if event.speech is None or not event.speech_final:

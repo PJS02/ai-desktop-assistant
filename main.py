@@ -28,11 +28,6 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from dotenv import load_dotenv
 
-# True: 활성 창·프로그램을 주기적으로 감지하고 자동 대화를 생성합니다.
-# False: 자동 감지를 끄고 사용자가 입력한 대화만 처리합니다.
-AUTO_PROGRAM_DETECTION = True
-
-
 load_dotenv()
 register_environment_secrets()
 
@@ -260,10 +255,13 @@ class MediaPipeProcessManager(QObject):
             packet, self._latest_preview = self._latest_preview, None
             return packet
 
-    def device_command(self, action):
+    def device_command(self, action, *, request_id=None):
         if not self.is_running and not self.start():
             return False
-        return self._send_command('settings ' + json.dumps({'action': 'device', 'operation': action}))
+        request = {'action': 'device', 'operation': action}
+        if request_id is not None:
+            request['request_id'] = request_id
+        return self._send_command('settings ' + json.dumps(request))
 
     def send_game_command(self, command: str) -> bool:
         if command.startswith(("rps_begin ", "cham_begin ")) and not self.is_running:
@@ -341,7 +339,8 @@ def main():
 
     from character.character_widget import CharacterWidget
     from character.config_manager import (load_config, load_character_options,
-                                          load_hand_overlay_options, load_personality_traits)
+                                          load_hand_overlay_options, load_personality_traits,
+                                          load_dialogue_options)
     from character.settings_controller import SettingsController
     from hand_overlay.controller import HandOverlayController
     from hand_overlay.interaction_host import HandInteractionController
@@ -364,7 +363,7 @@ def main():
         screen_width=width,
         screen_height=height,
         personality_preset=personality,
-        auto_program_detection=AUTO_PROGRAM_DETECTION,
+        dialogue_options=load_dialogue_options(),
         personality_traits=load_personality_traits(),
         on_show_perception_console=mediapipe_manager.show_console,
         on_show_log_window=log_window.show_and_raise,
@@ -388,6 +387,7 @@ def main():
     mediapipe_manager.start()
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
     app.aboutToQuit.connect(hand_overlay.stop)
+    app.aboutToQuit.connect(character.entrance.close)
     app.aboutToQuit.connect(mediapipe_manager.stop)
     app.aboutToQuit.connect(character.preparation_overlay.hide)
     app.aboutToQuit.connect(preparation.close)

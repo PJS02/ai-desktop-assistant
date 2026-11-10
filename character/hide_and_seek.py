@@ -298,4 +298,3 @@ class HideAndSeek(QObject):
             h._mark_character_interaction()
             h.mood_system.on_self_play()
             h.autonomous_needs.satisfy('self_play')
-            h.dialogue_system.show_dialogue('앗, 들켰다! 한 번 더 할까?', duration=2500)

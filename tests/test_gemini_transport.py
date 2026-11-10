@@ -65,6 +65,20 @@ def test_connection_timeouts_stop_after_three_attempts(wrapped):
     assert timeouts[-1].level == "ERROR"
 
 
+def test_overloaded_server_recovers_on_retry():
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.read.return_value = b'{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}'
+    error = HTTPError('https://example.invalid', 503, 'Service Unavailable', {}, None)
+    with patch.object(gemini_client, 'urlopen', side_effect=[error, response]) as send, patch.object(
+            gemini_client.time, 'sleep') as sleep:
+        result = gemini_client.request_gemini('hello', {'api_key': 'test-credential'})
+    assert result == 'hello'
+    assert send.call_count == 2
+    sleep.assert_called_once_with(1)
+
+
 @pytest.mark.parametrize("error", [
     URLError("connection refused"),
     HTTPError("https://example.invalid", 403, "Forbidden", {}, None),
@@ -78,3 +92,22 @@ def test_permanent_errors_are_not_retried(error):
     assert result.startswith("[gemini error]")
     send.assert_called_once()
     sleep.assert_not_called()
+
+
+def test_game_timeout_uses_one_short_attempt_without_blocking_for_minutes():
+    with patch.object(gemini_client, 'urlopen', side_effect=TimeoutError('timed out')) as send, \
+            patch.object(gemini_client.time, 'sleep') as sleep:
+        result = gemini_client.request_gemini('game', {'api_key': 'test'},
+                                              timeout_seconds=8, max_attempts=1)
+    assert result.startswith('[gemini error]')
+    send.assert_called_once()
+    assert send.call_args.kwargs['timeout'] == 8
+    sleep.assert_not_called()
+
+
+def test_request_timeout_is_capped_by_the_remaining_game_deadline():
+    with patch.object(gemini_client, 'urlopen', side_effect=TimeoutError('timed out')) as send, \
+            patch.object(gemini_client.time, 'monotonic', return_value=100):
+        gemini_client.request_gemini('game', {'api_key': 'test'},
+                                      timeout_seconds=8, max_attempts=1, deadline=103)
+    assert send.call_args.kwargs['timeout'] == 3

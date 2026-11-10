@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import random
 import time
 from app_logging import log_event, new_trace_id
+from .reactions import react, reaction_mood
 
 from PyQt6.QtCore import QPoint, QRect, QTimer, Qt
 from PyQt6.QtGui import QColor, QPainter, QRadialGradient
@@ -192,12 +193,18 @@ class BallWidget(QWidget):
                   category='캐릭터 상태', trace_id=self.log_trace_id,
                   position=[self.x(), self.y()], kick_direction=kick_direction,
                   velocity=[self.x_velocity, self.y_velocity])
+        before = reaction_mood(character)
         if not getattr(self, '_hand_play', False):
             character.mood_system.on_ball_play()
         character.update_action(character.mood_system.decide_emotion())
         self.manager.start_interaction_cooldown(self)
+        react(character, "ball_kicked", before=before, source="ball")
 
     def closeEvent(self, event):
+        character = self.manager.character_widget
+        recent_kick = self._last_collision_at > 0 and time.monotonic() - self._last_collision_at < 3.0
+        removed_during_play = (self.manager.ball is self and self.manager.selected_item is None
+                               and (getattr(character, '_ball_chasing', False) or recent_kick))
         self._hand_dragging = self.is_dragging = False
         log_event('sandbox.ball.ended', '공 놀이를 종료합니다.', category='캐릭터 상태',
                   trace_id=self.log_trace_id, position=[self.x(), self.y()])
@@ -216,6 +223,10 @@ class BallWidget(QWidget):
                 self.manager._warmup_timer.stop()
             self.manager._cooldown_until = 0.0
             self.manager.ball = None
+            if (reactions := getattr(character, 'reactions', None)) is not None:
+                reactions.clear("ball")
+        if removed_during_play:
+            react(character, "ball_removed")
         super().closeEvent(event)
 
 
@@ -295,6 +306,7 @@ class SandboxManager:
     def _enable_ball_interaction(self) -> None:
         if self.ball is not None:
             self.ball.interaction_enabled = True
+            react(self.character_widget, "ball_ready", source="ball")
             log_event('sandbox.ball.ready', '공 놀이 준비가 끝났습니다.', category='캐릭터 상태',
                       trace_id=self.ball.log_trace_id)
 

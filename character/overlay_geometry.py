@@ -2,6 +2,25 @@
 from PyQt6.QtCore import QPoint, QRect, QSize
 
 
+def place_beside_character(anchor: QRect, size: QSize, bounds: QRect,
+                           avoid: QRect | None = None) -> QPoint:
+    """Keep user speech beside the upper body, choosing the side with room."""
+    y = anchor.top() + round(anchor.height() * .4) - size.height() // 2
+    y = max(bounds.top(), min(y, bounds.bottom() - size.height() + 1))
+    candidates = [QRect(anchor.left() - size.width() - 10, y, size.width(), size.height()),
+                  QRect(anchor.right() + 11, y, size.width(), size.height())]
+    for rect in candidates:
+        if bounds.contains(rect) and (avoid is None or not rect.intersects(avoid)):
+            return rect.topLeft()
+    for rect in candidates:
+        rect.moveLeft(max(bounds.left(), min(rect.left(), bounds.right() - rect.width() + 1)))
+    def overlap(rect):
+        return sum(max(0, shared.width()) * max(0, shared.height())
+                   for other in (anchor, avoid) if other is not None
+                   for shared in [rect.intersected(other)])
+    return min(candidates, key=overlap).topLeft()
+
+
 def place_near_ankles(anchor: QRect, size: QSize, bounds: QRect,
                       avoid: QRect | None = None) -> QPoint:
     """Center user speech just above the ankles, clamped to the actual screen."""
