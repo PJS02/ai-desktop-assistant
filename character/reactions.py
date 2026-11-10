@@ -7,6 +7,7 @@ from PyQt6.QtCore import QObject, QTimer
 
 from app_logging import log_event
 from .russell_sectors import SECTORS, SECTOR_ANGLE, russell_face
+from .perception_affect import choose_perception_face
 
 
 @dataclass(frozen=True)
@@ -23,21 +24,24 @@ class Appraisal:
 
 
 EVENTS = {
-    "pet": Appraisal(.56, -.42, .38, .50, attribution="help"),
-    "pet_refused": Appraisal(-.52, .04, .65, .55, 2),
-    "poke_start": Appraisal(.12, .70, .55, .22, 2, sudden=True),
-    "poke_play": Appraisal(.44, .32, .40, .44, 2),
-    "poke_discomfort": Appraisal(-.44, .12, .54, .48, 2),
-    "tap": Appraisal(.47, .18, .39, .55),
-    "drag_start": Appraisal(-.3, .73, .70, .36, 3, sudden=True),
-    "drag_discomfort": Appraisal(-.56, .10, .55, .68, 3),
-    "drag_repeated": Appraisal(-.68, .58, .54, .76, 3, attribution="blame"),
-    "palm": Appraisal(.50, -.38, .43, .58, 2, attribution="help"),
+    "pet": Appraisal(.56, -.42, .38, .50, 3, attribution="help"),
+    "pet_refused": Appraisal(-.52, .04, .65, .55, 3),
+    "poke_start": Appraisal(.12, .70, .55, .22, 3, sudden=True),
+    "poke_play": Appraisal(.44, .32, .40, .44, 3),
+    "poke_discomfort": Appraisal(-.44, .12, .54, .48, 3),
+    "tap": Appraisal(.47, .18, .39, .55, 3),
+    "drag_start": Appraisal(-.3, .73, .70, .36, 5, sudden=True),
+    "drag_discomfort": Appraisal(-.56, .10, .55, .68, 5),
+    "drag_repeated": Appraisal(-.68, .58, .54, .76, 5, attribution="blame"),
+    "palm": Appraisal(.50, -.38, .43, .58, 3, attribution="help"),
     "ball_ready": Appraisal(.42, .37, .37, .58),
     "ball_kicked": Appraisal(.60, .67, .42, .80, 2),
     "ball_removed": Appraisal(-.40, -.33, .44, .64),
     "file_received": Appraisal(.59, -.06, .45, .82, 2, attribution="help"),
     "files_returned": Appraisal(-.60, -.30, .48, .76, 3),
+    "files_completed": Appraisal(.42, -.20, .4, .76, 3),
+    "files_dropped": Appraisal(-.60, -.30, .48, .76, 3),
+    "contact_ignored": Appraisal(-.68, .58, .54, .76, 3, attribution="blame"),
     "fall_start": Appraisal(-.34, .8, .70, .22, 5, sudden=True),
     "fall_risk": Appraisal(-.65, .68, .62, .65, 5, prospect="threat"),
     "safe_landing": Appraisal(.52, -.40, .65, .73, 5, prospect="safe"),
@@ -121,6 +125,30 @@ def react(host, event, **options):
     return False
 
 
+def experience(host, event, *, source=None, event_id=None, reaction=True,
+               follow=None, sustain=False, **context):
+    """Record the real event once, then show its independently gated face."""
+    if getattr(host, '_character_closing', False):
+        return {'applied': False, 'reaction': None}
+    before = reaction_mood(host)
+    handler = getattr(getattr(host, 'mood_system', None), 'on_interaction', None)
+    result = handler(event, source=source, event_id=event_id, **context) if handler else {}
+    if not isinstance(result, dict):
+        result = {}
+    face_event = result.get('reaction', event)
+    if face_event == 'files_returned':
+        face_event = 'files_completed'
+    if reaction and result.get('accepted') and result.get('appraisal'):
+        reactions = getattr(host, 'reactions', None)
+        if reactions is not None:
+            reactions.play_perception(result['appraisal'], before=before)
+    elif reaction and face_event in EVENTS and not result.get('duplicate'):
+        react(host, face_event, before=before,
+              strength=context.get('strength', 1.), source=context.get('reaction_source'),
+              follow=follow, sustain=sustain)
+    return result
+
+
 class Reactions(QObject):
     """One temporary face. A newer event owns its timeout and any follow-up."""
 
@@ -131,6 +159,7 @@ class Reactions(QObject):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._advance)
         self.event = None
+        self.priority = 0
         self.source = None
         self._next = None
         self.threat = False
@@ -141,7 +170,7 @@ class Reactions(QObject):
                 or getattr(host, '_hand_throw_active', False)):
             return False
         rule = EVENTS[event]
-        if self.event is not None and EVENTS[self.event].priority > rule.priority:
+        if self.event is not None and self.priority > rule.priority:
             return False
         source = source or event
         if sustain and self.source == source and self.event == event:
@@ -150,6 +179,7 @@ class Reactions(QObject):
         before = before if before is not None else reaction_mood(host)
         face = choose_face(event, before, strength=strength)
         self.event, self.source = event, source
+        self.priority = rule.priority
         self._next = (follow, before, strength) if follow else None
         host.sprite_animator.set_reaction_emotion(face, urgent=source == "fall")
         self._timer.start(round(rule.seconds * 1000))
@@ -157,6 +187,26 @@ class Reactions(QObject):
                   category='캐릭터 상태', event_name=event, source=source, emotion=face,
                   valence=before[0], arousal=before[1], outcome=rule.outcome,
                   attribution=rule.attribution, prospect=rule.prospect)
+        return True
+
+    def play_perception(self, appraisal, *, before=None):
+        host = self.host
+        if (not appraisal['accepted'] or not appraisal['reaction_allowed']
+                or host.rig_view is None or host._character_closing or not host.isVisible()
+                or getattr(host, '_hand_throw_active', False)
+                or getattr(getattr(host, 'manual_control', None), 'display_emotion', None)
+                or self.priority > appraisal['priority']):
+            return False
+        before = before if before is not None else reaction_mood(host)
+        face = choose_perception_face(appraisal, before)
+        self.event = 'user_' + appraisal['signal']
+        self.source, self.priority, self._next = 'perception', appraisal['priority'], None
+        host.sprite_animator.set_reaction_emotion(face)
+        self._timer.start(round(min(1.2, appraisal['seconds']) * 1000))
+        log_event('character.reaction', '사용자 인식의 해석에 따라 리액션을 표시합니다.',
+                  category='캐릭터 상태', event_name=self.event, emotion=face,
+                  valence=before[0], arousal=before[1],
+                  profile_weights=appraisal['weights'], interpretation=appraisal['interpretation'])
         return True
 
     def _advance(self):
@@ -172,8 +222,11 @@ class Reactions(QObject):
         was_active = self.event is not None
         self._timer.stop()
         self.event = self.source = self._next = None
+        self.priority = 0
         if was_active and self.host.rig_view is not None:
-            self.host.sprite_animator.set_mood_emotion("neutral")
+            mood = getattr(self.host, 'mood_system', None)
+            face = mood.decide_emotion()['emotion'] if mood is not None else 'neutral'
+            self.host.sprite_animator.set_mood_emotion(face)
             self.host.sprite_animator.set_reaction_emotion()
 
     def cancel(self):
@@ -184,6 +237,7 @@ class Reactions(QObject):
         if distance < .38 or getattr(self.host, '_hand_throw_active', False):
             return
         strength = min(1.8, .65 + distance * .6)
+        result = experience(self.host, 'fall_risk', distance=distance, reaction=False)
         self.threat = self.threat or distance >= .65
         if self.source == "fall":
             if self.event == "fall_risk" and self._timer.remainingTime() < 250:
@@ -191,12 +245,15 @@ class Reactions(QObject):
             return
         if sudden:
             self.play("fall_start", source="fall", strength=strength,
-                      follow="fall_risk" if self.threat else None)
+                      follow="fall_risk" if self.threat else None, before=result.get('before'))
         elif self.threat:
-            self.play("fall_risk", source="fall", strength=strength)
+            self.play("fall_risk", source="fall", strength=strength, before=result.get('before'))
 
-    def safe(self):
+    def safe(self, *, rescued=False):
         was_threat = self.threat
         self.threat = False
         self.clear("fall")
-        return was_threat and self.play("safe_landing")
+        result = experience(self.host, 'safe_landing', rescued=rescued, reaction=False)
+        if result.get('reaction') is None:
+            return False
+        return (was_threat or result.get('applied', False)) and self.play("safe_landing", before=result.get('before'))

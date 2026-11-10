@@ -74,34 +74,25 @@ class ChamGameOverlay(RpsGameOverlay):
 
     def _setup_game_card(self):
         self.card.setObjectName('chamCard')
-        self.card.setStyleSheet("""
-            QFrame#chamCard {
-                background: rgba(255, 253, 248, 248);
-                border: 1px solid rgba(63, 55, 46, 32);
-                border-radius: 12px;
-            }
-            QLabel { background: transparent; border: none;
-                font-family: 'Malgun Gothic'; color: #37342f; }
-        """)
         layout = self.card.layout()
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
         layout.removeWidget(self.title)
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        self.title.setStyleSheet('font-size: 11px; color: #8a8277;')
+        header_style = 'font-size: 11px; font-weight: 600; color: #4e5e6c;'
+        self.title.setStyleSheet(header_style)
         self.title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.title.setWordWrap(False)
         self.score = QLabel(self.card)
-        self.score.setStyleSheet('font-size: 11px; color: #6d665c;')
+        self.score.setStyleSheet(header_style)
         self.score.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(self.title)
         header.addStretch()
         header.addWidget(self.score)
         layout.insertLayout(0, header)
         self.opponent_image.setFixedHeight(44)
-        self.opponent_image.setStyleSheet('font-size: 27px; font-weight: 600; color: #37342f;')
-        self.hint.setStyleSheet('font-size: 12px; color: #81786c;')
+        self.opponent_image.setStyleSheet('font-size: 24px; font-weight: bold; color: #2e4f69;')
         self.hint.setFixedHeight(34)
         self.hint.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
@@ -155,7 +146,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.show()
         self._recognition_session = self.session
         if not self._command(f"cham_begin {self.session}"):
-            self._error("카메라에 연결하지 못했어.\n우클릭 메뉴에서 다시 시작해줘.")
+            self._error("카메라에 연결하지 못했어.\n캐릭터를 더블클릭해 다시 시작해줘.")
         else:
             self.start_round()
             log_event('game.cham.started', '참참참 게임 시작', category='캐릭터 상태',
@@ -179,6 +170,7 @@ class ChamGameOverlay(RpsGameOverlay):
         # Commit before reading any of the player's response frames.
         self.opponent = secrets.choice(tuple(DIRECTIONS))
         self.state = "countdown"
+        self._report_emotion('game_start', 'expect', round=True)
         self.deadline = now + 2 * self.BEAT_SECONDS
         self._show_message('참', '준비…')
         self._request_cue('cham_1')
@@ -208,6 +200,8 @@ class ChamGameOverlay(RpsGameOverlay):
             self._finish_round(direction, now)
 
     def _finish_round(self, direction, now):
+        if self.state not in {'waiting', 'countdown'}:
+            return
         self.player = direction
         caught = direction == self.opponent
         self.character_score += int(caught)
@@ -215,8 +209,9 @@ class ChamGameOverlay(RpsGameOverlay):
         self.result = "caught" if caught else "escaped"
         self._best_lead = max(self._best_lead, self.character_score - self.player_score)
         self._reaction = "happy" if caught else "sad"
+        self._report_emotion('game_win' if caught else 'game_loss', 'result', round=True)
         if self.reaction_face is not None:
-            event = "game_earned_win" if caught else "game_loss"
+            event = "game_win" if caught else "game_loss"
             self._reaction = self.reaction_face(event, 1.0)
             self._reaction_until = now + 1.15
         self.state = "result"
@@ -229,6 +224,7 @@ class ChamGameOverlay(RpsGameOverlay):
                   player_score=self.player_score, character_score=self.character_score)
 
     def _error(self, message):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         self.state = "error"
         self.deadline = time.time() + self.ERROR_SECONDS
@@ -267,11 +263,12 @@ class ChamGameOverlay(RpsGameOverlay):
                 self.deadline = now + 6.0
                 self._turn(0, now)
                 self._show_message('네가 이겼어!' if self.player_score > self.character_score
-                                   else '내가 이겼어!', '다시 하기는 우클릭 메뉴에서')
+                                   else '내가 이겼어!', '캐릭터를 더블클릭하면 다시 할 수 있어')
+                won = self.character_score > self.player_score
+                event = ("game_win" if won else "game_disappointed"
+                         if self._best_lead >= 2 else "game_loss")
+                self._report_emotion(event, 'final', final=True, expected_win=self._best_lead >= 2)
                 if self.reaction_face is not None:
-                    won = self.character_score > self.player_score
-                    event = ("game_earned_win" if won else "game_disappointed"
-                             if self._best_lead >= 2 else "game_loss")
                     self._reaction = self.reaction_face(event, 1.25)
                     self._reaction_until = now + 1.55
                 self._end_recognition()
@@ -281,6 +278,7 @@ class ChamGameOverlay(RpsGameOverlay):
             self.update_position()
 
     def closeEvent(self, event):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         if self.session:
             log_event('game.cham.ended', '참참참 게임 종료', category='캐릭터 상태',

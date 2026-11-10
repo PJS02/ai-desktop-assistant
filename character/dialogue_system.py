@@ -51,6 +51,7 @@ class DialogueSystem(QObject):
         self.bubble_style = load_dialogue_style()
         self._response_provider = response_provider
         self._time_provider = time_provider
+        self.last_output_at = -math.inf
         self._closed = False
         self.manual_dialogue_active = False
         self._request_generation = 0
@@ -187,9 +188,10 @@ class DialogueSystem(QObject):
             previous._log_close_reason = 'replaced'
             previous.close()
         
-        # 새 말풍선 생성
-        bubble = (UserDialogueBubble(text, duration) if user
-                  else DialogueBubble(text, duration, style=self.bubble_style))
+        # Owned tool windows stay above the character when Windows raises it.
+        bubble = (UserDialogueBubble(text, duration, parent=self.character_widget) if user
+                  else DialogueBubble(text, duration, parent=self.character_widget,
+                                      style=self.bubble_style))
         bubble._log_context = dict(log_context or {})
         bubble.dialogue_closed.connect(lambda: self._on_bubble_closed(bubble))
         
@@ -201,6 +203,7 @@ class DialogueSystem(QObject):
                   display_type=display_type, visible=bubble.isVisible(), duration_ms=duration)
         
         if not user:
+            self.last_output_at = self._time_provider()
             self.dialogue_started.emit(text)
 
     def set_bubble_style(self, style):
@@ -224,6 +227,7 @@ class DialogueSystem(QObject):
     
     def _show_narration(self, text: str, character_name: str, duration: int, *, log_context=None):
         """하단 나레이션 박스 표시"""
+        self.last_output_at = self._time_provider()
         # 이전 나레이션 종료
         if self.current_narration:
             previous, self.current_narration = self.current_narration, None
@@ -685,6 +689,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                                   retry_of=previous['trace_id'])
 
     def _on_tts_speaking_changed(self, speaking):
+        if speaking or self._speaking:
+            self.last_output_at = self._time_provider()
         self._speaking = bool(speaking)
         if self._speaking:
             self._flush_ai_response('playback_started')
@@ -812,9 +818,15 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
 
     def open_input_dialog(self):
         """대화 입력 창 열기"""
-        # 이전 입력창이 있으면 닫기
+        if self._closed:
+            return
+        # Preserve a draft when the character's talk action is selected again.
         if self.current_input_widget:
-            self.current_input_widget.close()
+            self.current_input_widget.showNormal()
+            self.current_input_widget.raise_()
+            self.current_input_widget.activateWindow()
+            self.current_input_widget.input_field.setFocus()
+            return
         
         # 새 입력창 생성
         input_widget = DialogueInputWidget()
@@ -827,6 +839,9 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         input_widget.set_position_below_character(char_x, char_y, char_width)
         
         input_widget.show()
+        input_widget.raise_()
+        input_widget.activateWindow()
+        input_widget.input_field.setFocus()
         self.current_input_widget = input_widget
     
     def _process_gemini_response(self, response: str, *, log_context=None) -> str:

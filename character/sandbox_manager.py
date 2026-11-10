@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import random
 import time
 from app_logging import log_event, new_trace_id
-from .reactions import react, reaction_mood
+from .reactions import experience
 
 from PyQt6.QtCore import QPoint, QRect, QTimer, Qt
 from PyQt6.QtGui import QColor, QPainter, QRadialGradient
@@ -38,6 +38,7 @@ class BallWidget(QWidget):
         character = manager.character_widget
         self.x_velocity = 4.5 if character.x() < manager.screen_center_x else -4.5
         self.y_velocity = -8.0
+        self._physics_position = None
         self.is_dragging = False
         self._hand_dragging = False
         self._hand_play = bool(getattr(getattr(character, 'hand_overlay', None),
@@ -91,6 +92,7 @@ class BallWidget(QWidget):
             self._last_drag_pos = event.globalPosition().toPoint()
             self.x_velocity = 0
             self.y_velocity = 0
+            self._physics_position = None
             log_event('sandbox.ball.drag_started', '공을 잡았습니다.', category='캐릭터 상태',
                       trace_id=self.log_trace_id, position=[self.x(), self.y()])
             event.accept()
@@ -99,7 +101,12 @@ class BallWidget(QWidget):
         self._hand_play = True
         self._hand_dragging = self.is_dragging = True
         self._hand_offset = (point[0] - self.x(), point[1] - self.y())
+        # A near-edge or swept catch brings the moving ball into the fingers.
+        if not (0 <= self._hand_offset[0] <= self.width()
+                and 0 <= self._hand_offset[1] <= self.height()):
+            self._hand_offset = self.width() / 2, self.height() / 2
         self.x_velocity = self.y_velocity = 0.
+        self._physics_position = None
 
     def move_hand_drag(self, point):
         if not self._hand_dragging:
@@ -115,9 +122,10 @@ class BallWidget(QWidget):
         # Engine velocities are logical pixels/second; ball physics uses pixels
         # per 16 ms tick. Tracking loss drops safely instead of replaying a throw.
         self.x_velocity, self.y_velocity = tuple(
-            max(-24., min(24., value * .016)) if reason == 'released' else 0.
+            value * .016 if reason in ('released', 'thrown') else 0.
             for value in velocity)
-        log_event('sandbox.ball.hand_released', '손으로 공 놓기', category='캐릭터 상태',
+        log_event('sandbox.ball.hand_released', '손으로 공 던지기' if reason == 'thrown' else '손으로 공 놓기',
+                  category='캐릭터 상태',
                   trace_id=self.log_trace_id, reason=reason,
                   velocity=[self.x_velocity, self.y_velocity], mood_applied=False)
 
@@ -137,9 +145,7 @@ class BallWidget(QWidget):
             accepted = self.manager.can_interact_with_ball(self)
             log_event('sandbox.ball.drag_released', '공을 놓았습니다.', category='캐릭터 상태',
                       trace_id=self.log_trace_id, position=[self.x(), self.y()],
-                      velocity=[self.x_velocity, self.y_velocity], mood_applied=accepted)
-            if accepted:
-                self.manager.character_widget.mood_system.on_ball_play()
+                      velocity=[self.x_velocity, self.y_velocity], mood_applied=False)
             event.accept()
 
     def _update_physics(self):
@@ -151,8 +157,11 @@ class BallWidget(QWidget):
         screen_right = self.manager.screen_right
         screen_top = self.manager.screen_top
         screen_bottom = self.manager.screen_bottom
-        next_x = self.x() + self.x_velocity
-        next_y = self.y() + self.y_velocity
+        x, y = self.x(), self.y()
+        if self._physics_position is not None and tuple(map(round, self._physics_position)) == (x, y):
+            x, y = self._physics_position
+        next_x = x + self.x_velocity
+        next_y = y + self.y_velocity
         self.y_velocity += 0.42
 
         if next_x <= screen_left or next_x + self.width() >= screen_right:
@@ -166,7 +175,8 @@ class BallWidget(QWidget):
             next_y = screen_top
             self.y_velocity = abs(self.y_velocity) * 0.7
 
-        self.move(int(next_x), int(next_y))
+        self._physics_position = next_x, next_y
+        self.move(round(next_x), round(next_y))
         self.manager.update_character_chase(self)
         self._check_character_collision(character)
 
@@ -193,12 +203,10 @@ class BallWidget(QWidget):
                   category='캐릭터 상태', trace_id=self.log_trace_id,
                   position=[self.x(), self.y()], kick_direction=kick_direction,
                   velocity=[self.x_velocity, self.y_velocity])
-        before = reaction_mood(character)
-        if not getattr(self, '_hand_play', False):
-            character.mood_system.on_ball_play()
+        experience(character, "ball_kicked", session=self.log_trace_id,
+                   event_id=f'{self.log_trace_id}:kick:{now}')
         character.update_action(character.mood_system.decide_emotion())
         self.manager.start_interaction_cooldown(self)
-        react(character, "ball_kicked", before=before, source="ball")
 
     def closeEvent(self, event):
         character = self.manager.character_widget
@@ -225,8 +233,9 @@ class BallWidget(QWidget):
             self.manager.ball = None
             if (reactions := getattr(character, 'reactions', None)) is not None:
                 reactions.clear("ball")
-        if removed_during_play:
-            react(character, "ball_removed")
+        experience(character, 'ball_removed' if removed_during_play else 'ball_cancel',
+                   session=self.log_trace_id, event_id=f'{self.log_trace_id}:end',
+                   reaction=removed_during_play)
         super().closeEvent(event)
 
 
@@ -306,7 +315,8 @@ class SandboxManager:
     def _enable_ball_interaction(self) -> None:
         if self.ball is not None:
             self.ball.interaction_enabled = True
-            react(self.character_widget, "ball_ready", source="ball")
+            experience(self.character_widget, "ball_ready", session=self.ball.log_trace_id,
+                       event_id=f'{self.ball.log_trace_id}:ready')
             log_event('sandbox.ball.ready', '공 놀이 준비가 끝났습니다.', category='캐릭터 상태',
                       trace_id=self.ball.log_trace_id)
 
