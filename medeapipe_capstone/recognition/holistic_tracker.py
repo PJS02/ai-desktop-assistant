@@ -353,6 +353,66 @@ def is_thumbs_up(hand_records):
     return True
 
 
+def is_two_hand_heart(left_records, right_records):
+    """Require two distinct C-shaped hands closing one heart outline."""
+    hands, scales = [], []
+    for records in (left_records, right_records):
+        try:
+            hand_map = records_by_name(records)
+            points = {name: point_from_record(hand_map.get(name)) for name in HAND_LANDMARK_NAMES}
+            if any(point is None or not all(math.isfinite(value) for value in point)
+                   for point in points.values()):
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+        scale = max(math.dist(points['WRIST'], points['MIDDLE_FINGER_MCP']),
+                    math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
+        if scale < 12:
+            return False
+        hands.append(points)
+        scales.append(scale)
+    if not .55 <= scales[0] / scales[1] <= 1.8:
+        return False
+    scale = min(scales)
+    left, right = hands
+    for finger in ('THUMB', 'INDEX_FINGER'):
+        if math.dist(left[f'{finger}_TIP'], right[f'{finger}_TIP']) > scale * .4:
+            return False
+    top = average_point(left['INDEX_FINGER_TIP'], right['INDEX_FINGER_TIP'])
+    bottom = average_point(left['THUMB_TIP'], right['THUMB_TIP'])
+    height = math.dist(top, bottom)
+    if not .65 * scale <= height <= 2.4 * max(scales):
+        return False
+    down = ((bottom[0] - top[0]) / height, (bottom[1] - top[1]) / height)
+    across = (down[1], -down[0])
+
+    def project(point, axis):
+        return sum((point[i] - top[i]) * axis[i] for i in (0, 1))
+
+    sides = [project(hand['INDEX_FINGER_MCP'], across) for hand in hands]
+    if sides[0] * sides[1] >= 0:
+        return False
+    for hand, own_scale, side in zip(hands, scales, sides):
+        sign = 1 if side > 0 else -1
+        if (abs(side) < own_scale * .4
+                or project(hand['WRIST'], across) * sign < own_scale * .45
+                or project(hand['THUMB_MCP'], across) * sign < own_scale * .25
+                or not .2 * height <= project(hand['THUMB_MCP'], down) <= 1.4 * height
+                or math.dist(hand['THUMB_TIP'], hand['INDEX_FINGER_TIP']) < own_scale * .65):
+            return False
+        mcp, pip, dip, tip = (hand[f'INDEX_FINGER_{joint}'] for joint in ('MCP', 'PIP', 'DIP', 'TIP'))
+        first, second = angle_between_points(mcp, pip, dip), angle_between_points(pip, dip, tip)
+        # The upper lobes must rise above the joined index tips. Touching two
+        # straight fingers, two pinches or two overlapping palms is not a heart.
+        if (first is None or second is None or min(first, second) < 60
+                or min(first, second) > 170
+                or min(project(pip, down), project(dip, down)) > -own_scale * .12
+                or project(pip, across) * sign < own_scale * .35
+                or project(dip, across) * sign < own_scale * .10):
+            return False
+    return True
+
+
 def finger_is_extended(hand_map, mcp_name, pip_name, tip_name):
     mcp = hand_map.get(mcp_name)
     pip = hand_map.get(pip_name)
@@ -372,6 +432,23 @@ def finger_is_extended(hand_map, mcp_name, pip_name, tip_name):
         return False
 
     return angle >= 160 and tip["pixel_y"] < pip["pixel_y"] < mcp["pixel_y"]
+
+
+def rps_thumb_is_extended(hand_map):
+    """A straight, spread thumb can point sideways in thumb-index scissors."""
+    points = {name: point_from_record(hand_map.get(name)) for name in HAND_LANDMARK_NAMES}
+    if any(point is None or not all(math.isfinite(value) for value in point)
+           for point in points.values()):
+        return False
+    scale = max(math.dist(points['WRIST'], points['MIDDLE_FINGER_MCP']),
+                math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
+    if scale <= 1:
+        return False
+    mcp, ip, tip = (points[f'THUMB_{joint}'] for joint in ('MCP', 'IP', 'TIP'))
+    return ((angle_between_points(mcp, ip, tip) or 0) >= 150
+            and math.dist(tip, points['PINKY_MCP']) > math.dist(mcp, points['PINKY_MCP']) * 1.1
+            and math.dist(tip, points['INDEX_FINGER_MCP']) > scale * .35
+            and math.dist(tip, points['INDEX_FINGER_TIP']) > scale * .55)
 
 
 def analyze_rps_hand_state(hand_records):
@@ -418,7 +495,7 @@ def analyze_rps_hand_state(hand_records):
         state = "PAPER"
     elif (
         extended_fingers["index"]
-        and extended_fingers["middle"]
+        and (extended_fingers["middle"] or rps_thumb_is_extended(hand_map))
         and not extended_fingers["ring"]
         and not extended_fingers["pinky"]
     ):

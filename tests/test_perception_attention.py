@@ -21,8 +21,18 @@ def session():
     return clock, mood, controller
 
 
-def attention(controller, state='away'):
-    controller.handle_event(PerceptionEvent(source='camera', timestamp=0, attention=state))
+def attention(controller, now, state='away', **speech):
+    controller.handle_event(PerceptionEvent(source='camera', timestamp=now, attention=state, **speech))
+
+
+def stay_away(clock, controller, until):
+    while clock.now < until:
+        clock.now = min(clock.now + 1., until)
+        attention(controller, clock.now)
+
+
+def presence(controller):
+    return controller._observations['camera']['presence']
 
 
 def test_petting_does_not_gain_anger_when_camera_attention_flickers(session):
@@ -31,81 +41,84 @@ def test_petting_does_not_gain_anger_when_camera_attention_flickers(session):
         clock.now += .125
         clock.last_interaction = clock.now
         mood.on_pet(140, .125)
-        attention(controller, 'away' if frame % 2 else 'searching')
+        attention(controller, clock.now, 'away' if frame % 2 else 'searching')
+        assert presence(controller) is None
     mood.on_idle.assert_not_called()
     assert mood.occ_intensities[OccEmotionToMood.ANGER] == 0
     assert mood.occ_intensities[OccEmotionToMood.JOY] > 0
 
 
-def test_real_absence_reacts_after_five_seconds_only_once(session):
+def test_real_absence_is_confirmed_once_without_a_second_mood_penalty(session, monkeypatch):
     clock, mood, controller = session
-    attention(controller)
-    clock.now = 1004.999
-    attention(controller)
+    log = Mock()
+    monkeypatch.setattr('perception.controller.log_event', log)
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1004.999)
+    assert presence(controller) is None
+    stay_away(clock, controller, 1005.)
+    assert presence(controller) == 'away'
+    stay_away(clock, controller, 1010.)
+    changes = [call for call in log.call_args_list if call.args[0] == 'perception.attention.changed']
+    assert [call.kwargs['current'] for call in changes] == ['away']
     mood.on_idle.assert_not_called()
-    clock.now = 1005
-    attention(controller)
-    mood.on_idle.assert_called_once()
-    assert mood.occ_intensities[OccEmotionToMood.ANGER] > 0
-    clock.now = 1010
-    attention(controller)
-    mood.on_idle.assert_called_once()
+    assert mood.occ_intensities[OccEmotionToMood.ANGER] == 0
 
 
 def test_direct_interaction_restarts_pending_absence_grace_period(session):
-    clock, mood, controller = session
-    attention(controller)
-    clock.now = clock.last_interaction = 1004
-    attention(controller)
-    clock.now = 1008.999
-    attention(controller)
-    mood.on_idle.assert_not_called()
-    clock.now = 1009
-    attention(controller)
-    mood.on_idle.assert_called_once()
+    clock, _, controller = session
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1004.)
+    clock.last_interaction = clock.now
+    stay_away(clock, controller, 1008.999)
+    assert presence(controller) is None
+    stay_away(clock, controller, 1009.)
+    assert presence(controller) == 'away'
 
 
 def test_returning_attention_cancels_deferred_absence(session):
-    clock, mood, controller = session
-    attention(controller)
-    clock.now = 1006
-    attention(controller, 'searching')
-    mood.on_idle.assert_not_called()
-    clock.now = 1007
-    attention(controller)
-    mood.on_idle.assert_called_once()
+    clock, _, controller = session
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1004.)
+    attention(controller, 1004.5, 'searching')
+    clock.now = 1005.
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1009.999)
+    assert presence(controller) is None
+    stay_away(clock, controller, 1010.)
+    assert presence(controller) == 'away'
 
 
 def test_speech_in_same_away_packet_counts_as_interaction_first(session):
-    clock, mood, controller = session
-    clock.now = 1010
+    clock, _, controller = session
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1004.)
 
     def accept_speech(text):
         clock.last_interaction = clock.now
         return True
 
     controller.on_speech = Mock(side_effect=accept_speech)
-    event = PerceptionEvent(source='camera', timestamp=0, attention='away',
-                            speech='hello', speech_id=1)
-    controller.handle_event(event)
-    controller.on_speech.assert_called_once_with('hello')
-    mood.on_idle.assert_not_called()
+    clock.now = 1005.
+    attention(controller, clock.now, speech='hello', speech_id=1)
+    assert presence(controller) is None
     # Cached speech must not keep treating a genuine later absence as input.
-    clock.now = 1020
-    controller.handle_event(event)
-    controller.on_speech.assert_called_once()
-    mood.on_idle.assert_called_once()
+    stay_away(clock, controller, 1009.)
+    clock.now = 1010.
+    attention(controller, clock.now, speech='hello', speech_id=1)
+    controller.on_speech.assert_called_once_with('hello')
+    assert presence(controller) == 'away'
 
 
 def test_suppressed_speech_does_not_reset_absence(session):
-    clock, mood, controller = session
-    clock.now = 1010
+    clock, _, controller = session
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1004.)
     controller.on_speech = Mock()
     controller.set_speech_suppressed(True)
-    controller.handle_event(PerceptionEvent(source='camera', timestamp=0, attention='away',
-                                           speech='speaker echo', speech_id=1))
+    clock.now = 1005.
+    attention(controller, clock.now, speech='speaker echo', speech_id=1)
     controller.on_speech.assert_not_called()
-    mood.on_idle.assert_called_once()
+    assert presence(controller) == 'away'
 
 
 @pytest.mark.parametrize('input_kind', ['mouse', 'hand'])
@@ -115,12 +128,17 @@ def test_real_pet_handlers_refresh_the_idle_time_used_by_attention(session, monk
     from hand_overlay.interaction_host import CharacterHandActions
 
     clock, mood, controller = session
-    clock.now = 1010
+    clock.now = 1005.
+    attention(controller, clock.now)
+    stay_away(clock, controller, 1009.)
+    clock.now = 1010.
     monkeypatch.setattr('character.character_widget.time.monotonic', lambda: clock.now)
     host = SimpleNamespace(
         mood_system=mood, contact_feedback=Mock(),
         _last_character_interaction_time=1000., _cancel_autonomous_behavior=Mock(),
         hide_and_seek=SimpleNamespace(is_active=False), is_dragging=False,
+        current_action='idle', _automatic_pose=None,
+        _perception_actor_state=lambda: {'manual_motion': False},
         _refresh_body_hover=Mock(return_value=True), _physics_body_rect=lambda: QRect(0, 0, 200, 200),
         _pet_last_position=QPoint(10, 10), _pet_last_time=1009.875,
         PET_MIN_SAMPLE_INTERVAL=CharacterWidget.PET_MIN_SAMPLE_INTERVAL,
@@ -130,6 +148,7 @@ def test_real_pet_handlers_refresh_the_idle_time_used_by_attention(session, monk
     )
     host.contact_feedback.pulse.return_value = False
     host._mark_character_interaction = MethodType(CharacterWidget._mark_character_interaction, host)
+    host._mark_pet_interaction = MethodType(CharacterWidget._mark_pet_interaction, host)
     host.get_character_idle_time = MethodType(CharacterWidget.get_character_idle_time, host)
     controller.get_character_idle_time = host.get_character_idle_time
     if input_kind == 'mouse':
@@ -139,8 +158,8 @@ def test_real_pet_handlers_refresh_the_idle_time_used_by_attention(session, monk
     else:
         CharacterHandActions(host).pet(160, .125, (30, 10))
     assert host.get_character_idle_time() == 0
-    attention(controller)
+    attention(controller, clock.now)
+    assert presence(controller) is None
+    stay_away(clock, controller, 1015.)
+    assert presence(controller) == 'away'
     mood.on_idle.assert_not_called()
-    clock.now += 5
-    attention(controller)
-    mood.on_idle.assert_called_once()

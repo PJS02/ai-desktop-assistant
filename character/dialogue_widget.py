@@ -27,14 +27,13 @@ class DialogueBubble(QWidget):
                                 | Qt.WindowType.WindowDoesNotAcceptFocus)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.font = QFont('맑은 고딕', 11)
+        self.font = QFont('Malgun Gothic', 11)
         self.text_view = QTextBrowser(self)
         self.text_view.setFrameShape(QFrame.Shape.NoFrame)
         self.text_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.text_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.text_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.text_view.setOpenExternalLinks(False)
-        self.text_view.setFont(self.font)
         self.text_view.setPlainText(self.text)
         self.text_view.document().setDocumentMargin(0)
         self.close_timer = QTimer(self)
@@ -47,14 +46,18 @@ class DialogueBubble(QWidget):
 
     def set_style(self, style):
         self.style = normalize_dialogue_style(style, strict=True)
-        rounded = self.style == 'rounded'
         subtitle = self.style == 'subtitle'
-        self.bubble_color = QColor('#fffdf6' if rounded else '#32323c' if not subtitle else '#202936')
-        self.text_color = QColor('#263448' if rounded else '#ffffff')
-        self.border_color = QColor('#8ab4cc' if rounded else '#9696c8')
-        self.border_width = 0 if subtitle else 2
-        self.padding_x, self.padding_y = (14, 8) if subtitle else (16, 12)
-        self.tail_height = 0 if subtitle else 12
+        self.bubble_color = QColor('#202936' if subtitle else '#ffffff')
+        self.text_color = QColor('#ffffff' if subtitle else '#263645')
+        self.border_color = QColor('#c2cedb')
+        self.border_width = 0 if subtitle else 1
+        self.padding_x, self.padding_y = 14, 8
+        self.tail_height = 0 if subtitle else 10
+        if subtitle:
+            self.font.setPointSize(11)
+        else:
+            self.font.setPixelSize(14)
+        self.text_view.setFont(self.font)
         self.text_view.setStyleSheet(
             'QTextBrowser { background: transparent; color: ' + self.text_color.name()
             + '; border: none; } QScrollBar:vertical { width: 7px; }')
@@ -85,16 +88,18 @@ class DialogueBubble(QWidget):
 
     def _bubble_path(self):
         path = QPainterPath()
-        radius = 20 if self.style == 'rounded' else 5 if self.style == 'subtitle' else 10
+        radius = 20 if self.style == 'rounded' else 5 if self.style == 'subtitle' else 8
         path.addRoundedRect(QRectF(5, 5, self.bubble_width, self.bubble_height), radius, radius)
-        if self.tail_height:
-            center = self.bubble_width * .45 + 5
-            half = self.bubble_width * .15 if self.style == 'legacy' else 10
-            path.moveTo(center - half, self.bubble_height + 5)
-            path.lineTo(center + half, self.bubble_height + 5)
-            path.lineTo(center, self.bubble_height + self.tail_height + 5)
-            path.closeSubpath()
-        return path
+        if not self.tail_height:
+            return path
+        center = self.bubble_width * .45 + 5
+        half = 10 if self.style == 'rounded' else 9
+        tail = QPainterPath()
+        tail.moveTo(center - half, self.bubble_height + 4)
+        tail.lineTo(center + half, self.bubble_height + 4)
+        tail.lineTo(center, self.bubble_height + self.tail_height + 5)
+        tail.closeSubpath()
+        return path.united(tail)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -150,7 +155,8 @@ class UserDialogueBubble(DialogueBubble):
 
     def set_style(self, style):
         super().set_style('rounded')
-        self.bubble_color = QColor('#edf7fa')
+        self.bubble_color = QColor('#f4f7fb')
+        self.border_color = QColor('#cbd3dc')
 
     def _calculate_size(self, bounds=None):
         self.tail_height = 0
@@ -162,7 +168,7 @@ class UserDialogueBubble(DialogueBubble):
 
     def _bubble_path(self):
         body = QRectF(5, 5, self.bubble_width, self.bubble_height)
-        radius = min(24, self.bubble_height / 2)
+        radius = min(14, self.bubble_height / 2)
         path = QPainterPath()
         path.addRoundedRect(body, radius, radius)
         return path
@@ -334,7 +340,7 @@ class DialogueInputWidget(QWidget):
         
         # 레이아웃
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(5)
         
         # 입력 필드
@@ -343,64 +349,70 @@ class DialogueInputWidget(QWidget):
         self.input_field.returnPressed.connect(self._on_send)
         self.input_field.setStyleSheet("""
             QLineEdit {
-                background-color: #2a2a3a;
-                color: #ffffff;
-                border: 2px solid #6666cc;
-                border-radius: 5px;
-                padding: 8px;
+                background-color: #ffffff;
+                color: #263645;
+                placeholder-text-color: #515e6a;
+                border: 1px solid #c2cedb;
+                border-radius: 6px;
+                padding: 0 9px;
                 font-size: 12px;
-                font-family: '맑은 고딕';
+                font-family: 'Malgun Gothic';
             }
             QLineEdit:focus {
-                border: 2px solid #9999ff;
+                border: 2px solid #4d6b89;
             }
         """)
         
         # 전송 버튼
         self.send_button = QPushButton("전송")
         self.send_button.clicked.connect(self._on_send)
+        self.send_button.setFixedWidth(58)
         self.send_button.setStyleSheet("""
             QPushButton {
-                background-color: #4444aa;
-                color: #ffffff;
-                border: 1px solid #6666cc;
-                border-radius: 5px;
-                padding: 8px 16px;
+                background-color: #e9f1fa;
+                color: #274965;
+                border: 1px solid #c2cedb;
+                border-radius: 6px;
                 font-size: 11px;
-                font-family: '맑은 고딕';
+                font-family: 'Malgun Gothic';
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #5555bb;
+                background-color: #d3deea;
             }
             QPushButton:pressed {
-                background-color: #3333aa;
+                background-color: #c0cedd;
+            }
+            QPushButton:focus {
+                border-color: #4d6b89;
             }
         """)
         
         # 닫기 버튼
         self.close_button = QPushButton("✕")
         self.close_button.clicked.connect(self.close)
-        self.close_button.setMaximumWidth(35)
+        self.close_button.setFixedWidth(32)
         self.close_button.setStyleSheet("""
             QPushButton {
-                background-color: #aa4444;
-                color: #ffffff;
-                border: 1px solid #cc6666;
-                border-radius: 5px;
-                padding: 8px;
+                background-color: #f1f4f8;
+                color: #515e6a;
+                border: 1px solid #c2cedb;
+                border-radius: 6px;
                 font-size: 11px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #bb5555;
+                background-color: #dae1e8;
+            }
+            QPushButton:focus {
+                border-color: #4d6b89;
             }
         """)
         
         # 레이아웃 추가
-        layout.addWidget(self.input_field)
-        layout.addWidget(self.send_button)
-        layout.addWidget(self.close_button)
+        for control in (self.input_field, self.send_button, self.close_button):
+            control.setFixedHeight(34)
+            layout.addWidget(control)
         
         # 크기
         self.setFixedHeight(50)
@@ -413,9 +425,9 @@ class DialogueInputWidget(QWidget):
         """전송 버튼 클릭 또는 엔터 키"""
         text = self.input_field.text().strip()
         if text:
-            self.text_submitted.emit(text)
             self.input_field.clear()
-            self.input_field.setFocus()
+            self.hide()
+            self.text_submitted.emit(text)
     
     def set_position_below_character(self, character_x: int, character_y: int, character_width: int):
         """캐릭터 아래에 입력창 위치 지정"""

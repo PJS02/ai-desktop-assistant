@@ -168,6 +168,7 @@ class JsonLineTcpReceiver:
             return
         trace_id = payload.get('trace_id') or payload.get('event_id') or new_trace_id('recognition')
         self._log_received(payload, client, trace_id)
+        payload['_perception_client'] = client
         self.on_event(payload)
 
     @staticmethod

@@ -76,6 +76,7 @@ class RpsGameOverlay(QWidget):
     cue_requested = pyqtSignal(str)
     cue_stopped = pyqtSignal()
     result_revealed = pyqtSignal(str)
+    emotion_event = pyqtSignal(str, dict)
     CAPTURE_SECONDS = 5.0
     REVEAL_SECONDS = 0.65
     RESULT_SECONDS = 4.0
@@ -110,23 +111,23 @@ class RpsGameOverlay(QWidget):
         self.card = QFrame(self)
         self.card.setObjectName("rpsCard")
         self.card.setStyleSheet("""
-            QFrame#rpsCard { background: rgba(25, 35, 47, 244); border: 2px solid #8ddbc5;
-                border-radius: 18px; }
-            QLabel { color: #f4f8fc; background: transparent; border: none;
+            QFrame#rpsCard, QFrame#chamCard { background: #ffffff; border: 1px solid #c2cedb;
+                border-radius: 8px; }
+            QLabel { color: #263645; background: transparent; border: none;
                 font-family: 'Malgun Gothic'; }
         """)
         outer.addWidget(self.card)
         layout = QVBoxLayout(self.card)
-        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setContentsMargins(15, 13, 15, 13)
         layout.setSpacing(6)
         self.title = QLabel("가위바위보", self.card)
-        self.title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        self.title.setStyleSheet("font-size: 22px; font-weight: bold;")
         self.title.setWordWrap(True)
         self.opponent_image = QLabel(self.card)
         self.opponent_image.setFixedHeight(80)
-        self.opponent_image.setStyleSheet("font-size: 48px; font-weight: bold; color: #8ddbc5;")
+        self.opponent_image.setStyleSheet("font-size: 44px; font-weight: bold; color: #2e4f69;")
         self.hint = QLabel(self.card)
-        self.hint.setStyleSheet("font-size: 12px;")
+        self.hint.setStyleSheet("font-size: 12px; color: #4e5e6c;")
         self.hint.setWordWrap(True)
         for label in (self.title, self.opponent_image, self.hint):
             label.setTextFormat(Qt.TextFormat.PlainText)
@@ -168,6 +169,7 @@ class RpsGameOverlay(QWidget):
         self.cue_stopped.emit()
         self._last_cue = None
         if self.session:
+            self._report_emotion('game_cancel', 'cancel')
             log_event('game.rps.ended', '이전 가위바위보 판을 재시작합니다.',
                       category='캐릭터 상태', trace_id=self.session, reason='restarted', state=self.state)
         self.timer.stop()
@@ -193,9 +195,22 @@ class RpsGameOverlay(QWidget):
         # 실패 응답이 늦게 도착해도 종료 명령으로 임시 인식 모드를 정리한다.
         self._recognition_session = self.session
         if not self._command(f"rps_begin {self.session}"):
-            self.finish_without_result("사용자 인식 프로그램을 연결하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.")
+            self.finish_without_result("사용자 인식 프로그램을 연결하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.")
             return
+        self._report_emotion('game_start', 'expect')
         self.timer.start()
+
+    def _report_emotion(self, event, phase, **context):
+        if self.session:
+            game = '참참참' if hasattr(self, 'round_number') else '가위바위보'
+            label = {'game_start': '기대', 'game_win': '승리', 'game_loss': '패배',
+                     'game_draw': '무승부', 'game_disappointed': '역전패', 'game_cancel': '종료'}[event]
+            self.emotion_event.emit(event, {
+                'event_id': f'{self.session}:{getattr(self, "round_number", 0)}:{phase}',
+                'session': self.session,
+                'source': f'{game} {label}',
+                **context,
+            })
 
     def _begin_capture(self):
         capture_at = self.deadline
@@ -225,7 +240,7 @@ class RpsGameOverlay(QWidget):
         if self.state == "countdown" and now >= self.deadline:
             self._begin_capture()
         if self.state == "waiting" and now >= self.deadline:
-            self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
+            self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.", reason='timeout')
             return
         previous_label = self.tracker.label
         if self.tracker.feed(payload, now) and self.state == "waiting":
@@ -252,7 +267,7 @@ class RpsGameOverlay(QWidget):
                     self._request_cue(cue)
         if self.state == "waiting":
             if now >= self.deadline:
-                self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터 메뉴에서 다시 시작해주세요.", reason='timeout')
+                self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.", reason='timeout')
             else:
                 hand = self.tracker.stable_hand(now)
                 if hand:
@@ -265,10 +280,12 @@ class RpsGameOverlay(QWidget):
             self.title.setText({"당신의 승리!": "승리!", "캐릭터의 승리!": "패배!",
                                 "무승부!": "무승부!"}[self.result])
             self.hint.setText(f"사용자 기준 · 나 {HANDS[self.player]} / 캐릭터 {HANDS[self.opponent]}\n"
-                              "다시 하기·종료는 캐릭터 메뉴에서")
-            self.result_revealed.emit({
+                              "캐릭터를 더블클릭해 다시 하거나 끝낼 수 있어요")
+            event = {
                 "당신의 승리!": "game_loss", "캐릭터의 승리!": "game_win", "무승부!": "game_draw",
-            }[self.result])
+            }[self.result]
+            self._report_emotion(event, 'result')
+            self.result_revealed.emit(event)
         elif self.state in {"result", "error"} and now >= self.deadline:
             self.close()
             return
@@ -300,6 +317,7 @@ class RpsGameOverlay(QWidget):
         self.update_position()
 
     def finish_without_result(self, message, *, reason='connection_failed'):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         log_event('game.rps.no_result', '가위바위보 판정을 완료하지 못했습니다.',
                   category='캐릭터 상태', level='WARNING', trace_id=self.session,
@@ -340,6 +358,7 @@ class RpsGameOverlay(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent):
+        self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         if self.session:
             log_event('game.rps.ended', '가위바위보 판을 종료합니다.', category='캐릭터 상태',

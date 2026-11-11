@@ -435,7 +435,8 @@ class SettingsDialog(QDialog):
         self.generate_dialogue_button.setAutoDefault(False)
         self.generate_dialogue_button.clicked.connect(lambda _checked=False: self.dialogue_generation_requested.emit())
         form.addRow('AI 대사', self.generate_dialogue_button)
-        hint = QLabel('직접 표시한 말풍선은 숨기거나 일반 대화를 시작할 때까지 유지됩니다.')
+        hint = QLabel('AI 대사 생성을 누른 뒤 분석할 다른 창을 선택하세요.\n'
+                      '직접 표시한 말풍선은 숨기거나 일반 대화를 시작할 때까지 유지됩니다.')
         hint.setWordWrap(True)
         form.addRow(hint)
 
@@ -905,9 +906,9 @@ class SettingsDialog(QDialog):
             '검지만 펴고 나머지는 굽힌 채 머리 윗부분에 닿으면 쓰다듬습니다.\n'
             '엄지·검지를 살짝 굽혀 머리를 잡고, 손가락을 모두 펴면 놓습니다.\n'
             '검지로 볼을 찌르면 뒤로 밀립니다.\n'
-            '공은 엄지·검지를 맞대어 집고, 손을 펴서 놓습니다.\n'
+            '공은 엄지·검지를 맞대어 집고, 빠르게 휘둘러 던집니다.\n'
             '편 손을 가로로 놓으면 캐릭터를 손 위에 태울 수 있습니다.\n'
-            '공은 캐릭터 우클릭 메뉴의 공 꺼내기로 만드세요.')
+            '캐릭터를 더블클릭하고 공 아이콘을 누르면 공을 꺼낼 수 있어요.')
         self.hand_display.setChecked(options['enabled'])
         form.addRow(self.hand_display)
         self.hand_inputs = {}

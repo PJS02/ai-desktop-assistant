@@ -2,7 +2,7 @@
 import time
 
 from PyQt6.QtCore import QObject, QTimer
-from .reactions import react
+from .reactions import experience
 
 
 class AutomaticActions(QObject):
@@ -29,13 +29,12 @@ class AutomaticActions(QObject):
         self.wake()
         self.tick()
 
-    def wake(self):
+    def wake(self, *, appraise=True):
         self.sleep_after = time.monotonic() + self.SLEEP_SECONDS
         if self.host._automatic_pose == 'sleep':
-            self._release()
-            react(self.host, "wake", follow="wake_settle")
+            self._release(appraise=appraise)
 
-    def _release(self):
+    def _release(self, *, appraise=True):
         host = self.host
         previous, host._automatic_pose = host._automatic_pose, None
         if (previous and host.current_action == previous
@@ -44,6 +43,8 @@ class AutomaticActions(QObject):
             host.update_action(host.mood_system.decide_emotion())
             if host.current_action == 'idle':
                 host.animation_controller.start_idle()
+        if previous == 'sleep' and appraise:
+            experience(host, 'wake', follow='wake_settle')
 
     def tick(self):
         host = self.host
@@ -54,6 +55,8 @@ class AutomaticActions(QObject):
             return
         if host._character_closing:
             self.timer.stop()
+            return
+        if getattr(host, '_pointer_interaction_active', lambda: False)():
             return
         blocked = (host.rig_view is None or host._manual_control_active()
                    or getattr(getattr(host, 'window_presence', None), 'blocks_physics', False)
