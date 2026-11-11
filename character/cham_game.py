@@ -298,6 +298,7 @@ class ChamGameOverlay(RpsGameOverlay):
                     self._reaction = self.reaction_face(event, 1.25)
                     self._reaction_until = now + 1.55
                 self._end_recognition()
+                self.result_revealed.emit(event)
         elif self.state in {"finished", "error"} and now >= self.deadline:
             self.close()
         if self.isVisible():
@@ -311,8 +312,8 @@ class ChamGameOverlay(RpsGameOverlay):
                       trace_id=self.session, player_score=self.player_score,
                       character_score=self.character_score, state=self.state)
         self.timer.stop()
-        self._end_recognition()
         self.direction_bubble.hide()
+        self._end_recognition()
         self.state, self.session = "idle", None
         if self.pose_callback:
             self.pose_callback(None, None)

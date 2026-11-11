@@ -1,0 +1,335 @@
+{
+  "engine": "gpt_sovits",
+  "personalities": {
+    "(Default)": {
+      "rps": {
+        "win": [
+          {"text": "이번 판은 내가 이겼어!", "file": "results/default/rps_win_01.wav"},
+          {"text": "오, 내 손이 통했네.", "file": "results/default/rps_win_02.wav"},
+          {"text": "이번엔 내 선택이 맞았네.", "file": "results/default/rps_win_03.wav"},
+          {"text": "좋아, 한 판 가져갔어.", "file": "results/default/rps_win_04.wav"},
+          {"text": "내 손에 운이 따라줬네.", "file": "results/default/rps_win_05.wav"},
+          {"text": "이겼다. 꽤 좋은 승부였어.", "file": "results/default/rps_win_06.wav"},
+          {"text": "이번 판은 내 쪽이네.", "file": "results/default/rps_win_07.wav"},
+          {"text": "내가 고른 게 통했어.", "file": "results/default/rps_win_08.wav"},
+          {"text": "좋은 승부였네. 내가 이겼어.", "file": "results/default/rps_win_09.wav"},
+          {"text": "오, 이걸로 한 판 땄네.", "file": "results/default/rps_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "이번 판은 네가 이겼어.", "file": "results/default/rps_loss_01.wav"},
+          {"text": "아, 내 손이 졌네.", "file": "results/default/rps_loss_02.wav"},
+          {"text": "내가 한 수 밀렸네.", "file": "results/default/rps_loss_03.wav"},
+          {"text": "네 선택이 더 좋았어.", "file": "results/default/rps_loss_04.wav"},
+          {"text": "아쉽다. 다음 판도 해 볼까?", "file": "results/default/rps_loss_05.wav"},
+          {"text": "이번엔 네가 한 판 가져갔네.", "file": "results/default/rps_loss_06.wav"},
+          {"text": "좋은 수였네. 내가 졌어.", "file": "results/default/rps_loss_07.wav"},
+          {"text": "이번엔 운이 네 편이네.", "file": "results/default/rps_loss_08.wav"},
+          {"text": "한 판 내줬네. 재밌었어.", "file": "results/default/rps_loss_09.wav"},
+          {"text": "아, 이번엔 내가 밀렸어.", "file": "results/default/rps_loss_10.wav"}
+        ],
+        "draw": [
+          {"text": "똑같은 걸 냈네!", "file": "results/default/rps_draw_01.wav"},
+          {"text": "이번엔 비겼어.", "file": "results/default/rps_draw_02.wav"},
+          {"text": "서로 같은 수였네.", "file": "results/default/rps_draw_03.wav"},
+          {"text": "한 번 더 해 볼까?", "file": "results/default/rps_draw_04.wav"},
+          {"text": "승부는 다음 판이네.", "file": "results/default/rps_draw_05.wav"},
+          {"text": "우리 생각이 통했나 봐.", "file": "results/default/rps_draw_06.wav"},
+          {"text": "이런, 같은 손이야.", "file": "results/default/rps_draw_07.wav"},
+          {"text": "우리 둘 다 같은 걸 골랐네.", "file": "results/default/rps_draw_08.wav"},
+          {"text": "이번 판은 무승부야.", "file": "results/default/rps_draw_09.wav"},
+          {"text": "비겼네. 다음엔 뭘 낼까?", "file": "results/default/rps_draw_10.wav"}
+        ]
+      },
+      "cham": {
+        "win": [
+          {"text": "같은 쪽이야. 내가 이겼어!", "file": "results/default/cham_win_01.wav"},
+          {"text": "오, 이번엔 내가 맞혔네.", "file": "results/default/cham_win_02.wav"},
+          {"text": "딱 같은 방향을 봤네!", "file": "results/default/cham_win_03.wav"},
+          {"text": "좋아, 이번엔 잡았다.", "file": "results/default/cham_win_04.wav"},
+          {"text": "네가 볼 쪽을 맞혔어.", "file": "results/default/cham_win_05.wav"},
+          {"text": "이번엔 방향이 딱 맞았네.", "file": "results/default/cham_win_06.wav"},
+          {"text": "이번엔 같은 쪽을 골랐네.", "file": "results/default/cham_win_07.wav"},
+          {"text": "내가 고른 방향이 맞았어.", "file": "results/default/cham_win_08.wav"},
+          {"text": "고개 돌린 쪽을 맞혔네.", "file": "results/default/cham_win_09.wav"},
+          {"text": "아슬아슬하게 잡았어.", "file": "results/default/cham_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "다른 쪽이네. 네가 이겼어.", "file": "results/default/cham_loss_01.wav"},
+          {"text": "아, 이번엔 빗나갔네.", "file": "results/default/cham_loss_02.wav"},
+          {"text": "잘 피했네. 내가 졌어.", "file": "results/default/cham_loss_03.wav"},
+          {"text": "이번엔 네 방향을 못 맞혔어.", "file": "results/default/cham_loss_04.wav"},
+          {"text": "오, 반대쪽을 봤구나.", "file": "results/default/cham_loss_05.wav"},
+          {"text": "아쉽네. 이번 판은 네 거야.", "file": "results/default/cham_loss_06.wav"},
+          {"text": "네 고개는 반대로 갔네.", "file": "results/default/cham_loss_07.wav"},
+          {"text": "이번엔 내가 놓쳤어.", "file": "results/default/cham_loss_08.wav"},
+          {"text": "고개 돌린 쪽이 달랐어.", "file": "results/default/cham_loss_09.wav"},
+          {"text": "네가 한발 앞섰네.", "file": "results/default/cham_loss_10.wav"}
+        ]
+      }
+    },
+    "밝고 활발": {
+      "rps": {
+        "win": [
+          {"text": "야호! 내 승리다!", "file": "results/cheerful/rps_win_01.wav"},
+          {"text": "됐다! 나 이겼어!", "file": "results/cheerful/rps_win_02.wav"},
+          {"text": "좋았어! 내 손이 딱 통했어!", "file": "results/cheerful/rps_win_03.wav"},
+          {"text": "신난다! 한 판 먼저 가져간다!", "file": "results/cheerful/rps_win_04.wav"},
+          {"text": "와, 내 선택 제대로 먹혔어!", "file": "results/cheerful/rps_win_05.wav"},
+          {"text": "이겼다! 이 기세로 한 판 더?", "file": "results/cheerful/rps_win_06.wav"},
+          {"text": "와, 나 한 판 땄다!", "file": "results/cheerful/rps_win_07.wav"},
+          {"text": "내가 이겼어! 신난다!", "file": "results/cheerful/rps_win_08.wav"},
+          {"text": "예스! 내 손이 해냈어!", "file": "results/cheerful/rps_win_09.wav"},
+          {"text": "좋아! 이 맛에 게임하지!", "file": "results/cheerful/rps_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "으앗! 한 방 먹었네!", "file": "results/cheerful/rps_loss_01.wav"},
+          {"text": "와, 네가 이겼다! 멋져!", "file": "results/cheerful/rps_loss_02.wav"},
+          {"text": "앗, 내가 졌어! 한 판 더!", "file": "results/cheerful/rps_loss_03.wav"},
+          {"text": "아까비! 다음엔 내가 이긴다!", "file": "results/cheerful/rps_loss_04.wav"},
+          {"text": "이야, 네 손이 한 수 위였어!", "file": "results/cheerful/rps_loss_05.wav"},
+          {"text": "좋아, 패배 인정! 다시 붙자!", "file": "results/cheerful/rps_loss_06.wav"},
+          {"text": "헉, 내가 졌어! 잘하는데?", "file": "results/cheerful/rps_loss_07.wav"},
+          {"text": "졌다! 이번 판은 네 거야!", "file": "results/cheerful/rps_loss_08.wav"},
+          {"text": "오, 한 방 제대로 맞았네!", "file": "results/cheerful/rps_loss_09.wav"},
+          {"text": "으아, 아깝다! 또 하자!", "file": "results/cheerful/rps_loss_10.wav"}
+        ],
+        "draw": [
+          {"text": "앗, 우리 손이 똑같아!", "file": "results/cheerful/rps_draw_01.wav"},
+          {"text": "와, 어떻게 같은 걸 냈지?", "file": "results/cheerful/rps_draw_02.wav"},
+          {"text": "비겼다! 바로 한 판 더!", "file": "results/cheerful/rps_draw_03.wav"},
+          {"text": "둘 다 같은 생각 했네!", "file": "results/cheerful/rps_draw_04.wav"},
+          {"text": "아까비! 승부는 다음 판!", "file": "results/cheerful/rps_draw_05.wav"},
+          {"text": "이야, 타이밍도 손도 딱 맞았어!", "file": "results/cheerful/rps_draw_06.wav"},
+          {"text": "어라, 무승부라니! 재밌다!", "file": "results/cheerful/rps_draw_07.wav"},
+          {"text": "좋아! 이번엔 비긴 걸로!", "file": "results/cheerful/rps_draw_08.wav"},
+          {"text": "다음 판은 누가 이길까?", "file": "results/cheerful/rps_draw_09.wav"},
+          {"text": "우와, 같은 걸 냈어! 찌찌뽕!", "file": "results/cheerful/rps_draw_10.wav"}
+        ]
+      },
+      "cham": {
+        "win": [
+          {"text": "잡았다! 같은 쪽이야!", "file": "results/cheerful/cham_win_01.wav"},
+          {"text": "야호! 방향 맞혔어!", "file": "results/cheerful/cham_win_02.wav"},
+          {"text": "우와, 고개가 딱 맞았네!", "file": "results/cheerful/cham_win_03.wav"},
+          {"text": "좋았어! 이번엔 내 승리!", "file": "results/cheerful/cham_win_04.wav"},
+          {"text": "됐다! 네가 볼 쪽을 맞혔어!", "file": "results/cheerful/cham_win_05.wav"},
+          {"text": "와, 참참참 성공! 신난다!", "file": "results/cheerful/cham_win_06.wav"},
+          {"text": "얏호! 딱 같은 쪽이야!", "file": "results/cheerful/cham_win_07.wav"},
+          {"text": "이야, 내가 방향 맞혔다!", "file": "results/cheerful/cham_win_08.wav"},
+          {"text": "오예! 이번엔 안 놓쳤어!", "file": "results/cheerful/cham_win_09.wav"},
+          {"text": "고개가 딱 맞았어! 성공!", "file": "results/cheerful/cham_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "으앗, 놓쳤다! 잘 피했네!", "file": "results/cheerful/cham_loss_01.wav"},
+          {"text": "와, 반대쪽이었어? 대단한데!", "file": "results/cheerful/cham_loss_02.wav"},
+          {"text": "앗, 속았네! 이번엔 네 승리!", "file": "results/cheerful/cham_loss_03.wav"},
+          {"text": "아이고, 완전 빗나갔어!", "file": "results/cheerful/cham_loss_04.wav"},
+          {"text": "졌지만 재밌다! 한 판 더 할래?", "file": "results/cheerful/cham_loss_05.wav"},
+          {"text": "이야, 멋지게 피했어!", "file": "results/cheerful/cham_loss_06.wav"},
+          {"text": "앗, 다른 쪽이네! 졌다!", "file": "results/cheerful/cham_loss_07.wav"},
+          {"text": "우와, 그쪽을 볼 줄이야!", "file": "results/cheerful/cham_loss_08.wav"},
+          {"text": "이야, 완전히 속았어!", "file": "results/cheerful/cham_loss_09.wav"},
+          {"text": "놓쳤다! 너 진짜 잘 피하네!", "file": "results/cheerful/cham_loss_10.wav"}
+        ]
+      }
+    },
+    "진중하고 신중": {
+      "rps": {
+        "win": [
+          {"text": "이번엔 내 선택이 적중했어.", "file": "results/thoughtful/rps_win_01.wav"},
+          {"text": "차분히 냈더니 통했네.", "file": "results/thoughtful/rps_win_02.wav"},
+          {"text": "한 번 더 생각한 보람이 있네.", "file": "results/thoughtful/rps_win_03.wav"},
+          {"text": "이번 판은 내가 앞섰어.", "file": "results/thoughtful/rps_win_04.wav"},
+          {"text": "좋은 승부였어. 내 승리야.", "file": "results/thoughtful/rps_win_05.wav"},
+          {"text": "내가 한 수 앞섰네.", "file": "results/thoughtful/rps_win_06.wav"},
+          {"text": "이번엔 고른 패가 맞았어.", "file": "results/thoughtful/rps_win_07.wav"},
+          {"text": "내 선택이 이번 판을 갈랐네.", "file": "results/thoughtful/rps_win_08.wav"},
+          {"text": "내가 이겼어. 차이가 크진 않았어.", "file": "results/thoughtful/rps_win_09.wav"},
+          {"text": "이번 판은 내가 가져갈게.", "file": "results/thoughtful/rps_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "네 수가 더 좋았어.", "file": "results/thoughtful/rps_loss_01.wav"},
+          {"text": "이번엔 내 판단이 빗나갔어.", "file": "results/thoughtful/rps_loss_02.wav"},
+          {"text": "좋은 선택이었어. 내가 졌네.", "file": "results/thoughtful/rps_loss_03.wav"},
+          {"text": "다음엔 내 패를 바꿔볼게.", "file": "results/thoughtful/rps_loss_04.wav"},
+          {"text": "이번 패배는 인정할게.", "file": "results/thoughtful/rps_loss_05.wav"},
+          {"text": "이번 판은 네가 앞섰네.", "file": "results/thoughtful/rps_loss_06.wav"},
+          {"text": "네가 낸 패에 내가 졌어.", "file": "results/thoughtful/rps_loss_07.wav"},
+          {"text": "내 선택을 다시 생각해 봐야겠네.", "file": "results/thoughtful/rps_loss_08.wav"},
+          {"text": "이번엔 네 선택이 통했어.", "file": "results/thoughtful/rps_loss_09.wav"},
+          {"text": "패배야. 다음엔 다른 수를 내 볼게.", "file": "results/thoughtful/rps_loss_10.wav"}
+        ],
+        "draw": [
+          {"text": "같은 패를 냈어. 무승부야.", "file": "results/thoughtful/rps_draw_01.wav"},
+          {"text": "이번 판은 승부가 나지 않았네.", "file": "results/thoughtful/rps_draw_02.wav"},
+          {"text": "서로 고른 수가 같았어.", "file": "results/thoughtful/rps_draw_03.wav"},
+          {"text": "비겼네. 다음 판을 생각해 보자.", "file": "results/thoughtful/rps_draw_04.wav"},
+          {"text": "같은 수였으니 결과도 같네.", "file": "results/thoughtful/rps_draw_05.wav"},
+          {"text": "둘 다 같은 선택을 했어.", "file": "results/thoughtful/rps_draw_06.wav"},
+          {"text": "이번 결과는 무승부로 둘게.", "file": "results/thoughtful/rps_draw_07.wav"},
+          {"text": "서두를 것 없어. 다시 해 보자.", "file": "results/thoughtful/rps_draw_08.wav"},
+          {"text": "서로 한 수도 앞서지 못했네.", "file": "results/thoughtful/rps_draw_09.wav"},
+          {"text": "이번엔 비겼어. 다음엔 패를 바꿔 볼게.", "file": "results/thoughtful/rps_draw_10.wav"}
+        ]
+      },
+      "cham": {
+        "win": [
+          {"text": "예상한 방향과 같았어.", "file": "results/thoughtful/cham_win_01.wav"},
+          {"text": "고개 방향이 일치했네.", "file": "results/thoughtful/cham_win_02.wav"},
+          {"text": "이번엔 내 판단이 맞았어.", "file": "results/thoughtful/cham_win_03.wav"},
+          {"text": "네가 돌릴 쪽을 맞혔어.", "file": "results/thoughtful/cham_win_04.wav"},
+          {"text": "같은 방향이니 내 승리야.", "file": "results/thoughtful/cham_win_05.wav"},
+          {"text": "이번엔 방향을 제대로 짚었네.", "file": "results/thoughtful/cham_win_06.wav"},
+          {"text": "이번 판은 같은 방향이었어.", "file": "results/thoughtful/cham_win_07.wav"},
+          {"text": "예상이 맞았어. 내 승리야.", "file": "results/thoughtful/cham_win_08.wav"},
+          {"text": "이번엔 쪽을 잘 골랐네.", "file": "results/thoughtful/cham_win_09.wav"},
+          {"text": "네 고개 방향을 제대로 맞혔어.", "file": "results/thoughtful/cham_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "이번엔 방향을 잘못 짚었어.", "file": "results/thoughtful/cham_loss_01.wav"},
+          {"text": "예상과 반대였네. 네 승리야.", "file": "results/thoughtful/cham_loss_02.wav"},
+          {"text": "네가 다른 쪽을 골랐네.", "file": "results/thoughtful/cham_loss_03.wav"},
+          {"text": "판단이 빗나갔어. 내가 졌네.", "file": "results/thoughtful/cham_loss_04.wav"},
+          {"text": "네가 잘 피했어. 인정할게.", "file": "results/thoughtful/cham_loss_05.wav"},
+          {"text": "다음엔 방향을 다르게 골라볼게.", "file": "results/thoughtful/cham_loss_06.wav"},
+          {"text": "고른 방향이 서로 달랐어.", "file": "results/thoughtful/cham_loss_07.wav"},
+          {"text": "이번엔 내가 틀렸어. 네 승리야.", "file": "results/thoughtful/cham_loss_08.wav"},
+          {"text": "다른 방향이라 내가 놓쳤네.", "file": "results/thoughtful/cham_loss_09.wav"},
+          {"text": "네가 피했으니 이번 판은 네 거야.", "file": "results/thoughtful/cham_loss_10.wav"}
+        ]
+      }
+    },
+    "친근하고 따뜻": {
+      "rps": {
+        "win": [
+          {"text": "내가 이겼네. 너랑 하니까 재밌어.", "file": "results/warm/rps_win_01.wav"},
+          {"text": "한 판 이겼어. 같이 해 줘서 고마워.", "file": "results/warm/rps_win_02.wav"},
+          {"text": "내 손이 통했네. 또 같이 하자.", "file": "results/warm/rps_win_03.wav"},
+          {"text": "이번엔 내가 이겼지만 좋은 승부였어.", "file": "results/warm/rps_win_04.wav"},
+          {"text": "내가 한 판 가져갔네. 즐거웠어.", "file": "results/warm/rps_win_05.wav"},
+          {"text": "이겼어. 같이 웃을 일이 하나 늘었네.", "file": "results/warm/rps_win_06.wav"},
+          {"text": "이번엔 내 손이 이겼네. 재미있었어.", "file": "results/warm/rps_win_07.wav"},
+          {"text": "한 판 이겼다. 너도 잘했어.", "file": "results/warm/rps_win_08.wav"},
+          {"text": "내가 이겼네. 같이 한 판 더 할까?", "file": "results/warm/rps_win_09.wav"},
+          {"text": "내가 이겼어. 네가 같이해 줘서 좋아.", "file": "results/warm/rps_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "네가 이겼어. 축하해!", "file": "results/warm/rps_loss_01.wav"},
+          {"text": "내가 졌네. 네 선택 좋았어.", "file": "results/warm/rps_loss_02.wav"},
+          {"text": "졌지만 너랑 해서 재밌었어.", "file": "results/warm/rps_loss_03.wav"},
+          {"text": "이번 판은 네 승리야. 잘했어.", "file": "results/warm/rps_loss_04.wav"},
+          {"text": "네가 이기는 걸 보니 나도 기쁘네.", "file": "results/warm/rps_loss_05.wav"},
+          {"text": "네가 한 판 가져갔네. 또 같이 하자.", "file": "results/warm/rps_loss_06.wav"},
+          {"text": "내가 졌지만 네가 잘해서 좋았어.", "file": "results/warm/rps_loss_07.wav"},
+          {"text": "네가 이겼네. 박수 쳐 줄게!", "file": "results/warm/rps_loss_08.wav"},
+          {"text": "좋은 승부였어. 이번 판은 네 거야.", "file": "results/warm/rps_loss_09.wav"},
+          {"text": "네가 한 수 앞섰네. 같이 해서 좋았어.", "file": "results/warm/rps_loss_10.wav"}
+        ],
+        "draw": [
+          {"text": "우리 같은 걸 냈네. 웃음 난다.", "file": "results/warm/rps_draw_01.wav"},
+          {"text": "비겼어. 한 번 더 같이 해 볼까?", "file": "results/warm/rps_draw_02.wav"},
+          {"text": "같은 걸 골랐네. 마음이 통했나 봐.", "file": "results/warm/rps_draw_03.wav"},
+          {"text": "무승부네. 같이 하니까 그래도 좋아.", "file": "results/warm/rps_draw_04.wav"},
+          {"text": "같은 손이네. 너도 웃었어?", "file": "results/warm/rps_draw_05.wav"},
+          {"text": "둘이 딱 맞췄네. 재밌다!", "file": "results/warm/rps_draw_06.wav"},
+          {"text": "우리 둘 다 같은 생각이었네.", "file": "results/warm/rps_draw_07.wav"},
+          {"text": "비겼지만 즐거웠어. 또 하자.", "file": "results/warm/rps_draw_08.wav"},
+          {"text": "이번엔 같은 수였네. 좋은 판이었어.", "file": "results/warm/rps_draw_09.wav"},
+          {"text": "같은 걸 냈어. 같이 하니까 더 웃겨.", "file": "results/warm/rps_draw_10.wav"}
+        ]
+      },
+      "cham": {
+        "win": [
+          {"text": "같은 쪽이네. 같이 하니까 재밌어.", "file": "results/warm/cham_win_01.wav"},
+          {"text": "내가 맞혔어. 한 판 더 같이 할래?", "file": "results/warm/cham_win_02.wav"},
+          {"text": "잡았다. 너랑 하니까 더 즐거워.", "file": "results/warm/cham_win_03.wav"},
+          {"text": "이번엔 내가 이겼네. 잘 놀았어.", "file": "results/warm/cham_win_04.wav"},
+          {"text": "고개 방향이 같네. 나도 모르게 웃었어.", "file": "results/warm/cham_win_05.wav"},
+          {"text": "내가 맞혔네. 같이 해 줘서 고마워.", "file": "results/warm/cham_win_06.wav"},
+          {"text": "같은 방향이었네. 너랑 해서 즐거워.", "file": "results/warm/cham_win_07.wav"},
+          {"text": "이번엔 잡았어. 또 같이 놀자.", "file": "results/warm/cham_win_08.wav"},
+          {"text": "내가 맞혔네. 너도 재미있었어?", "file": "results/warm/cham_win_09.wav"},
+          {"text": "같은 쪽을 봤어. 한 판 고마워.", "file": "results/warm/cham_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "잘 피했네. 네가 이겼어!", "file": "results/warm/cham_loss_01.wav"},
+          {"text": "다른 쪽을 봤구나. 잘했어.", "file": "results/warm/cham_loss_02.wav"},
+          {"text": "내가 놓쳤네. 멋지게 피했어.", "file": "results/warm/cham_loss_03.wav"},
+          {"text": "졌어도 이렇게 노니까 즐겁네.", "file": "results/warm/cham_loss_04.wav"},
+          {"text": "네 승리야. 나도 기분이 좋아.", "file": "results/warm/cham_loss_05.wav"},
+          {"text": "잘 피했어. 다음에도 같이 하자.", "file": "results/warm/cham_loss_06.wav"},
+          {"text": "다른 쪽으로 잘 피했네. 멋졌어.", "file": "results/warm/cham_loss_07.wav"},
+          {"text": "내가 못 맞혔네. 네가 잘했어.", "file": "results/warm/cham_loss_08.wav"},
+          {"text": "네가 이겼어. 한 판 즐거웠다.", "file": "results/warm/cham_loss_09.wav"},
+          {"text": "이번엔 네가 피했네. 또 같이 해 보자.", "file": "results/warm/cham_loss_10.wav"}
+        ]
+      }
+    },
+    "창의적이고 자유로움": {
+      "rps": {
+        "win": [
+          {"text": "내 손에 행운이 착 붙었네!", "file": "results/creative/rps_win_01.wav"},
+          {"text": "손끝에서 반전이 터졌어!", "file": "results/creative/rps_win_02.wav"},
+          {"text": "내 손이 오늘 한 건 했어!", "file": "results/creative/rps_win_03.wav"},
+          {"text": "내 선택이 승리를 낚았네.", "file": "results/creative/rps_win_04.wav"},
+          {"text": "이번 승리는 손끝 마법이야!", "file": "results/creative/rps_win_05.wav"},
+          {"text": "운이 내 손에 슬쩍 올라탔어.", "file": "results/creative/rps_win_06.wav"},
+          {"text": "내 손끝에서 승리 깃발이 펄럭여!", "file": "results/creative/rps_win_07.wav"},
+          {"text": "내 패가 오늘의 주인공이네!", "file": "results/creative/rps_win_08.wav"},
+          {"text": "손끝에 작은 행운이 반짝였어.", "file": "results/creative/rps_win_09.wav"},
+          {"text": "내 손이 결말을 바꿨어!", "file": "results/creative/rps_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "앗, 내 작전이 종잇장처럼 접혔어!", "file": "results/creative/rps_loss_01.wav"},
+          {"text": "네 손이 반전을 써 버렸네!", "file": "results/creative/rps_loss_02.wav"},
+          {"text": "내 손이 승리를 놓쳤어!", "file": "results/creative/rps_loss_03.wav"},
+          {"text": "오늘의 반전은 네 손에서 나왔네.", "file": "results/creative/rps_loss_04.wav"},
+          {"text": "아, 내 패가 길을 잘못 들었네.", "file": "results/creative/rps_loss_05.wav"},
+          {"text": "네가 내 손끝 마법을 풀었어!", "file": "results/creative/rps_loss_06.wav"},
+          {"text": "네 손이 내 각본을 뒤집었네!", "file": "results/creative/rps_loss_07.wav"},
+          {"text": "내 패가 엉뚱한 데 착륙했어.", "file": "results/creative/rps_loss_08.wav"},
+          {"text": "이번 판의 주인공은 네 손이야.", "file": "results/creative/rps_loss_09.wav"},
+          {"text": "아, 승리가 내 손을 쏙 빠져나갔어!", "file": "results/creative/rps_loss_10.wav"}
+        ],
+        "draw": [
+          {"text": "어라, 손 모양이 거울처럼 똑같아!", "file": "results/creative/rps_draw_01.wav"},
+          {"text": "우리 손이 같은 대본을 받았나 봐!", "file": "results/creative/rps_draw_02.wav"},
+          {"text": "이번 판은 쉼표네. 다음 판이 궁금해!", "file": "results/creative/rps_draw_03.wav"},
+          {"text": "서로 똑같은 카드를 꺼냈네.", "file": "results/creative/rps_draw_04.wav"},
+          {"text": "무승부야. 결말은 다음 장에!", "file": "results/creative/rps_draw_05.wav"},
+          {"text": "우리 손끝에서 같은 답이 튀어나왔어!", "file": "results/creative/rps_draw_06.wav"},
+          {"text": "비겼네. 이 판은 둘이 반씩 가지자.", "file": "results/creative/rps_draw_07.wav"},
+          {"text": "내 작전이 네 작전이랑 쌍둥이였어!", "file": "results/creative/rps_draw_08.wav"},
+          {"text": "손 모양이 딱 겹쳤네. 복사한 것 같아!", "file": "results/creative/rps_draw_09.wav"},
+          {"text": "이번엔 승리가 갈 곳을 못 골랐네.", "file": "results/creative/rps_draw_10.wav"}
+        ]
+      },
+      "cham": {
+        "win": [
+          {"text": "우리 고개가 복사 붙여넣기 했네!", "file": "results/creative/cham_win_01.wav"},
+          {"text": "고개 레이더에 딱 걸렸어!", "file": "results/creative/cham_win_02.wav"},
+          {"text": "두 고개가 한쪽에 착륙했네!", "file": "results/creative/cham_win_03.wav"},
+          {"text": "방향 맞히기 마법이 통했어!", "file": "results/creative/cham_win_04.wav"},
+          {"text": "우리 고개가 같은 길을 골랐네.", "file": "results/creative/cham_win_05.wav"},
+          {"text": "고개가 딱 겹쳤다. 내 승리!", "file": "results/creative/cham_win_06.wav"},
+          {"text": "내 방향 나침반이 딱 맞았어!", "file": "results/creative/cham_win_07.wav"},
+          {"text": "우리 고개가 같은 곳에 도착했네!", "file": "results/creative/cham_win_08.wav"},
+          {"text": "내 화살표가 방향을 맞혔어!", "file": "results/creative/cham_win_09.wav"},
+          {"text": "같은 쪽이야. 고개도 통하네!", "file": "results/creative/cham_win_10.wav"}
+        ],
+        "loss": [
+          {"text": "내 레이더가 반대쪽을 찍었어!", "file": "results/creative/cham_loss_01.wav"},
+          {"text": "어라, 네 고개가 샛길로 빠졌네!", "file": "results/creative/cham_loss_02.wav"},
+          {"text": "이런, 방향 반전은 네가 가져갔어!", "file": "results/creative/cham_loss_03.wav"},
+          {"text": "내 화살표가 허공을 찔렀어!", "file": "results/creative/cham_loss_04.wav"},
+          {"text": "네가 고개 레이더를 피해 갔네.", "file": "results/creative/cham_loss_05.wav"},
+          {"text": "네 방향은 끝까지 비밀이었네!", "file": "results/creative/cham_loss_06.wav"},
+          {"text": "네 고개가 내 예상을 훌쩍 넘었어!", "file": "results/creative/cham_loss_07.wav"},
+          {"text": "내 나침반이 엉뚱한 쪽을 가리켰네!", "file": "results/creative/cham_loss_08.wav"},
+          {"text": "고개가 반대로 튀었어. 멋진 반전!", "file": "results/creative/cham_loss_09.wav"},
+          {"text": "이번 판의 반전은 네 고개였네!", "file": "results/creative/cham_loss_10.wav"}
+        ]
+      }
+    }
+  }
+}

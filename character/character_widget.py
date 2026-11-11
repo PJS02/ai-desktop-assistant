@@ -17,6 +17,7 @@ from perception.receiver import QtPerceptionReceiver
 from hand_overlay.interaction_host import ContactFeedback
 from hand_overlay.interactions import PET_HEAD_HEIGHT_RATIO
 from .emotion_assets import resolve_animation_asset
+from .game_results import GAME_AUDIO_DIRECTORY, RESULT_LINES, choose_result_cue
 from .greetings import choose_greeting
 from .mood_system import MoodSystem
 from .emotion_delta_overlay import EmotionDeltaOverlay
@@ -46,7 +47,6 @@ from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 
 CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
-GAME_AUDIO_DIRECTORY = Path(__file__).resolve().parent.parent / 'assets/audio/games'
 
 
 # Context 모듈 import
@@ -2323,8 +2323,8 @@ class CharacterWidget(QLabel):
     
     # 작업 브랜치의 메뉴 기능은 develop의 공 기능 메서드와 분리해 둔다.
     def _play_game_cue(self, cue):
-        if self._character_closing or cue not in {
-                'scissors', 'rock', 'paper', 'cham_1', 'cham_2', 'cham_final'}:
+        if self._character_closing or (cue not in {
+                'scissors', 'rock', 'paper', 'cham_1', 'cham_2', 'cham_final'} and cue not in RESULT_LINES):
             return False
         tts = self.dialogue_system.tts
         if tts.busy and tts.request_source != 'game':
@@ -2338,9 +2338,19 @@ class CharacterWidget(QLabel):
         return self._play_game_recording(cue)
 
     def _play_game_recording(self, cue):
-        return self.dialogue_system.tts.play_clip(
-            GAME_AUDIO_DIRECTORY / f'{cue}.wav',
-            context={'source': 'game', 'cue': cue, 'trace_id': new_trace_id('game-voice')})
+        dialogue = self.dialogue_system
+        context = {'source': 'game', 'cue': cue, 'trace_id': new_trace_id('game-voice')}
+        text = RESULT_LINES.get(cue)
+        if text is not None:
+            if CharacterWidget._dialogue_is_busy(self):
+                return False
+            dialogue.show_dialogue(text, duration=2500, log_context=context)
+        return dialogue.tts.play_clip(GAME_AUDIO_DIRECTORY / f'{cue}.wav', context=context)
+
+    def _play_game_result(self, game, event):
+        cue = choose_result_cue(game, self.personality_system.preset_name, event)
+        if cue is not None:
+            self._play_game_cue(cue)
 
     def _on_game_voice_busy_changed(self, busy):
         if not busy and self._pending_game_cues:
@@ -2355,7 +2365,11 @@ class CharacterWidget(QLabel):
 
     def _stop_game_voice(self):
         self._pending_game_cues.clear()
-        self.dialogue_system.tts.stop_clip('game')
+        dialogue = self.dialogue_system
+        bubble = dialogue.current_dialogue
+        if bubble is not None and bubble._log_context.get('source') == 'game':
+            bubble.close()
+        dialogue.tts.stop_clip('game')
 
     def show_rps_game(self):
         if CharacterWidget._cham_game_active(self):
@@ -2368,6 +2382,7 @@ class CharacterWidget(QLabel):
             self.rps_game.emotion_event.connect(self._apply_game_emotion)
             self.rps_game.result_revealed.connect(lambda event: react(
                 self, event, source="rps", before=getattr(self, '_game_reaction_before', reaction_mood(self))))
+            self.rps_game.result_revealed.connect(lambda event: self._play_game_result('rps', event))
         self._mark_character_interaction()
         self.rps_game.start_game()
         self.dialogue_system.update_dialogue_position()
@@ -2399,6 +2414,7 @@ class CharacterWidget(QLabel):
             self.cham_game.cue_requested.connect(self._play_game_cue)
             self.cham_game.cue_stopped.connect(self._stop_game_voice)
             self.cham_game.emotion_event.connect(self._apply_game_emotion)
+            self.cham_game.result_revealed.connect(lambda event: self._play_game_result('cham', event))
             if self.rig_view is not None:
                 self.cham_game.reaction_face = lambda event, strength: choose_face(
                     event, getattr(self, '_game_reaction_before', reaction_mood(self)), strength=strength
