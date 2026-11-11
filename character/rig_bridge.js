@@ -166,6 +166,19 @@
               .concat(view.cleanup || [])}]
         };
       });
+      var highFive = root.CloudyHighFive;
+      var palmBounds = highFive.bounds;
+      for (var i = 0; i <= 6; i++) {
+        var palm = recordingCanvas(), painter = palm.getContext('2d');
+        palm.width = palmBounds[2] * 2; palm.height = palmBounds[3] * 2;
+        painter.translate(-2 * palmBounds[0], -2 * palmBounds[1]);
+        painter.scale(2, 2);
+        painter.lineCap = painter.lineJoin = 'round';
+        highFive.paintPalm(painter, i / 6);
+        recipes[highFive.textureName(i / 6)] = {
+          width: palm.width, height: palm.height, commands: palm.commands
+        };
+      }
       [['fx_question', '?'], ['fx_Z', 'Z'], ['fx_z', 'z']].forEach(function (pair) {
         var image = recordingCanvas(); image.width = 128; image.height = 128;
         var ctx = image.getContext('2d');
@@ -304,9 +317,11 @@
   function plan(state) {
     state = state || {}; prepareRenderer();
     var frame = sample(state), yaw = finite(state.yaw, 0);
+    var highFive = state.highFive;
+    if (highFive) frame.pose.framingZoom = 1;
     renderer.render(frame.pose, yaw, frame.time, {
       action: frame.action, emotionEffects: state.emotionEffects,
-      companion: state.companion
+      companion: state.companion, highFive: highFive
     });
     var commands = gl.result(), required = Object.create(null);
     var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -315,7 +330,7 @@
         .forEach(function (name) { if (name) required[name] = true; });
       // Character parts only: floating companions and emotion effects do not
       // enlarge the body box. Use the very meshes submitted for this frame.
-      command.characterPart = command.opacity > 0 && /^(front|left|right)_(0\d|1[0-3])(?:_|$)/.test(command.base || '');
+      command.characterPart = command.opacity > 0 && /^(?:(front|left|right)_(0\d|1[0-3])(?:_|$)|fx_high_five_palm_)/.test(command.base || '');
       if (command.characterPart) {
         for (var i = 0; i < command.vertices.length; i += 4) {
           left = Math.min(left, command.vertices[i]); top = Math.min(top, command.vertices[i + 1]);
@@ -326,6 +341,9 @@
     return {pose: frame.pose, originalPose: frame.originalPose,
       externalRootHeightAdjustment: frame.externalRootHeightAdjustment,
       action: frame.action, time: frame.time, yaw: yaw,
+      highFivePalm: renderer.highFivePalm && {
+        time: highFive.time, x: renderer.highFivePalm.x, y: renderer.highFivePalm.y
+      },
       logicalSize: [360, 540], groundY: root.CloudyRig.groundY,
       characterBounds: Number.isFinite(left) ? [left, top, right, bottom] : null,
       commands: commands, requiredTextures: Object.keys(required)};

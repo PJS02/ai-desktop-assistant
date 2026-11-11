@@ -4,6 +4,7 @@
   const BaseRenderer = root.CloudyRenderer;
   const {hand, cuffForeground} = root.CloudyActivityHands;
   const trip = root.CloudyActivityTrip;
+  const highFiveMotion = root.CloudyHighFive;
   const radians = Math.PI / 180;
   const tau = Math.PI * 2;
   const mix = (a, b, t) => a + (b - a) * t;
@@ -12,7 +13,6 @@
   const pulse = phase => Math.max(0, Math.sin(tau * phase)) ** 2;
   const direction = cfg => cfg.prefix === 'left' ? -1 : cfg.prefix === 'right' ? 1 : 0;
   const handSide = cfg => cfg.prefix === 'right' ? -1 : 1;
-  const shortest = degrees => (degrees + 540) % 360 - 180;
   const bodyPoint = BaseRenderer.prototype.bodyPoint;
   const rotate = ({x, y}, angle) => ({
     x: x * Math.cos(angle) - y * Math.sin(angle),
@@ -41,57 +41,6 @@
         return {x: offset.x / yawScale, y: offset.y};
       }
     };
-  }
-
-  function aimHand(cfg, pose, index, grip) {
-    const near = index === 0;
-    const suffix = near ? 'Near' : 'Far';
-    const [x, y] = cfg.shoulders[index];
-    const shoulder = bodyPoint({x, y}, pose);
-    const sourcePoint = ([x, y]) => ({x: x * .34, y: y * .34});
-    const arm = cfg.arms[index];
-    const joints = arm.j.map(sourcePoint);
-    const cuff = sourcePoint(arm.cuff);
-    const girth = root.CloudyGirth?.scale(cfg.prefix, 'arm', near);
-    const normalScale = !near && direction(cfg)
-      ? (bone, fraction) => -(girth?.(bone, fraction) ?? 1)
-      : girth;
-    const bend = direction(cfg) || (near ? -1 : 1);
-    const contact = grip.art.contact(grip.amount);
-    const finger = {x: contact.x * grip.mirror * grip.size, y: contact.y * grip.size};
-
-    function fitCuff(angle) {
-      const offset = rotate(finger, angle * radians);
-      const opening = {x: grip.target.x - offset.x, y: grip.target.y - offset.y};
-      const wrist = {...opening};
-      let solved;
-      // Correct for the distance from the rig's wrist joint to the cuff opening.
-      for (let i = 0; i < 4; i++) {
-        solved = M.solveIK(shoulder, wrist, 38, 46, bend);
-        const mapped = M.deformPoint(cuff, joints, [shoulder, solved.knee, solved.ankle], normalScale);
-        const dx = opening.x - mapped.x;
-        const dy = opening.y - mapped.y;
-        if (Math.hypot(dx, dy) < .04) break;
-        wrist.x += dx;
-        wrist.y += dy;
-      }
-      return solved;
-    }
-
-    let angle = grip.angle;
-    let solved = fitCuff(angle);
-    let flex = shortest(angle - solved.lowerAngle);
-    // Rotate toward the forearm when needed, keeping the contact point fixed.
-    for (let i = 0; i < 8 && Math.abs(flex) > 61; i++) {
-      angle += Math.sign(flex) * (60 - Math.abs(flex)) * .8;
-      solved = fitCuff(angle);
-      flex = shortest(angle - solved.lowerAngle);
-    }
-    const {upperAngle, lowerAngle} = solved;
-    const projection = handSide(cfg);
-    pose['arm' + suffix] = (upperAngle - pose.lean) / projection;
-    pose['elbow' + suffix] = shortest(lowerAngle - upperAngle) / (projection * (!near && cfg.prefix === 'front' ? -1 : 1));
-    pose['wrist' + suffix] = flex / projection;
   }
 
   const ink = '#34474e';
@@ -498,20 +447,6 @@
     }
   };
 
-  const highFiveImpact = .98;
-
-  function highFiveBeat(t) {
-    const lower = ease((t - 1.43) / .72);
-    return {
-      lift: ease((t - .10) / .55) * (1 - lower),
-      reach: ease((t - .10) / .4) * (1 - lower),
-      ready: ease((t - .58) / .17) * (1 - ease((t - .76) / .19)),
-      hit: ease((t - .77) / (highFiveImpact - .77)) * (1 - ease((t - highFiveImpact) / .18)),
-      recoil: Math.sin(Math.PI * ease((t - highFiveImpact) / .35)) ** 2,
-      open: ease((t - .27) / .38) * (1 - ease((t - 1.47) / .55))
-    };
-  }
-
   function highFiveSpark(ctx, age, side) {
     const spread = 8 * ease(age);
     ctx.save();
@@ -538,33 +473,14 @@
 
   const highFive = {
     label: '하이파이브',
-    duration: 2.4,
+    duration: highFiveMotion.duration,
     once: true,
     held: true,
-    body(p, t, side) {
-      const {lift, ready, hit, recoil} = highFiveBeat(t);
-      const toward = side || 1;
-      p.bodyX += toward * (3.6 * hit - 2.2 * ready);
-      p.bodyY += 1.8 * ready - 2.2 * lift - 3.2 * hit + 2.6 * recoil;
-      p.lean += toward * (2 * lift - 2.8 * ready + 4.2 * hit - 1.8 * recoil);
-      p.headAngle += toward * (3.2 * lift - 4.6 * hit + 2.4 * recoil);
-      p.armFar += side ? -12 * lift - 6 * hit : 31 - 12 * lift + 6 * hit;
-      p.elbowFar += 12 * lift + 7 * hit;
-      p.exprExcited = lift;
-    },
+    body: highFiveMotion.body,
     frame(cfg, pose, t) {
       const side = direction(cfg);
-      const toward = side || 1;
-      const {lift, reach, ready, hit, recoil, open} = highFiveBeat(t);
-      const [x, y] = cfg.shoulders[0];
-      const dx = mix(side ? 1 : 32, side ? 56 : 48, reach) - 5 * ready + (side ? 23 : 11) * hit - 6 * recoil;
-      const dy = mix(85, side ? -28 : -46, lift) + 4 * ready - (side ? 4 : 9) * hit + 3 * recoil;
-      const palm = bodyPoint({x: x + toward * dx, y: y + dy}, pose);
-      const roll = -toward * (mix(side ? 2 : 17, side ? 157 : 164, lift) + 13 * hit - 10 * recoil);
-      const mirror = (side === -1 ? 1 : -1) * (side ? .84 + .1 * hit : 1);
-      const size = .88 + .15 * open + .14 * hit;
-      const age = (t - highFiveImpact) / .27;
-      const impact = bodyPoint({x: x + toward * (side ? 79 : 59), y: y - (side ? 32 : 55)}, pose);
+      const {lift, open, palm, roll, mirror, size, impact} = highFiveMotion.layout(cfg, pose, t, bodyPoint);
+      const age = (t - highFiveMotion.impactTime) / .27;
       return {
         hands: [hand('highFive', mirror, size, palm, roll, open)],
         companionDrop: side >= 0 ? 49 * lift : 0,
@@ -616,7 +532,7 @@
       if (this.activity?.held) {
         // Solve against the pose being painted so the moving props and fingers
         // share the same body transform even while the pose is transitioning.
-        frame.hands.forEach((grip, index) => aimHand(cfg, posed, index, grip));
+        frame.hands.forEach((grip, index) => this.aimHand(cfg, posed, index, grip));
       }
       super.renderView(cfg, posed, opacity, time);
       if (frame?.foreground) this.paintLayer(frame, frame.foreground);

@@ -222,46 +222,6 @@
     thumbnail(ctx, x, y - 1.9, -.12);
   }
 
-  function highFivePalm(ctx, open) {
-    const thumb = mix(-8.3, -12.1, open);
-    const index = mix(-4.9, -7.2, open);
-    const middle = mix(-1.5, -2.2, open);
-    const ring = mix(2, 3.5, open);
-    const pinky = mix(5, 8.4, open);
-    const indexTip = mix(20.6, 28.5, open);
-    const middleTip = mix(21.7, 32, open);
-    const ringTip = mix(21.2, 30, open);
-    const pinkyTip = mix(18.7, 24.2, open);
-    skin(ctx, c => {
-      c.moveTo(-5.5, -8);
-      c.bezierCurveTo(-5.5, -1.8, -5.8, 3.1, -7.6, 5.5);
-      c.bezierCurveTo(thumb - 2.6, 7.9, thumb - 2, 13.7, thumb + .5, 14.3);
-      c.quadraticCurveTo(thumb + 2.1, 14.7, -6.4, 11.9);
-      c.quadraticCurveTo(index - 1.8, indexTip - 6.2, index - 1.9, indexTip - 1.2);
-      c.bezierCurveTo(index - 2, indexTip + 1.9, index + 1.9, indexTip + 1.9, index + 2, indexTip - 1);
-      c.lineTo(mix(-3.2, -4.7, open), mix(17.8, 18, open));
-      c.quadraticCurveTo(middle - 2.1, middleTip - 4.8, middle - 1.9, middleTip - .8);
-      c.bezierCurveTo(middle - 1.8, middleTip + 2, middle + 2, middleTip + 2, middle + 2, middleTip - .8);
-      c.lineTo(mix(.2, .45, open), mix(18.8, 19.2, open));
-      c.quadraticCurveTo(ring - 2, ringTip - 4.1, ring - 1.8, ringTip - .6);
-      c.bezierCurveTo(ring - 1.6, ringTip + 1.9, ring + 1.9, ringTip + 2, ring + 1.9, ringTip - .9);
-      c.lineTo(mix(3.5, 5.1, open), mix(16.7, 17.1, open));
-      c.quadraticCurveTo(pinky - 1.7, pinkyTip - 4.2, pinky - 1.6, pinkyTip - .5);
-      c.bezierCurveTo(pinky - 1.4, pinkyTip + 1.7, pinky + 2, pinkyTip + 1.1, pinky + 1.8, pinkyTip - 1.4);
-      c.bezierCurveTo(pinky + 1.6, 19.1, 8.2, 12.6, 6.9, 8.7);
-      c.quadraticCurveTo(5.3, 4, 5.5, -8);
-    }, null, '#a17369', .73);
-    ctx.save();
-    ctx.globalAlpha = .62 * open;
-    detail(ctx, c => {
-      c.moveTo(-6.1, 10.4);
-      c.quadraticCurveTo(-1.7, 10.7, -.6, 5.5);
-      c.moveTo(-2.5, 13.6);
-      c.quadraticCurveTo(1, 15.6, 5.3, 13.2);
-    });
-    ctx.restore();
-  }
-
   const supportContact = () => ({x: -7.4, y: 14});
   const poses = {
     relaxed: {paint: relaxed},
@@ -279,7 +239,7 @@
     support: {contact: supportContact, paint: supportPalm, front: ctx => supportThumb(ctx)},
     reader: {contact: readingContact, paint: reader},
     wheel: {contact: supportContact, paint: padPalm, front: ctx => supportThumb(ctx, crease, .55)},
-    highFive: {contact: () => ({x: 0, y: 11}), paint: highFivePalm, bounds: [-16, -10, 32, 47]},
+    highFive: {contact: root.CloudyHighFive.contact, paint: root.CloudyHighFive.paintPalm, bounds: root.CloudyHighFive.bounds},
     tap: {contact: () => ({x: -2.3, y: 20.7}), paint: tapHand}
   };
 

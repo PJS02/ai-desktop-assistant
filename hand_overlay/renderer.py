@@ -17,6 +17,31 @@ CONNECTIONS = (
 )
 TIPS = {4, 8, 12, 16, 20}
 PALM = (0, 5, 9, 13, 17)
+BONE_OUTLINE_WIDTH = 7
+JOINT_OUTLINE_WIDTH = 2
+JOINT_RADII = tuple(6 if i in TIPS else 4 for i in range(21))
+
+
+def closest_hand_point(points, origin):
+    """Find the closest point on the visible strokes or landmark circles."""
+    candidates = [(point, radius + JOINT_OUTLINE_WIDTH / 2)
+                  for point, radius in zip(points, JOINT_RADII)]
+    ox, oy = origin
+    for start, end in CONNECTIONS:
+        ax, ay = points[start]
+        bx, by = points[end]
+        dx, dy = bx - ax, by - ay
+        length_sq = dx * dx + dy * dy
+        fraction = ((ox - ax) * dx + (oy - ay) * dy) / length_sq if length_sq else 0.
+        fraction = max(0., min(1., fraction))
+        candidates.append(((ax + fraction * dx, ay + fraction * dy), BONE_OUTLINE_WIDTH / 2))
+
+    point, radius = min(candidates, key=lambda item: math.dist(origin, item[0]) - item[1])
+    distance = math.dist(origin, point)
+    if distance <= radius:
+        return origin
+    x, y = point
+    return x + (ox - x) * radius / distance, y + (oy - y) * radius / distance
 
 
 def fit_rect(width: float, height: float, aspect: float) -> QRectF:
@@ -79,14 +104,14 @@ def desktop_geometry(hand: Hand, screen: QRect, aspect: float, scale: float = 1.
 
 def draw_hand(painter: QPainter, hand: Hand, points, numbers: bool, label: bool = False):
     color = QColor("#55e6c1" if hand.label == "Right" else "#7db9ff")
-    for stroke, thickness in ((QColor("#12252e"), 7), (color, 3)):
+    for stroke, thickness in ((QColor("#12252e"), BONE_OUTLINE_WIDTH), (color, 3)):
         painter.setPen(QPen(stroke, thickness, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         for a, b in CONNECTIONS:
             painter.drawLine(points[a], points[b])
     for i, point in enumerate(points):
-        painter.setPen(QPen(QColor("#10212a"), 2))
+        painter.setPen(QPen(QColor("#10212a"), JOINT_OUTLINE_WIDTH))
         painter.setBrush(QColor("#fff1ad") if i in TIPS else color)
-        radius = 6 if i in TIPS else 4
+        radius = JOINT_RADII[i]
         painter.drawEllipse(point, radius, radius)
         if numbers:
             painter.setPen(QColor("#ffffff"))

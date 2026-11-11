@@ -3,6 +3,7 @@
 'use strict';
 const M=root.CloudyMotion, P=root.CLOUDY_PARTS;
 const mix=(a,b,t)=>a+(b-a)*t, point=(x,y)=>({x,y});
+const shortest=degrees=>(degrees+540)%360-180;
 const sectorMouths={
  pleasant:{family:'gentle',width:.83,height:.87,restOpening:0},
  thrilled:{family:'cheerful',width:1.05,height:.88,restOpening:.30},
@@ -151,8 +152,59 @@ class Renderer{
  }
  drawSprite(name,pivot,location,scale,angle,opacity=1){this.mesh(name,p=>rotate({x:location.x+(p.x-pivot.x)*scale,y:location.y+(p.y-pivot.y)*scale},angle,location),opacity);}
  bodyPoint(p,pose){return rotate({x:p.x+pose.bodyX,y:p.y+pose.bodyY},pose.lean,{x:180+pose.bodyX,y:357+pose.bodyY});}
+ aimHand(cfg, pose, index, grip) {
+   const near = index === 0;
+   const suffix = near ? 'Near' : 'Far';
+   const [x, y] = cfg.shoulders[index];
+   const shoulder = this.bodyPoint({x, y}, pose);
+   const sourcePoint = ([x, y]) => ({x: x * .34, y: y * .34});
+   const arm = cfg.arms[index];
+   const joints = arm.j.map(sourcePoint);
+   const cuff = sourcePoint(arm.cuff);
+   const girth = root.CloudyGirth && root.CloudyGirth.scale(cfg.prefix, 'arm', near);
+   const normalScale = !near && cfg.prefix !== 'front'
+     ? (bone, fraction) => -(girth ? girth(bone, fraction) : 1)
+     : girth;
+   const bend = cfg.prefix === 'left' ? -1 : cfg.prefix === 'right' ? 1 : near ? -1 : 1;
+   const contact = grip.contact || grip.art.contact(grip.amount);
+   const finger = {x: contact.x * grip.mirror * grip.size, y: contact.y * grip.size};
+
+   function fitCuff(angle) {
+     const offset = rotate(finger, angle);
+     const opening = {x: grip.target.x - offset.x, y: grip.target.y - offset.y};
+     const wrist = {x: opening.x, y: opening.y};
+     let solved;
+     // Correct for the distance from the rig's wrist joint to the cuff opening.
+     for (let i = 0; i < 4; i++) {
+       solved = M.solveIK(shoulder, wrist, 38, 46, bend);
+       const mapped = M.deformPoint(cuff, joints, [shoulder, solved.knee, solved.ankle], normalScale);
+       const dx = opening.x - mapped.x;
+       const dy = opening.y - mapped.y;
+       if (Math.hypot(dx, dy) < .04) break;
+       wrist.x += dx;
+       wrist.y += dy;
+     }
+     return solved;
+   }
+
+   let angle = grip.angle;
+   let solved = fitCuff(angle);
+   let flex = shortest(angle - solved.lowerAngle);
+   // Rotate toward the forearm when needed, keeping the contact point fixed.
+   for (let i = 0; i < 8 && Math.abs(flex) > 61; i++) {
+     angle += Math.sign(flex) * (60 - Math.abs(flex)) * .8;
+     solved = fitCuff(angle);
+     flex = shortest(angle - solved.lowerAngle);
+   }
+   const {upperAngle, lowerAngle} = solved;
+   const projection = cfg.prefix === 'right' ? -1 : 1;
+   pose['arm' + suffix] = (upperAngle - pose.lean) / projection;
+   pose['elbow' + suffix] = shortest(lowerAngle - upperAngle) / (projection * (!near && cfg.prefix === 'front' ? -1 : 1));
+   pose['wrist' + suffix] = flex / projection;
+ }
  limb(cfg,index,type,pose,opacity,surface='all'){
   const part=(type==='leg'?cfg.legs:cfg.arms)[index],name=key(cfg.prefix,part.i),near=index===0,suffix=near?'Near':'Far',scale=type==='leg'?.48:.34;
+  const highFiveHand=near&&type==='arm'?this.highFiveGrip:null;
   const src=part.j.map(([x,y])=>({x:x*scale,y:y*scale}));
   let dest,hand;
   if(type==='leg'){
@@ -257,7 +309,7 @@ class Renderer{
   };
   const segmentMap=segment=>p=>waveLayers[segment]({x:p.x*scale,y:p.y*scale});
   const forearmMapping=waveLayers?segmentMap('forearmMap'):mapping;
-  if(hand&&this.textures[name+'_connected']){
+  if(hand&&!highFiveHand&&this.textures[name+'_connected']){
    // The forearm, cuff and hand retain a continuous painted attachment. Wrist
    // flex fades in below the cuff; the side elbow uses separate cloth surfaces.
    const opening=forearmMapping(point(...part.cuff));
@@ -426,7 +478,17 @@ class Renderer{
    // The hand starts inside the visible cuff opening. Only its front rim covers
    // the wrist; the dark back wall must not cover the entire attached hand.
    const opening=mapping(point(...part.cuff));
-   this.drawSprite(hand.name,hand.pivot,opening,.29,hand.angle,opacity);
+   if(highFiveHand){
+    const art=root.CloudyHighFive,[x,y]=art.bounds;
+    const {amount,mirror,size}=highFiveHand;
+    const place=(x,y)=>rotate(point(opening.x+x*mirror*size,opening.y+y*size),
+     hand.angle-hand.flex*(1-M.smoothstep((y+1)/10)),opening);
+    this.mesh(art.textureName(amount),p=>place(x+p.x/2,y+p.y/2),opacity,1,12);
+    const contact=highFiveHand.contact;
+    this.highFivePalm=place(contact.x,contact.y);
+   }else{
+    this.drawSprite(hand.name,hand.pivot,opening,.29,hand.angle,opacity);
+   }
    this.mesh(name+'_rim',mapping,opacity,8,26);
   }
  }
@@ -590,6 +652,22 @@ class Renderer{
   if(root.CloudyEmotionFX&&this.emotionEffects!==false)root.CloudyEmotionFX.draw(this,cfg,pose,time,mapping,opacity,emotion);
  }
  renderView(cfg,pose,opacity,time=0){
+  if(this.highFive){
+   const art=root.CloudyHighFive,{time:clipTime,target}=this.highFive;
+   const side=cfg.prefix==='left'?-1:cfg.prefix==='right'?1:0;
+   pose=Object.assign({},pose,{idleGesture:0,airArms:1,framingZoom:1,thinkGesture:0,snackGesture:0,
+    waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
+   art.body(pose,clipTime,side);
+   const reach=M.smoothstep((clipTime-.44)/(art.impactTime-.44))*
+    (1-M.smoothstep((clipTime-art.impactTime)/.55));
+   // Bend the knees for a lower desktop palm so the wrist can stay upright.
+   pose.bodyY+=Math.max(0,Math.min(35,target[1]-cfg.shoulders[0][1]-14))*reach;
+   const frame=art.layout(cfg,pose,clipTime,this.bodyPoint);
+   this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
+    contact:point(8.6*reach,11+3*reach),
+    target:point(mix(frame.palm.x,target[0],reach),mix(frame.palm.y,target[1],reach))};
+   this.aimHand(cfg,pose,0,this.highFiveGrip);
+  }
   // Air poses keep the near arm fully in front of the head, including its hair.
   // Both frontal arms share this depth. Switch draw order without alpha mixing
   // so a moving hand never becomes translucent as it crosses the face.
@@ -616,6 +694,7 @@ class Renderer{
   this.face(cfg,pose,opacity,time);
   if(cfg.prefix==='front'&&airInFront)this.limb(cfg,1,'arm',pose,opacity);
   if(handInFront>.001)this.limb(cfg,0,'arm',pose,opacity*handInFront,splitWave?'forearm':'all');
+  this.highFiveGrip=null;
  }
  effects(pose,time){
   const thinking=Math.max(0,Math.min(1,pose.thinkGesture||0)),sleep=Math.max(0,Math.min(1,pose.exprSleep||0));
@@ -629,6 +708,8 @@ class Renderer{
   // An explicit action keeps the same cuff present before the lift begins and
   // after it ends. Gesture thresholds control bone mapping, never asset swaps.
   this.action=options.action||null;
+  this.highFive=options.highFive||null;
+  this.highFivePalm=null;
   const gl=this.gl;gl.useProgram(this.program);gl.activeTexture(gl.TEXTURE0);gl.enable(gl.BLEND);gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
   // Running is a side-only clip. Direct callers requesting a frontal run use
   // the left artwork; other actions keep their frontal view, including recovery.

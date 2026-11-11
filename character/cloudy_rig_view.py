@@ -13,7 +13,7 @@ import traceback
 from app_logging import log_event
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPainterPath, QPixmap, QSurfaceFormat, QVector2D, QVector3D, QVector4D
 from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
                            QOpenGLTexture, QOpenGLVersionFunctionsFactory,
@@ -143,6 +143,7 @@ class CloudyRigView(QOpenGLWidget):
         self._paused = False
         self._finished = False
         self._fixed_state = None
+        self._high_five = None
         self._last_plan = None
         self._scene_layers = {}
         self._last_paint_time = time.perf_counter()
@@ -266,19 +267,37 @@ class CloudyRigView(QOpenGLWidget):
         self._contact_painter = callback
         self.update()
 
+    def set_high_five(self, clip_time=None, *, side=0, target=None):
+        self._high_five = None if clip_time is None else (65 * side, {
+            'time': clip_time, 'target': target,
+        })
+        self.update()
+
+    def stage_rect(self):
+        """The 360 by 540 rig viewport in logical widget pixels."""
+        dpr = self.devicePixelRatioF()
+        width, height = round(self.width() * dpr), round(self.height() * dpr)
+        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
+        return QRectF((width - vw) // 2 / dpr, (height - vh) // 2 / dpr, vw / dpr, vh / dpr)
+
+    def high_five_contact(self, clip_time):
+        palm = self._last_plan and self._last_plan.get('highFivePalm')
+        if not palm or palm['time'] != clip_time:
+            return None
+        stage = self.stage_rect()
+        return QPointF(stage.x() + palm['x'] * stage.width() / 360,
+                       stage.y() + palm['y'] * stage.height() / 540)
+
     def character_rect(self):
         """Map current character meshes to the same viewport used by OpenGL."""
         if self._character_pixel_rect is not None:
             return QRectF(self._character_pixel_rect)
         if self._last_plan is None or self._last_plan.get('characterBounds') is None:
             return QRectF(self.rect())
-        dpr = self.devicePixelRatioF()
-        width, height = round(self.width() * dpr), round(self.height() * dpr)
-        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
-        sx, sy = vw / dpr / 360, vh / dpr / 540
-        ox, oy = (width - vw) // 2 / dpr, (height - vh) // 2 / dpr
+        stage = self.stage_rect()
+        sx, sy = stage.width() / 360, stage.height() / 540
         left, top, right, bottom = self._last_plan['characterBounds']
-        return QRectF(ox + left * sx, oy + top * sy,
+        return QRectF(stage.x() + left * sx, stage.y() + top * sy,
                       (right - left) * sx, (bottom - top) * sy).intersected(QRectF(self.rect()))
 
     def _draw_commands(self, commands):
@@ -374,12 +393,15 @@ class CloudyRigView(QOpenGLWidget):
         now = time.perf_counter()
         dt = now - self._last_paint_time
         self._last_paint_time = now
-        return {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
-                "time": self._time(), "externalPhysics": self._external_physics,
-                "jumpActive": self._jump_active,
-                "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
-                "speaking": self._speaking,
-                "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
+        state = {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
+                 "time": self._time(), "externalPhysics": self._external_physics,
+                 "jumpActive": self._jump_active,
+                 "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
+                 "speaking": self._speaking,
+                 "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
+        if self._high_five is not None:
+            state['yaw'], state['highFive'] = self._high_five
+        return state
 
     def initializeGL(self):
         try:

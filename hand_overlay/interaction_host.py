@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled, new_trace_id
 from character.reactions import react, reaction_mood, experience
+from .high_five import DesktopHighFive
 from .interactions import Box, HandInteractionEngine
 
 
@@ -272,23 +273,30 @@ class HandInteractionController(QObject):
         self._clock = clock
         self.actions = CharacterHandActions(character)
         self.engine = HandInteractionEngine(self.actions)
+        self.high_five = DesktopHighFive(self.actions)
         overlay.timer.timeout.connect(self.update)
         overlay.hands_cleared.connect(self.cancel)
         overlay.tracking_interrupted.connect(self.interrupt_tracking)
 
     def interrupt_tracking(self):
         self.engine.interrupt_tracking(self._clock())
+        self.high_five.interrupt_tracking()
 
     def cancel(self, reason='tracking_reset'):
         self.engine.reset(reason, self._clock())
+        self.high_five.cancel()
         self.actions.feedback.clear()
 
     def update(self):
         try:
-            self.actions.sample_id = (self.overlay._session, self.overlay._sequence)
+            source = self.overlay._session, self.overlay._sequence
+            self.actions.sample_id = source
+            now = self._clock()
+            hands = self.overlay.displayed_hands()
             previous = self.engine.active
-            self.engine.update(self.overlay.displayed_hands(), self._clock(),
-                               (self.overlay._session, self.overlay._sequence))
+            if self.high_five.update(hands if previous is None else (), now, source):
+                return
+            self.engine.update(hands, now, source)
             if (previous and self.engine.active and previous != self.engine.active
                     and previous[0] == self.engine.active[0]):
                 log_event('hand_interaction.hold.reconnected', '잠깐 끊긴 손 추적을 잡기에 다시 연결',
