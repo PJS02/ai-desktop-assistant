@@ -1,6 +1,9 @@
 'use strict';
 const $=s=>document.querySelector(s), M=CloudyMotion;
-const names={idle:'대기',walk:'걷기',run:'달리기',wave:'인사',thinking:'생각',sleep:'수면',hovering:'들기',jump:'점프',fall:'낙하',land:'착지',sequence:'연속 동작'};
+const A=globalThis.CloudyActivityPreview??{clips:{},Renderer:CloudyRenderer};
+const names={idle:'대기',walk:'걷기',run:'달리기',wave:'인사',thinking:'생각',sleep:'수면',hovering:'들기',jump:'점프',fall:'낙하',land:'착지',sequence:'연속 동작',
+ ...Object.fromEntries(Object.entries(A.clips).map(([id,clip])=>[id,clip.label]))};
+const actionButtons=[];
 const emotions={auto:'자동',...Object.fromEntries(Object.entries(M.emotions).map(([id,entry])=>[id,entry.label])),dizzy:'어질어질 · 기존',dizzy_plain:'어질어질 · 소용돌이만'};
 let emotion='auto',speaking=false,speechTime=0;
 let state='idle',time=0,gaitTime=0,runGaitTime=0,last=0,paused=false,yaw=0,yawTarget=0,yawStart=0,turnElapsed=1,walk=0,walkTarget=0,run=0,runTarget=0,x=0,travelDir=-1,travelMode='move',travelGait='walk',travelSpeed=0,frameCount=0,fpsTime=0;
@@ -14,16 +17,41 @@ function updateEmotionControls(){
  updateGallerySelection();
 }
 function chooseEmotion(value){emotion=value;updateEmotionControls();transition.retarget(sample());if(paused)draw=sample();paint();}
-function updateActionControls(){document.querySelectorAll('#states button').forEach(b=>{const active=b.dataset.state===state;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});document.querySelectorAll('#directions button').forEach(b=>b.disabled=state==='run'&&+b.dataset.yaw===0);$('#playSequence').classList.toggle('active',state==='sequence');$('#playSequence').setAttribute('aria-pressed',String(state==='sequence'));$('#travelLabel').textContent=state==='run'?'좌우 왕복 달리기':'좌우 왕복 걷기';}
-function choose(s){if(s!==state||s==='sequence')actionTime=0;state=s;walkTarget=s==='walk'?1:0;runTarget=s==='run'?1:0;if(s==='run'&&Math.abs(yawTarget)<1)setYaw(-65);transition.retarget(sample());updateActionControls();updateEmotionControls();if(s==='walk'&&Math.abs(yawTarget)<1)setYaw(-65);if(paused){walk=walkTarget;run=runTarget;draw=sample();paint();}}
+function updateActionControls(){actionButtons.forEach(b=>{const active=b.dataset.state===state;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});document.querySelectorAll('#directions button').forEach(b=>b.disabled=state==='run'&&+b.dataset.yaw===0);$('#playSequence').classList.toggle('active',state==='sequence');$('#playSequence').setAttribute('aria-pressed',String(state==='sequence'));$('#travelLabel').textContent=state==='run'?'좌우 왕복 달리기':'좌우 왕복 걷기';
+ const elbow=$('#elbow');elbow.disabled=Boolean(A.clips[state]?.held);
+ $('#elbowLabel').textContent=elbow.disabled||+elbow.value<0?'자동':elbow.value+'°';
+}
+function actionFinished(){
+ const clip=A.clips[state];
+ return clip?.once&&actionTime>=clip.duration;
+}
+function updatePauseButton(){
+ const button=$('#pause'), label=actionFinished()?'다시 재생':paused?'계속 재생':'일시정지';
+ if(button.textContent!==label)button.textContent=label;
+}
+function choose(s,replay=false){
+ const wasActivity=Boolean(A.clips[state]);
+ if(s!==state||s==='sequence'||replay)actionTime=0;
+ if(replay)paused=false;
+ state=s;walkTarget=s==='walk'?1:0;runTarget=s==='run'?1:0;
+ if(A.clips[state]){walk=0;run=0;travelSpeed=0;x=0;}
+ if(s==='run'&&Math.abs(yawTarget)<1)setYaw(-65);
+ if(A.clips[state]||wasActivity){draw=sample();transition=new M.PoseTransition(draw);}
+ else transition.retarget(sample());
+ updateActionControls();updateEmotionControls();updatePauseButton();
+ if(s==='walk'&&Math.abs(yawTarget)<1)setYaw(-65);
+ if(paused){walk=walkTarget;run=runTarget;draw=sample();paint();}
+}
 function setYaw(value){
  let direction=value<-21?-65:value>21?65:0;
  if(state==='run'&&direction===0)direction=yaw>0?65:-65;
  yaw=direction;yawTarget=yaw;yawStart=yaw;turnElapsed=1;
+ if(A.clips[state]){draw=sample();transition=new M.PoseTransition(draw);}
  document.querySelectorAll('#directions button').forEach(b=>b.classList.toggle('active',+b.dataset.yaw===yaw));updateGalleryDirection();paint();
 }
 function sample(){
- const p=state==='sequence'?CloudySequence.sample(actionTime).pose:M.pose(state,actionTime,{walkAmount:0,runAmount:0});
+ const p=state==='sequence'?CloudySequence.sample(actionTime).pose:
+  A.clips[state]?A.pose(state,actionTime,yaw):M.pose(state,actionTime,{walkAmount:0,runAmount:0});
  // Keep optional running channels present so leaving a run can fade them out.
  p.runGesture=0;p.runLean=0;
  if(state!=='sequence'){
@@ -54,30 +82,40 @@ function paint(){
  if(!renderer)return;
  const p={...draw};
  if(+$('#blink').value>=0)p.blink=+$('#blink').value;
- if(+$('#elbow').value>=0){p.elbowNear=+$('#elbow').value;p.waveElbowOffset=0;p.waveForearmShorten=0;p.idleGesture=0;}
- renderer.render(p,yaw,time,{action:state});
+ if(!$('#elbow').disabled&&+$('#elbow').value>=0){p.elbowNear=+$('#elbow').value;p.waveElbowOffset=0;p.waveForearmShorten=0;p.idleGesture=0;}
+ renderer.render(p,yaw,time,{action:state,activityTime:actionTime});
  $('#actor').style.transform='translateX(calc(-50% + '+x.toFixed(2)+'px))';
  const sequence=state==='sequence'?CloudySequence.sample(actionTime):null;
  $('#time').textContent=actionTime.toFixed(2)+' s';$('#badge').textContent=(sequence?'연속 · '+names[sequence.stage]:names[state])+(state==='sleep'?'':' · '+emotions[emotion]+(speaking?' · 대화 중':''))+' · '+(yaw<-3?'왼쪽':yaw>3?'오른쪽':'정면');
  $('#sequenceStatus').textContent=sequence?names[sequence.stage]+' · '+Math.min(actionTime,CloudySequence.duration).toFixed(2)+' / '+CloudySequence.duration.toFixed(1)+' s':'한 번 이어서 재생한 뒤 대기 자세로 돌아옵니다.';
- const clock=sequence?Math.min(actionTime,CloudySequence.duration):state==='run'?runGaitTime%M.runProfile.duration:actionTime%4.6;
- $('#scrub').max=sequence?CloudySequence.duration:state==='run'?M.runProfile.duration:4.6;$('#scrub').value=clock;$('#scrubLabel').textContent=clock.toFixed(2)+' s';
+ const clip=A.clips[state];
+ const duration=sequence?CloudySequence.duration:state==='run'?M.runProfile.duration:clip?.duration??4.6;
+ const clock=sequence||clip?.once?Math.min(actionTime,duration):(state==='run'?runGaitTime:actionTime)%duration;
+ $('#scrub').max=duration;$('#scrub').value=clock;$('#scrubLabel').textContent=clock.toFixed(2)+' s';
+ updatePauseButton();
  $('#angle').value=yaw;$('#angleLabel').textContent=Math.round(yaw)+'°';
 }
-for(const [id,label]of Object.entries(names)){if(id==='sequence')continue;const b=document.createElement('button');b.textContent=label;b.dataset.state=id;b.onclick=()=>{if(safelyStopTravel())travelMode='stop';choose(id);};$('#states').append(b);}
+for(const [id,label]of Object.entries(names)){
+ if(id==='sequence')continue;
+ const b=document.createElement('button'), clip=A.clips[id];
+ b.textContent=label;b.dataset.state=id;
+ b.onclick=()=>{if(safelyStopTravel())travelMode='stop';choose(id,Boolean(clip?.game||clip?.once));};
+ $(clip?.game?'#gameStates':'#states').append(b);
+ actionButtons.push(b);
+}
 $('#playSequence').onclick=()=>{if(safelyStopTravel())travelMode='stop';paused=false;$('#pause').textContent='일시정지';choose('sequence');};
 for(const [id,label]of Object.entries(emotions)){const b=document.createElement('button');b.textContent=label;b.dataset.emotion=id;b.onclick=()=>chooseEmotion(id);$('#emotions').append(b);}
 $('#speaking').onchange=e=>{speaking=e.target.checked;transition.retarget(sample());if(paused)draw=sample();paint();};
 function safelyStopTravel(){const active=$('#travel').checked;$('#travel').checked=false;return active;}
 document.querySelectorAll('#directions button').forEach(b=>b.onclick=()=>{safelyStopTravel();setYaw(+b.dataset.yaw);});
 $('#travel').onchange=e=>{if(e.target.checked){travelGait=state==='run'?'run':'walk';choose(travelGait);travelDir=yaw>0?1:-1;setYaw(travelDir*65);travelMode='turn';}else{travelMode='stop';choose('idle');}};
-$('#pause').onclick=e=>{paused=!paused;e.target.textContent=paused?'계속 재생':'일시정지';};
+$('#pause').onclick=()=>{if(actionFinished())choose(state,true);else{paused=!paused;updatePauseButton();}};
 $('#reset').onclick=()=>{safelyStopTravel();emotion='auto';speaking=false;speechTime=0;$('#blink').value=-1;$('#elbow').value=-1;$('#blinkLabel').textContent='자동';$('#elbowLabel').textContent='자동';time=0;actionTime=0;gaitTime=0;runGaitTime=0;travelGait='walk';travelSpeed=0;walk=0;run=0;x=0;choose('idle');setYaw(0,true);draw=M.pose('idle',0);transition=new M.PoseTransition(draw);paint();};
 $('#speed').oninput=e=>$('#speedLabel').textContent=e.target.value+'×';
 $('#blink').oninput=e=>{$('#blinkLabel').textContent=+e.target.value<0?'자동':Math.round(e.target.value*100)+'%';paint();};
 $('#elbow').oninput=e=>{$('#elbowLabel').textContent=+e.target.value<0?'자동':e.target.value+'°';paint();};
 $('#angle').oninput=e=>{safelyStopTravel();setYaw(+e.target.value,true);};
-$('#scrub').oninput=e=>{paused=true;$('#pause').textContent='계속 재생';time=+e.target.value;actionTime=time;gaitTime=time;runGaitTime=time;speechTime=time;walk=walkTarget;run=runTarget;draw=sample();transition=new M.PoseTransition(draw);paint();};
+$('#scrub').oninput=e=>{paused=true;time=+e.target.value;actionTime=time;gaitTime=time;runGaitTime=time;speechTime=time;walk=walkTarget;run=runTarget;draw=sample();transition=new M.PoseTransition(draw);paint();};
 function exportCanvas(canvas,name){const url=canvas.toDataURL('image/png'),link=$('#downloadAsset');link.href=url;link.download=name;link.textContent=name+' 다운로드';$('#exportImage').src=url;$('#exportResult').hidden=false;$('#exportStatus').textContent='PNG 생성 완료';canvas.toBlob(async blob=>{try{const response=await fetch('export-png?name='+encodeURIComponent(name),{method:'POST',headers:{'Content-Type':'image/png'},body:blob});if(!response.ok)throw Error('export server unavailable');const result=await response.json();$('#exportStatus').textContent='저장 완료 · '+result.file;}catch{$('#exportStatus').textContent='PNG 생성 완료 · 다운로드 링크로 저장하세요';}},'image/png');}
 const emotionSlug=()=>emotion.replaceAll('_','-');
 const emotionSuffix=()=>emotion==='auto'||state==='sleep'?'':'-'+emotionSlug();
@@ -127,6 +165,8 @@ document.querySelectorAll('[data-preview]').forEach(b=>b.onclick=()=>{
 });
 function advance(dt){
  time+=dt;actionTime+=dt;speechTime+=dt;turnElapsed+=dt;
+ const clip=A.clips[state];
+ if(clip?.once)actionTime=Math.min(actionTime,clip.duration);
  const travel=$('#travel').checked;
  const cssScale=$('#actor').clientHeight/540, maxSpeed=(travelGait==='run'?M.runProfile.speed:55.5556)*cssScale;
  const range=Math.max(12,($('#stage').clientWidth-$('#actor').clientWidth)/2-18);
@@ -160,12 +200,12 @@ function advance(dt){
 }
 function tick(now){
  let dt=last?Math.min(.12,(now-last)/1000):0;last=now;
- if(!paused){dt*=+$('#speed').value;const steps=Math.max(1,Math.ceil(dt/(1/90)));for(let i=0;i<steps;i++)advance(dt/steps);paint();}
+ if(!paused&&!actionFinished()){dt*=+$('#speed').value;const steps=Math.max(1,Math.ceil(dt/(1/90)));for(let i=0;i<steps;i++)advance(dt/steps);paint();}
  frameCount++;if(now-fpsTime>1000){$('#fps').textContent=Math.round(frameCount*1000/(now-fpsTime))+' fps';frameCount=0;fpsTime=now;}
  requestAnimationFrame(tick);
 }
 (async()=>{try{
- renderer=await new CloudyRenderer($('#canvas')).load();
+ renderer=await new A.Renderer($('#canvas')).load();
  const params=new URLSearchParams(location.search),initial=params.get('action'),direction=params.get('direction'),directions={left:-65,front:0,right:65};
  choose(Object.prototype.hasOwnProperty.call(names,initial)?initial:'idle');
  if(Object.prototype.hasOwnProperty.call(directions,direction))setYaw(directions[direction]);
