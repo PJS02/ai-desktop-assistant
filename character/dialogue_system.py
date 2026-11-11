@@ -439,7 +439,7 @@ class DialogueSystem(QObject):
                 'state': 'queued', 'turn_id': len(self.conversation_history),
                 'trace_id': trace_id, 'log_context': {**context, 'trace_id': trace_id, 'source': source},
                 'queued_at': self._time_provider(), 'retry_of': retry_of}
-        self.conversation_history.append(turn)
+        self._append_chat_turn(turn)
         self.pending_inputs.append(turn)
         log_event('dialogue.input_accepted', '사용자 입력 접수', category='대화·AI',
                   trace_id=trace_id, source=source, raw_text=raw_text, text=text,
@@ -662,7 +662,7 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             return
         turn['state'] = 'failed' if failed else 'completed'
         self._last_failed_input = dict(turn) if failed else None
-        self.conversation_history.append({
+        self._append_chat_turn({
             'role': 'assistant', 'text': response_text,
             'source': turn['source'], 'state': turn['state'],
             'turn_id': turn['turn_id'], 'trace_id': turn['trace_id']})
@@ -816,33 +816,26 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.current_input_widget = None
         self.tts.close()
 
+    def _append_chat_turn(self, turn):
+        self.conversation_history.append(turn)
+        if self.current_input_widget is not None:
+            self.current_input_widget.append_message(turn['role'], turn['text'])
+
     def open_input_dialog(self):
-        """대화 입력 창 열기"""
+        """Show the chat and keep the current draft and transcript."""
         if self._closed:
             return
-        # Preserve a draft when the character's talk action is selected again.
-        if self.current_input_widget:
-            self.current_input_widget.showNormal()
-            self.current_input_widget.raise_()
-            self.current_input_widget.activateWindow()
-            self.current_input_widget.input_field.setFocus()
-            return
-        
-        # 새 입력창 생성
-        input_widget = DialogueInputWidget()
-        input_widget.text_submitted.connect(self.ask_ai)
-        
-        # 캐릭터 아래에 배치
-        char_x = self.character_widget.x()
-        char_y = self.character_widget.y()
-        char_width = self.character_widget.width()
-        input_widget.set_position_below_character(char_x, char_y, char_width)
-        
-        input_widget.show()
+        if self.current_input_widget is None:
+            self.current_input_widget = DialogueInputWidget()
+            self.current_input_widget.text_submitted.connect(self.ask_ai)
+            for turn in self.conversation_history:
+                self.current_input_widget.append_message(turn['role'], turn['text'])
+
+        input_widget = self.current_input_widget
+        input_widget.showNormal()
         input_widget.raise_()
         input_widget.activateWindow()
         input_widget.input_field.setFocus()
-        self.current_input_widget = input_widget
     
     def _process_gemini_response(self, response: str, *, log_context=None) -> str:
         """Gemini 응답 처리 - 에러 또는 정상 응답을 대사로 변환"""

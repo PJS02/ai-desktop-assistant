@@ -1,7 +1,7 @@
 # 캐릭터 대화 말풍선 UI
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget, QApplication, QLineEdit, QPushButton, QHBoxLayout, QTextBrowser, QFrame
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget, QApplication, QLineEdit, QPushButton, QHBoxLayout, QTextBrowser, QFrame, QScrollArea, QSizePolicy
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMetrics
-from PyQt6.QtCore import QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
+from PyQt6.QtCore import QEvent, QSettings, QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
 from pathlib import Path
 from .dialogue_styles import normalize_dialogue_style
 from .overlay_geometry import place_above_character, place_near_ankles
@@ -335,136 +335,162 @@ class DialogueNarrationBox(QWidget):
 
 
 class DialogueInputWidget(QWidget):
-    """대화 입력 창 - 사용자가 캐릭터와 대화할 수 있음"""
-    
-    text_submitted = pyqtSignal(str)  # 텍스트 입력됨
-    
-    def __init__(self, parent=None):
-        """
-        Args:
-            parent: 부모 위젯
-        """
+    """Scrollable chat with a saved desktop position."""
+
+    text_submitted = pyqtSignal(str)
+    POSITION_KEY = 'chat/position'
+
+    def __init__(self, parent=None, *, settings=None):
         super().__init__(parent)
-        
-        # UI 설정
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
+        self._settings = settings if settings is not None else QSettings('PJS02', 'AIDesktopAssistant')
+        self._drag_offset = None
+        self._follow_latest = True
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowTitle("AI 대화")
-        
-        # 레이아웃
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 8, 6, 8)
-        layout.setSpacing(5)
-        
-        # 입력 필드
+        self.setWindowTitle('채팅하기')
+        self.resize(376, 448)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        panel = QFrame(self)
+        panel.setObjectName('chatPanel')
+        outer.addWidget(panel)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        self.title_bar = QLabel('채팅하기')
+        self.title_bar.setObjectName('chatTitle')
+        self.title_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.title_bar.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.title_bar.installEventFilter(self)
+        self.close_button = QPushButton('×')
+        self.close_button.setObjectName('chatClose')
+        self.close_button.setAccessibleName('채팅창 닫기')
+        self.close_button.setFixedSize(30, 30)
+        self.close_button.clicked.connect(self.close)
+        header.addWidget(self.title_bar, 1)
+        header.addWidget(self.close_button)
+        layout.addLayout(header)
+
+        self.history = QScrollArea(panel)
+        self.history.setObjectName('chatHistory')
+        self.history.setFrameShape(QFrame.Shape.NoFrame)
+        self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history.setWidgetResizable(True)
+        self.history.setAccessibleName('채팅 내역')
+        messages = QWidget()
+        messages.setObjectName('chatMessages')
+        self._messages = QVBoxLayout(messages)
+        self._messages.setContentsMargins(10, 10, 10, 10)
+        self._messages.setSpacing(8)
+        self._empty = QLabel('메시지를 보내거나 음성으로 말을 걸어보세요.')
+        self._empty.setObjectName('chatEmpty')
+        self._empty.setWordWrap(True)
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._messages.addWidget(self._empty, 1)
+        self._messages.addStretch()
+        self.history.setWidget(messages)
+        self.history.verticalScrollBar().rangeChanged.connect(self._scroll_to_latest)
+        layout.addWidget(self.history, 1)
+
+        composer = QHBoxLayout()
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("캐릭터에게 말해보세요...")
+        self.input_field.setPlaceholderText('메시지 입력')
+        self.input_field.setAccessibleName('채팅 메시지')
         self.input_field.returnPressed.connect(self._on_send)
-        self.input_field.setStyleSheet("""
-            QLineEdit {
-                background-color: #ffffff;
-                color: #263645;
-                placeholder-text-color: #515e6a;
-                border: 1px solid #c2cedb;
-                border-radius: 6px;
-                padding: 0 9px;
-                font-size: 12px;
-                font-family: 'Malgun Gothic';
-            }
-            QLineEdit:focus {
-                border: 2px solid #4d6b89;
-            }
-        """)
-        
-        # 전송 버튼
-        self.send_button = QPushButton("전송")
+        self.send_button = QPushButton('전송')
         self.send_button.clicked.connect(self._on_send)
         self.send_button.setFixedWidth(58)
-        self.send_button.setStyleSheet("""
-            QPushButton {
-                background-color: #e9f1fa;
-                color: #274965;
-                border: 1px solid #c2cedb;
-                border-radius: 6px;
-                font-size: 11px;
-                font-family: 'Malgun Gothic';
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #d3deea;
-            }
-            QPushButton:pressed {
-                background-color: #c0cedd;
-            }
-            QPushButton:focus {
-                border-color: #4d6b89;
-            }
-        """)
-        
-        # 닫기 버튼
-        self.close_button = QPushButton("✕")
-        self.close_button.clicked.connect(self.close)
-        self.close_button.setFixedWidth(32)
-        self.close_button.setStyleSheet("""
-            QPushButton {
-                background-color: #f1f4f8;
-                color: #515e6a;
-                border: 1px solid #c2cedb;
-                border-radius: 6px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #dae1e8;
-            }
-            QPushButton:focus {
-                border-color: #4d6b89;
-            }
-        """)
-        
-        # 레이아웃 추가
-        for control in (self.input_field, self.send_button, self.close_button):
+        for control in (self.input_field, self.send_button):
             control.setFixedHeight(34)
-            layout.addWidget(control)
-        
-        # 크기
-        self.setFixedHeight(50)
-        self.setMinimumWidth(400)
-        
-        # 포커스
-        self.input_field.setFocus()
-    
+            composer.addWidget(control)
+        layout.addLayout(composer)
+
+        self.setStyleSheet("""
+            QWidget { color: #263645; font-family: 'Malgun Gothic'; font-size: 13px; }
+            QFrame#chatPanel { background: #ffffff; border: 1px solid #c2cedb; border-radius: 9px; }
+            QLabel#chatTitle { font-size: 16px; font-weight: bold; padding-left: 2px; }
+            QScrollArea#chatHistory, QWidget#chatMessages { background: #f4f7fb; border-radius: 6px; }
+            QLabel#chatEmpty { color: #515e6a; padding: 8px; }
+            QLabel[chatRole] { background: #ffffff; border: 1px solid #cbd3dc;
+                               border-radius: 8px; padding: 7px 10px; }
+            QLabel[chatRole="user"] { background: #e9f1fa; }
+            QLineEdit, QPushButton { border: 1px solid #c2cedb; border-radius: 6px; }
+            QLineEdit { background: #ffffff; padding: 0 9px; }
+            QPushButton { background: #e9f1fa; color: #274965; font-weight: bold; }
+            QPushButton#chatClose { background: #f1f4f8; color: #515e6a; }
+            QPushButton:hover, QPushButton#chatClose:hover { background: #dfe7f0; }
+            QPushButton:pressed, QPushButton#chatClose:pressed { background: #cbd7e5; }
+            QLineEdit:focus, QPushButton:focus { border-color: #4d6b89; }
+        """)
+
+    def append_message(self, role, text):
+        scrollbar = self.history.verticalScrollBar()
+        self._follow_latest = scrollbar.value() == scrollbar.maximum()
+        self._empty.hide()
+        bubble = QLabel(self.history.widget())
+        bubble.setProperty('chatRole', role)
+        bubble.setAccessibleName('나' if role == 'user' else '캐릭터')
+        bubble.setTextFormat(Qt.TextFormat.PlainText)
+        bubble.setText(text)
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._fit_bubble(bubble)
+        side = Qt.AlignmentFlag.AlignRight if role == 'user' else Qt.AlignmentFlag.AlignLeft
+        self._messages.insertWidget(self._messages.count() - 1, bubble, alignment=side)
+
+    def _fit_bubble(self, bubble):
+        bubble.ensurePolished()
+        text_width = max(bubble.fontMetrics().horizontalAdvance(line) for line in bubble.text().split('\n'))
+        width = min(text_width + 28, int(self.width() * .74))
+        bubble.setFixedWidth(width)
+        bubble.setFixedHeight(bubble.heightForWidth(width))
+
+    def _scroll_to_latest(self):
+        if self._follow_latest:
+            scrollbar = self.history.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
     def _on_send(self):
-        """전송 버튼 클릭 또는 엔터 키"""
         text = self.input_field.text().strip()
         if text:
             self.input_field.clear()
-            self.hide()
             self.text_submitted.emit(text)
-    
-    def set_position_below_character(self, character_x: int, character_y: int, character_width: int):
-        """캐릭터 아래에 입력창 위치 지정"""
-        x = character_x + character_width // 2 - self.width() // 2
-        y = character_y + 450  # 캐릭터 높이가 400px이므로 아래에 배치
-        
-        # 화면 범위 체크
-        try:
-            screen_geometry = QApplication.primaryScreen().geometry()
-        except:
-            screen_geometry = QRect(0, 0, 1920, 1080)
-        
-        if x < 0:
-            x = 0
-        if x + self.width() > screen_geometry.width():
-            x = screen_geometry.width() - self.width()
-        if y + self.height() > screen_geometry.height():
-            y = character_y - self.height() - 10  # 위에 배치
-        
-        self.move(x, y)
-    
-    def closeEvent(self, event):
-        """종료 이벤트"""
-        super().closeEvent(event)
+            self.input_field.setFocus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        saved = self._settings.value(self.POSITION_KEY)
+        screen = QApplication.screenAt(saved) if isinstance(saved, QPoint) else None
+        bounds = (screen or QApplication.primaryScreen()).availableGeometry()
+        self.resize(min(376, bounds.width()), min(448, bounds.height()))
+        for index in range(1, self._messages.count() - 1):
+            self._fit_bubble(self._messages.itemAt(index).widget())
+        position = saved if screen else bounds.bottomRight() - QPoint(self.width() + 15, self.height() + 15)
+        self._move_inside(position, bounds)
+
+    def _move_inside(self, position, bounds):
+        self.move(max(bounds.left(), min(position.x(), bounds.right() - self.width() + 1)),
+                  max(bounds.top(), min(position.y(), bounds.bottom() - self.height() + 1)))
+
+    def eventFilter(self, watched, event):
+        if watched is self.title_bar:
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._drag_offset = event.globalPosition().toPoint() - self.pos()
+                return True
+            if (event.type() == QEvent.Type.MouseMove and self._drag_offset is not None
+                    and event.buttons() & Qt.MouseButton.LeftButton):
+                self.move(event.globalPosition().toPoint() - self._drag_offset)
+                return True
+            if (event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton
+                    and self._drag_offset is not None):
+                self._drag_offset = None
+                screen = QApplication.screenAt(event.globalPosition().toPoint()) or QApplication.primaryScreen()
+                self._move_inside(self.pos(), screen.availableGeometry())
+                self._settings.setValue(self.POSITION_KEY, self.pos())
+                self._settings.sync()
+                return True
+        return super().eventFilter(watched, event)
