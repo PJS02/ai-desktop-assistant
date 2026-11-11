@@ -14,6 +14,7 @@ from .overlay_geometry import place_above_character
 
 
 HANDS = {"ROCK": "바위", "PAPER": "보", "SCISSORS": "가위"}
+COUNTDOWN_HANDS = ("SCISSORS", "ROCK")
 ASSETS = Path(__file__).resolve().parents[1] / "assets" / "rps"
 
 
@@ -72,7 +73,7 @@ class HandTracker:
 class RpsGameOverlay(QWidget):
     """카운트다운 → 캐릭터 선택 → 사용자 기준 결과. 조작은 캐릭터 메뉴에서 한다."""
 
-    COUNTDOWN_SECONDS = 3.0
+    COUNTDOWN_SECONDS = 2.0
     cue_requested = pyqtSignal(str)
     cue_stopped = pyqtSignal()
     result_revealed = pyqtSignal(str)
@@ -126,10 +127,7 @@ class RpsGameOverlay(QWidget):
         self.opponent_image = QLabel(self.card)
         self.opponent_image.setFixedHeight(80)
         self.opponent_image.setStyleSheet("font-size: 44px; font-weight: bold; color: #2e4f69;")
-        self.hint = QLabel(self.card)
-        self.hint.setStyleSheet("font-size: 12px; color: #4e5e6c;")
-        self.hint.setWordWrap(True)
-        for label in (self.title, self.opponent_image, self.hint):
+        for label in (self.title, self.opponent_image):
             label.setTextFormat(Qt.TextFormat.PlainText)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(label)
@@ -188,8 +186,7 @@ class RpsGameOverlay(QWidget):
         self.deadline = now + self.COUNTDOWN_SECONDS
         self.title.setText("가위바위보")
         self.opponent_image.clear()
-        self.opponent_image.setText("3")
-        self.hint.setText("카메라에 한 손을 보여주세요.\n카운트다운이 끝나면 낼 손을 잠시 유지해주세요.")
+        self.opponent_image.setText(HANDS[COUNTDOWN_HANDS[0]])
         self.show()
         self.update_position()
         # 실패 응답이 늦게 도착해도 종료 명령으로 임시 인식 모드를 정리한다.
@@ -212,20 +209,15 @@ class RpsGameOverlay(QWidget):
                 **context,
             })
 
-    def _begin_capture(self):
-        capture_at = self.deadline
+    def _begin_capture(self, now):
         self.state = "waiting"
-        self.deadline = capture_at + self.CAPTURE_SECONDS
-        # 준비 중 보여준 손이 아니라 카운트다운 종료 후의 손으로 판정한다.
-        self.tracker = HandTracker(self.session, capture_at)
+        self.deadline = now + self.CAPTURE_SECONDS
+        # 화면과 음성에서 '보'를 알린 시점부터 들어온 손으로 판정한다.
+        self.tracker = HandTracker(self.session, now)
         log_event('game.rps.waiting', '사용자의 손 판정을 기다립니다.', category='캐릭터 상태',
-                  trace_id=self.session, capture_at=capture_at, deadline=self.deadline)
-        self.title.setText("보!")
-        self.opponent_image.clear()
-        self.opponent_image.setText("?")
-        self.hint.setText("한 손의 모양을 잠시 유지해주세요.")
-        if time.time() < self.deadline:
-            self._request_cue('paper')
+                  trace_id=self.session, capture_at=now, deadline=self.deadline)
+        self.opponent_image.setText(HANDS["PAPER"])
+        self._request_cue('paper')
 
     def _request_cue(self, cue):
         if cue != self._last_cue:
@@ -238,7 +230,7 @@ class RpsGameOverlay(QWidget):
         now = time.time()
         # Qt 타이머보다 프레임이 먼저 도착해도 올바른 판정 구간으로 넘긴다.
         if self.state == "countdown" and now >= self.deadline:
-            self._begin_capture()
+            self._begin_capture(now)
         if self.state == "waiting" and now >= self.deadline:
             self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.", reason='timeout')
             return
@@ -249,22 +241,18 @@ class RpsGameOverlay(QWidget):
                 log_event('game.rps.hand_observed', '사용자의 손 후보가 바뀌었습니다.',
                           category='사용자 인식', trace_id=self.session,
                           hand=label, previous_hand=previous_label, sample=payload.get('rps_game'))
-            self.hint.setText(f"{HANDS[label]} · 잠시 유지해주세요." if label else
-                              "한 손으로 가위·바위·보를 보여주세요.")
 
     def tick(self):
         now = time.time()
         if self.state == "countdown":
             remaining = self.deadline - now
             if remaining <= 0:
-                self._begin_capture()
+                self._begin_capture(now)
             else:
-                step = max(1, math.ceil(remaining))
-                self.opponent_image.setText(str(step))
-                # Attach one independent recording to each existing UI stage.
-                cue = {2: 'scissors', 1: 'rock'}.get(step)
-                if cue:
-                    self._request_cue(cue)
+                hands_left = min(len(COUNTDOWN_HANDS), math.ceil(remaining))
+                hand = COUNTDOWN_HANDS[-hands_left]
+                self.opponent_image.setText(HANDS[hand])
+                self._request_cue(hand.lower())
         if self.state == "waiting":
             if now >= self.deadline:
                 self.finish_without_result("손을 확실하게 인식하지 못했어요.\n캐릭터를 더블클릭해 다시 시작해주세요.", reason='timeout')
@@ -272,15 +260,11 @@ class RpsGameOverlay(QWidget):
                 hand = self.tracker.stable_hand(now)
                 if hand:
                     self.finish_round(hand)
-                elif now - self.tracker.last_time > 0.8:
-                    self.hint.setText("카메라에 한 손을 보여주세요.\n다른 손은 화면 밖으로 빼주세요.")
         elif self.state == "reveal" and now >= self.deadline:
             self.state = "result"
             self.deadline = now + self.RESULT_SECONDS
             self.title.setText({"당신의 승리!": "승리!", "캐릭터의 승리!": "패배!",
                                 "무승부!": "무승부!"}[self.result])
-            self.hint.setText(f"사용자 기준 · 나 {HANDS[self.player]} / 캐릭터 {HANDS[self.opponent]}\n"
-                              "캐릭터를 더블클릭해 다시 하거나 끝낼 수 있어요")
             event = {
                 "당신의 승리!": "game_loss", "캐릭터의 승리!": "game_win", "무승부!": "game_draw",
             }[self.result]
@@ -311,7 +295,6 @@ class RpsGameOverlay(QWidget):
         self.deadline = time.time() + self.REVEAL_SECONDS
         self.title.setText(f"캐릭터 · {HANDS[self.opponent]}")
         self.show_hand(self.opponent_image, self.opponent)
-        self.hint.setText(f"나 · {HANDS[hand]}")
         self._end_recognition()
         self.timer.start()
         self.update_position()
@@ -328,7 +311,6 @@ class RpsGameOverlay(QWidget):
         self.title.setText("다시 해볼까요?")
         self.opponent_image.clear()
         self.opponent_image.setText("?")
-        self.hint.setText(message)
         self._end_recognition()
         self.timer.start()
         self.update_position()

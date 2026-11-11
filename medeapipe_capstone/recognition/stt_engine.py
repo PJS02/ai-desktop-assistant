@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 import uuid
+from app.device_settings import REALTEK_STEREO_MIX, microphone_identity
 from app_logging import log_event, log_throttled, new_trace_id
 
 try:
@@ -59,6 +61,7 @@ MIN_UTTERANCE_SECONDS = 0.35
 class AudioDevice:
     index: int | None
     label: str
+    sample_rate: int = SAMPLE_RATE
 
 
 class RealtimeSTT:
@@ -70,6 +73,7 @@ class RealtimeSTT:
         self.worker_thread: threading.Thread | None = None
         self.stream = None
         self.is_running = False
+        self._sample_rate = SAMPLE_RATE
         self._time_provider = time_provider
         self._capture_lock = threading.Lock()
         self._capture_generation = 0
@@ -133,6 +137,10 @@ class RealtimeSTT:
         if dependency_error is not None:
             raise RuntimeError(dependency_error)
 
+        if sys.platform == 'win32' and not self.is_running:
+            # PortAudio caches Windows endpoints until it is reinitialized.
+            sd._terminate()
+            sd._initialize()
         devices = sd.query_devices()
         self.audio_devices = []
         labels: list[str] = []
@@ -140,7 +148,7 @@ class RealtimeSTT:
             if int(device.get("max_input_channels", 0)) <= 0:
                 continue
             label = f"index {index} / {device['name']}"
-            self.audio_devices.append(AudioDevice(index=index, label=label))
+            self.audio_devices.append(AudioDevice(index, label, round(device['default_samplerate'])))
             labels.append(label)
         return labels
 
@@ -164,6 +172,8 @@ class RealtimeSTT:
         if provider != "google":
             raise RuntimeError(f"Unsupported STT provider: {provider}")
 
+        if microphone_identity(mic_label) == REALTEK_STEREO_MIX:
+            self.refresh_microphones()
         self.active_mic_label = mic_label
         self.active_provider = provider
         self.active_silence_label = silence_label
@@ -213,22 +223,25 @@ class RealtimeSTT:
 
     def _run_stt(self) -> None:
         try:
+            self._start_stream()
+            if self.stop_event.is_set():
+                return
+            sample_rate = self._sample_rate
             self.ui_queue.put(("status", "STT recording with Google Web Speech"))
             self.ui_queue.put(("text", "\n[STT started]\n"))
-            self._start_stream()
 
             pre_roll = deque()
             pre_roll_samples = 0
-            pre_roll_limit = int(SAMPLE_RATE * PRE_ROLL_SECONDS)
+            pre_roll_limit = int(sample_rate * PRE_ROLL_SECONDS)
             silence_limit = int(
-                SAMPLE_RATE * SILENCE_SECONDS_BY_LABEL.get(
+                sample_rate * SILENCE_SECONDS_BY_LABEL.get(
                     self.active_silence_label,
                     0.8,
                 )
             )
             start_threshold = START_RMS_BY_SENSITIVITY.get(self.active_sensitivity, 0.015)
             end_threshold = start_threshold * 0.55
-            min_utterance_samples = int(SAMPLE_RATE * MIN_UTTERANCE_SECONDS)
+            min_utterance_samples = int(sample_rate * MIN_UTTERANCE_SECONDS)
 
             in_speech = False
             speech_chunks = []
@@ -257,13 +270,13 @@ class RealtimeSTT:
                     buffer_generation = generation
 
                 chunk_start = audio_offset
-                audio_offset += len(chunk) / SAMPLE_RATE
+                audio_offset += len(chunk) / sample_rate
                 chunk_rms = self._rms(chunk)
 
                 if not in_speech:
                     if chunk_rms >= start_threshold:
                         in_speech = True
-                        utterance_start = max(0.0, chunk_start - (pre_roll_samples / SAMPLE_RATE))
+                        utterance_start = max(0.0, chunk_start - (pre_roll_samples / sample_rate))
                         speech_chunks = list(pre_roll) + [chunk]
                         speech_samples = pre_roll_samples + len(chunk)
                         silence_samples = 0
@@ -315,10 +328,15 @@ class RealtimeSTT:
 
     def _start_stream(self) -> None:
         selected = self.active_mic_label
-        device_index = next(
-            (item.index for item in self.audio_devices if item.label == selected),
-            None,
-        )
+        requested = next((item for item in self.audio_devices if item.label == selected), None)
+        candidates = [requested] if requested is not None else []
+        if microphone_identity(selected) == REALTEK_STEREO_MIX:
+            candidates.extend(item for item in self.audio_devices
+                              if item.label != selected and microphone_identity(item.label) == REALTEK_STEREO_MIX)
+        elif not selected:
+            candidates = [AudioDevice(None, '')]
+        if not candidates:
+            raise RuntimeError(f"선택한 마이크를 찾지 못했습니다. 마이크 목록을 새로 고쳐주세요. ({selected})")
 
         def callback(indata, frames, time_info, status) -> None:
             if status:
@@ -335,21 +353,32 @@ class RealtimeSTT:
                 mono = indata[:, 0].astype(np.float32, copy=True)
                 self.audio_queue.put((self._capture_generation, mono))
 
-        self.stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="float32",
-            device=device_index,
-            callback=callback,
-        )
-        self.stream.start()
-        log_event('stt.microphone.opened', '마이크 녹음 시작', category='사용자 인식',
-                  requested_label=selected, requested_index=device_index,
-                  actual_index=getattr(self.stream, 'device', device_index),
-                  selection_reason='label_match' if device_index is not None else 'system_default',
-                  sample_rate=SAMPLE_RATE, actual_sample_rate=getattr(self.stream, 'samplerate', SAMPLE_RATE),
-                  channels=CHANNELS, dtype='float32',
-                  speech_session=self.speech_session)
+        for device in candidates:
+            for rate in dict.fromkeys((SAMPLE_RATE, device.sample_rate)):
+                if self.stop_event.is_set():
+                    return
+                stream = None
+                try:
+                    stream = sd.InputStream(samplerate=rate, channels=CHANNELS, dtype='float32',
+                                            device=device.index, callback=callback)
+                    stream.start()
+                except sd.PortAudioError as exc:
+                    if stream is not None:
+                        stream.close()
+                    last_error = exc
+                    continue
+                self.stream = stream
+                self._sample_rate = rate
+                log_event('stt.microphone.opened', '마이크 녹음 시작', category='사용자 인식',
+                          requested_label=selected, actual_label=device.label,
+                          requested_index=requested.index if requested is not None else None,
+                          actual_index=getattr(stream, 'device', device.index),
+                          selection_reason='label_match' if device is requested else
+                          'stereo_mix_restored' if selected else 'system_default',
+                          sample_rate=rate, actual_sample_rate=getattr(stream, 'samplerate', rate),
+                          channels=CHANNELS, dtype='float32', speech_session=self.speech_session)
+                return
+        raise RuntimeError(f"선택한 마이크를 열지 못했습니다. ({selected}) {last_error}") from last_error
 
     def _stop_stream(self) -> None:
         if self.stream is None:
@@ -383,9 +412,10 @@ class RealtimeSTT:
         trace_id = new_trace_id('speech')
         self._request_sequence += 1
         request_started = time.monotonic()
+        duration = len(audio) / self._sample_rate
         log_event('stt.google.request', 'Google 음성 인식 요청', category='사용자 인식', trace_id=trace_id,
                   speech_session=self.speech_session, request_sequence=self._request_sequence,
-                  duration=len(audio) / SAMPLE_RATE, rms=rms, offset=offset,
+                  duration=duration, rms=rms, offset=offset,
                   sample_rate=SAMPLE_RATE, language=self.active_language, generation=generation)
         try:
             text = self.recognizer.recognize_google(
@@ -414,7 +444,6 @@ class RealtimeSTT:
             return
 
         if self.active_timestamps:
-            duration = len(audio) / SAMPLE_RATE
             line = f"[{offset:05.2f} - {offset + duration:05.2f}] {text}"
         else:
             line = text
@@ -436,8 +465,10 @@ class RealtimeSTT:
 
     def _to_audio_data(self, audio):
         clipped = np.clip(audio, -1.0, 1.0)
-        pcm = (clipped * 32767).astype(np.int16)
-        return sr.AudioData(pcm.tobytes(), SAMPLE_RATE, 2)
+        pcm = (clipped * 32767).astype(np.int16).tobytes()
+        if self._sample_rate != SAMPLE_RATE:
+            pcm = sr.AudioData(pcm, self._sample_rate, 2).get_raw_data(convert_rate=SAMPLE_RATE)
+        return sr.AudioData(pcm, SAMPLE_RATE, 2)
 
     def _rms(self, audio) -> float:
         if audio.size == 0:

@@ -87,6 +87,13 @@ RPS_LABEL_COLORS = {
     "NONE": (160, 160, 160),
 }
 
+RPS_FINGERS = {
+    "index": "INDEX_FINGER",
+    "middle": "MIDDLE_FINGER",
+    "ring": "RING_FINGER",
+    "pinky": "PINKY",
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -242,17 +249,15 @@ def angle_between_points(point_a, point_b, point_c):
     if point_a is None or point_b is None or point_c is None:
         return None
 
-    vector_ba = (point_a[0] - point_b[0], point_a[1] - point_b[1])
-    vector_bc = (point_c[0] - point_b[0], point_c[1] - point_b[1])
+    vector_ba = tuple(a - b for a, b in zip(point_a, point_b))
+    vector_bc = tuple(c - b for c, b in zip(point_c, point_b))
 
     magnitude_ba = math.hypot(*vector_ba)
     magnitude_bc = math.hypot(*vector_bc)
     if magnitude_ba == 0 or magnitude_bc == 0:
         return None
 
-    cosine_value = (
-        (vector_ba[0] * vector_bc[0]) + (vector_ba[1] * vector_bc[1])
-    ) / (magnitude_ba * magnitude_bc)
+    cosine_value = sum(a * c for a, c in zip(vector_ba, vector_bc)) / (magnitude_ba * magnitude_bc)
     cosine_value = max(-1.0, min(1.0, cosine_value))
     return math.degrees(math.acos(cosine_value))
 
@@ -434,16 +439,41 @@ def finger_is_extended(hand_map, mcp_name, pip_name, tip_name):
     return angle >= 160 and tip["pixel_y"] < pip["pixel_y"] < mcp["pixel_y"]
 
 
-def rps_thumb_is_extended(hand_map):
+def _rps_hand_points(hand_map, image_size):
+    points = {}
+    for name in HAND_LANDMARK_NAMES:
+        record = hand_map.get(name)
+        if record is None:
+            return None
+        if image_size is None:
+            point = point_from_record(record)
+        else:
+            width, height = image_size
+            # MediaPipe's relative hand depth uses approximately the same scale as x.
+            point = (record['x'] * width, record['y'] * height, record['z'] * width)
+        if not all(math.isfinite(value) for value in point):
+            return None
+        points[name] = point
+    return points
+
+
+def _rps_finger_pose(points, finger, scale):
+    mcp, pip, dip, tip = (points[f'{finger}_{joint}'] for joint in ('MCP', 'PIP', 'DIP', 'TIP'))
+    bend = angle_between_points(mcp, pip, tip)
+    tip_bend = angle_between_points(pip, dip, tip)
+    if bend is None or tip_bend is None:
+        return None
+    wrist = points['WRIST']
+    reach = math.dist(wrist, tip) - math.dist(wrist, pip)
+    if bend >= 145 and tip_bend >= 135 and reach >= scale * .08:
+        return 'extended'
+    if min(bend, tip_bend) <= 135 and (reach <= scale * .05 or math.dist(mcp, tip) <= scale * .55):
+        return 'folded'
+    return None
+
+
+def _rps_thumb_is_extended(points, scale):
     """A straight, spread thumb can point sideways in thumb-index scissors."""
-    points = {name: point_from_record(hand_map.get(name)) for name in HAND_LANDMARK_NAMES}
-    if any(point is None or not all(math.isfinite(value) for value in point)
-           for point in points.values()):
-        return False
-    scale = max(math.dist(points['WRIST'], points['MIDDLE_FINGER_MCP']),
-                math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
-    if scale <= 1:
-        return False
     mcp, ip, tip = (points[f'THUMB_{joint}'] for joint in ('MCP', 'IP', 'TIP'))
     return ((angle_between_points(mcp, ip, tip) or 0) >= 150
             and math.dist(tip, points['PINKY_MCP']) > math.dist(mcp, points['PINKY_MCP']) * 1.1
@@ -451,76 +481,34 @@ def rps_thumb_is_extended(hand_map):
             and math.dist(tip, points['INDEX_FINGER_TIP']) > scale * .55)
 
 
-def analyze_rps_hand_state(hand_records):
-    if not hand_records:
-        return {
-            "state": "NONE",
-            "extended_fingers": {
-                "index": False,
-                "middle": False,
-                "ring": False,
-                "pinky": False,
-            },
-        }
+def analyze_rps_hand_state(hand_records, *, image_size=None):
+    result = {"state": "NONE", "extended_fingers": dict.fromkeys(RPS_FINGERS, False)}
+    points = _rps_hand_points(records_by_name(hand_records or ()), image_size)
+    if points is None:
+        return result
+    scale = max(math.dist(points['WRIST'], points['MIDDLE_FINGER_MCP']),
+                math.dist(points['INDEX_FINGER_MCP'], points['PINKY_MCP']))
+    if scale <= 1:
+        return result
 
-    hand_map = records_by_name(hand_records)
-    extended_fingers = {
-        "index": finger_is_extended(
-            hand_map,
-            "INDEX_FINGER_MCP",
-            "INDEX_FINGER_PIP",
-            "INDEX_FINGER_TIP",
-        ),
-        "middle": finger_is_extended(
-            hand_map,
-            "MIDDLE_FINGER_MCP",
-            "MIDDLE_FINGER_PIP",
-            "MIDDLE_FINGER_TIP",
-        ),
-        "ring": finger_is_extended(
-            hand_map,
-            "RING_FINGER_MCP",
-            "RING_FINGER_PIP",
-            "RING_FINGER_TIP",
-        ),
-        "pinky": finger_is_extended(
-            hand_map,
-            "PINKY_MCP",
-            "PINKY_PIP",
-            "PINKY_TIP",
-        ),
-    }
-
-    if all(extended_fingers.values()):
-        state = "PAPER"
+    poses = {name: _rps_finger_pose(points, finger, scale) for name, finger in RPS_FINGERS.items()}
+    result['extended_fingers'] = {name: pose == 'extended' for name, pose in poses.items()}
+    if all(result['extended_fingers'].values()):
+        result['state'] = 'PAPER'
     elif (
-        extended_fingers["index"]
-        and (extended_fingers["middle"] or rps_thumb_is_extended(hand_map))
-        and not extended_fingers["ring"]
-        and not extended_fingers["pinky"]
+        poses['index'] == 'extended'
+        and poses['ring'] == poses['pinky'] == 'folded'
+        and (poses['middle'] == 'extended'
+             or (poses['middle'] == 'folded' and _rps_thumb_is_extended(points, scale)))
     ):
-        state = "SCISSORS"
-    elif not any(extended_fingers.values()):
-        state = "ROCK"
-    else:
-        state = "NONE"
-
-    return {
-        "state": state,
-        "extended_fingers": extended_fingers,
-    }
+        result['state'] = 'SCISSORS'
+    elif all(pose == 'folded' for pose in poses.values()):
+        result['state'] = 'ROCK'
+    return result
 
 
 def disabled_rps_state():
-    return {
-        "state": "OFF",
-        "extended_fingers": {
-            "index": False,
-            "middle": False,
-            "ring": False,
-            "pinky": False,
-        },
-    }
+    return {"state": "OFF", "extended_fingers": dict.fromkeys(RPS_FINGERS, False)}
 
 
 def compute_upper_body_metrics(upper_body):
@@ -717,8 +705,8 @@ def build_frame_record(frame_index, timestamp_ms, width, height, results, tracki
     }
     metrics = compute_upper_body_metrics(upper_body)
     if rps_enabled:
-        left_hand_gesture = analyze_rps_hand_state(left_hand_records)
-        right_hand_gesture = analyze_rps_hand_state(right_hand_records)
+        left_hand_gesture = analyze_rps_hand_state(left_hand_records, image_size=(width, height))
+        right_hand_gesture = analyze_rps_hand_state(right_hand_records, image_size=(width, height))
     else:
         left_hand_gesture = disabled_rps_state()
         right_hand_gesture = disabled_rps_state()

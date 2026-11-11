@@ -8,6 +8,7 @@ from app_logging import log_event
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEVICE_SETTINGS_PATH = PROJECT_ROOT / "config" / "device_settings.json"
+REALTEK_STEREO_MIX = 'realtek-stereo-mix'
 
 
 def load_device_settings(path: Path = DEVICE_SETTINGS_PATH) -> dict[str, Any]:
@@ -99,6 +100,14 @@ def microphone_name(label: str) -> str:
     return label.split(separator, 1)[1] if separator in label else label
 
 
+def microphone_identity(label: str) -> str:
+    name = microphone_name(label).strip().casefold()
+    # Windows exposes the same Realtek loopback input under different API names.
+    if name.startswith(('스테레오 믹스', 'stereo mix')) and 'realtek' in name:
+        return REALTEK_STEREO_MIX
+    return name
+
+
 def select_saved_microphone(
     labels: Sequence[str],
     saved_microphone: Mapping[str, Any] | None,
@@ -121,6 +130,14 @@ def select_saved_microphone(
                 log_event('device.microphone.selection', '이름이 일치하는 마이크 선택', category='사용자 인식',
                           reason='name_restored', saved=dict(saved_microphone), selected=label)
                 return label
+    if microphone_identity(saved_name) == REALTEK_STEREO_MIX:
+        for label in labels:
+            if microphone_identity(label) == REALTEK_STEREO_MIX:
+                log_event('device.microphone.selection', '다른 Windows 입력 경로에서 스테레오 믹스 복원',
+                          category='사용자 인식', reason='stereo_mix_restored', selected=label)
+                return label
+        # Keep an unavailable loopback selection explicit instead of recording a physical mic.
+        return saved_label or saved_name
     log_event('device.microphone.selection', '첫 마이크로 대체 선택', category='사용자 인식',
               reason='first_available', saved=dict(saved_microphone), selected=labels[0])
     return labels[0]

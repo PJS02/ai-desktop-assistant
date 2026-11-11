@@ -29,6 +29,18 @@
       {
         "text": "안녕. 오늘도 함께 시작해 보자.",
         "file": "default/07.wav"
+      },
+      {
+        "text": "안녕. 여기서 또 만나네.",
+        "file": "default/08.wav"
+      },
+      {
+        "text": "반가워. 오늘은 어떤 날이야?",
+        "file": "default/09.wav"
+      },
+      {
+        "text": "안녕. 지금 잠깐 시간 있어?",
+        "file": "default/10.wav"
       }
     ],
     "밝고 활발": [
@@ -59,6 +71,18 @@
       {
         "text": "손 흔들어 줬네! 나도 반갑게 인사할게!",
         "file": "cheerful/07.wav"
+      },
+      {
+        "text": "왔구나! 나랑 뭐 하고 놀래?",
+        "file": "cheerful/08.wav"
+      },
+      {
+        "text": "반가워! 오늘도 같이 웃어 보자!",
+        "file": "cheerful/09.wav"
+      },
+      {
+        "text": "안녕! 네가 오니까 심심할 틈이 없겠다!",
+        "file": "cheerful/10.wav"
       }
     ],
     "진중하고 신중": [
@@ -89,6 +113,18 @@
       {
         "text": "안녕. 막히는 일이 있다면 같이 살펴보자.",
         "file": "thoughtful/07.wav"
+      },
+      {
+        "text": "반가워. 지금 할 일부터 같이 살펴볼까?",
+        "file": "thoughtful/08.wav"
+      },
+      {
+        "text": "안녕. 준비가 되면 한 가지씩 시작하자.",
+        "file": "thoughtful/09.wav"
+      },
+      {
+        "text": "왔구나. 급한 것부터 같이 정리해 보자.",
+        "file": "thoughtful/10.wav"
       }
     ],
     "친근하고 따뜻": [
@@ -119,6 +155,18 @@
       {
         "text": "안녕. 오늘도 편하게 지내자.",
         "file": "warm/07.wav"
+      },
+      {
+        "text": "왔구나. 얼굴 보니 반가워.",
+        "file": "warm/08.wav"
+      },
+      {
+        "text": "안녕. 오늘은 어떤 얘기부터 해 볼까?",
+        "file": "warm/09.wav"
+      },
+      {
+        "text": "반가워. 편한 만큼 천천히 이야기해 줘.",
+        "file": "warm/10.wav"
       }
     ],
     "창의적이고 자유로움": [
@@ -149,6 +197,18 @@
       {
         "text": "반가워! 우리만의 재미있는 일을 찾아보자.",
         "file": "creative/07.wav"
+      },
+      {
+        "text": "반가워! 오늘은 어떤 장면으로 시작할까?",
+        "file": "creative/08.wav"
+      },
+      {
+        "text": "안녕! 같이 엉뚱한 질문 하나 해 볼래?",
+        "file": "creative/09.wav"
+      },
+      {
+        "text": "왔구나! 오늘은 어떤 재미를 발명해 볼까?",
+        "file": "creative/10.wav"
       }
     ]
   }
