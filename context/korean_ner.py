@@ -16,11 +16,17 @@ def _get_pipeline():
     if _pipeline is None:
         from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
 
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True, trust_remote_code=False)
+        # Reuse installed weights without remote metadata requests on every launch.
+        options = dict(local_files_only=True, trust_remote_code=False)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True, **options)
+            model = AutoModelForTokenClassification.from_pretrained(
+                MODEL_ID, use_safetensors=True, **options)
+        except OSError:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True, trust_remote_code=False)
+            model = AutoModelForTokenClassification.from_pretrained(
+                MODEL_ID, use_safetensors=True, trust_remote_code=False)
         tokenizer.model_max_length = min(tokenizer.model_max_length, 512)
-        model = AutoModelForTokenClassification.from_pretrained(
-            MODEL_ID, use_safetensors=True, trust_remote_code=False,
-        )
         _pipeline = pipeline("token-classification", model=model, tokenizer=tokenizer,
                              aggregation_strategy="simple", stride=64, device=-1)
     return _pipeline

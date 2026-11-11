@@ -239,6 +239,12 @@ class WindowPresence(QObject):
             self._sprite_masked = self._sprite_hidden = False
 
     def poll(self):
+        if getattr(getattr(self.host, 'game_spectator', None), 'is_game_mode', False):
+            self.cancel()
+            self.walk_after_landing = False
+            return
+        if getattr(getattr(self.host, 'entrance', None), 'active', False):
+            return
         h = self.host
         if h._character_closing:
             self.shutdown()
@@ -399,6 +405,8 @@ class WindowPresence(QObject):
 
     def walk_on_support(self):
         h = self.host
+        if getattr(getattr(h, 'game_spectator', None), 'is_game_mode', False):
+            return
         surface = h.current_surface
         if surface is None or h._manual_control_active() or h._dialogue_is_busy():
             return

@@ -410,6 +410,7 @@ def main():
     character.dialogue_system.tts.speaking_changed.connect(mediapipe_manager.set_character_speaking)
     app.aboutToQuit.connect(model_preparation.close)
     app.aboutToQuit.connect(hand_overlay.stop)
+    app.aboutToQuit.connect(character.entrance.close)
     app.aboutToQuit.connect(mediapipe_manager.stop)
     app.aboutToQuit.connect(character.preparation_overlay.hide)
     app.aboutToQuit.connect(preparation.close)

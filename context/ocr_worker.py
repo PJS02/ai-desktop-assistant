@@ -38,6 +38,9 @@ def _serve(connection):
                 connection.send(None)
                 return
             connection.send(results)
+    except KeyboardInterrupt:
+        # Windows console interrupts also reach this child while it waits for work.
+        return
     finally:
         connection.close()
 

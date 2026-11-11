@@ -48,6 +48,11 @@ class AutomaticActions(QObject):
 
     def tick(self):
         host = self.host
+        if getattr(getattr(host, 'game_spectator', None), 'is_game_mode', False):
+            self._release()
+            return
+        if getattr(getattr(host, 'entrance', None), 'active', False):
+            return
         if host._character_closing:
             self.timer.stop()
             return

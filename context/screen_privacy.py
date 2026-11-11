@@ -134,12 +134,14 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
     Optional preview diagnostics stay in caller-owned memory and are never logged.
     """
     global _ocr
+    stage = 'imports'
     try:
         import cv2
         import numpy as np
         from PIL import Image
 
         with _lock:
+            stage = 'analyzer_initialization'
             _get_analyzer()
             if _ocr is None:
                 from .ocr_worker import OCRWorker
@@ -149,7 +151,9 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
             height, width = pixels.shape[:2]
             if not height or not width:
                 raise ValueError("empty image")
+            stage = 'ocr_inference'
             results = list(_ocr.predict(cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR), return_word_box=True))
+            stage = 'ocr_result_validation'
             if len(results) != 1:
                 raise ValueError("missing OCR page")
             result = results[0]
@@ -197,14 +201,31 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
                         if start < 0:
                             raise ValueError("unaligned OCR word")
                         cursor = start + len(word)
+                        word_points = np.asarray(poly, dtype=float)
+                        if (word_points.shape == (4, 2) and np.isfinite(word_points).all()
+                                and ((word_points[:, 0].max() <= word_points[:, 0].min())
+                                     or (word_points[:, 1].max() <= word_points[:, 1].min()))):
+                            # Some punctuation produces a zero-area word polygon.
+                            # Its validated parent line still covers the text.
+                            masked.add(box)
+                            word_spans = []
+                            break
                         word_box = rectangle(poly)
                         if not (box[0] <= word_box[0] < word_box[2] <= box[2]
                                 and box[1] <= word_box[1] < word_box[3] <= box[3]):
-                            raise ValueError("OCR word outside its line")
+                            if (word_box[0] >= box[2] or word_box[2] <= box[0]
+                                    or word_box[1] >= box[3] or word_box[3] <= box[1]):
+                                raise ValueError("OCR word outside its line")
+                            # Paddle word polygons can protrude from a valid line.
+                            # Mask both regions rather than trusting that alignment.
+                            masked.update((box, word_box))
+                            word_spans = []
+                            break
                         word_spans.append((start, cursor, word_box))
                 lines.append((box, text, word_spans))
             lines.sort(key=lambda line: (line[0][1], line[0][0]))
             combined = "\n".join(text for _, text, _ in lines)
+            stage = 'person_detection'
             spans = _find_spans(combined)
             if diagnostics is not None:
                 diagnostics.update(ocr_text=combined, pii_spans=tuple(spans))
@@ -235,8 +256,16 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
                 offset += len(text) + 1
             for left, top, right, bottom in masked:
                 cv2.rectangle(pixels, (left, top), (right, bottom), (0, 0, 0), thickness=-1)
+            stage = 'prompt_redaction'
             return (Image.fromarray(pixels), _redact_text(prompt, known_values),
                     _redact_text(system_instruction, known_values) if system_instruction else system_instruction)
-    except Exception:
+    except Exception as error:
         # Exception messages from OCR can contain input data; never expose them.
+        from app_logging import log_event
+        trace = error.__traceback__
+        while trace.tb_next is not None:
+            trace = trace.tb_next
+        log_event('privacy.processing_failed', '화면 개인정보 보호 단계 실패',
+                  category='오류', level='ERROR', stage=stage, error_type=type(error).__name__,
+                  error_line=trace.tb_lineno)
         raise ScreenPrivacyError("화면 개인정보 보호 처리에 실패하여 전송을 차단했습니다.") from None

@@ -19,7 +19,7 @@ HOST_EMOTIONS = {
     "bored": "tired",
 }
 RIG_ACTIONS = frozenset({
-    "idle", "walk", "run", "wave", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate",
+    "idle", "walk", "run", "wave", "stretch", "arrive", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate", "game_cheer", "game_oops",
 })
 
 

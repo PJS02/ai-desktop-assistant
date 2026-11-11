@@ -269,6 +269,24 @@
         p.armNear = 8 + 4 * s; p.elbowNear = 31 + 8 * Math.sin(breathe - 0.4);
         p.wristNear = 3 * Math.sin(breathe - 0.8);
         break;
+      case 'game_cheer': {
+        const lift=smoothstep(time/.35)*(1-smoothstep((time-2.45)/.65));
+        const bounce=Math.max(0,Math.sin(time*TAU*2.2))*lift;
+        p.armNear=lift*125;p.armFar=-lift*125;
+        p.elbowNear=8+lift*(28+12*Math.sin(time*9));
+        p.elbowFar=6+lift*(28-12*Math.sin(time*9));
+        p.bodyY-=bounce*5;
+        p.headAngle+=lift*3*Math.sin(time*6);
+        break;
+      }
+      case 'game_oops': {
+        const cover=smoothstep(time/.25)*(1-smoothstep((time-1.7)/.85));
+        p.armNear=cover*30;p.elbowNear=8+cover*112;p.wristNear=-cover*20;
+        p.armFar=-cover*20;p.elbowFar=6+cover*100;p.wristFar=cover*12;
+        p.lean-=cover*4;p.headAngle-=cover*7;
+        p.bodyY+=cover*3;
+        break;
+      }
       case 'spectate': {
         const t=((time%9)+9)%9;
         const eat=smoothstep((t-1.1)/1.0)*(1-smoothstep((t-3.3)/1.1));
@@ -315,6 +333,20 @@
         p.armFar=-enter*10;p.elbowFar=6+enter*20;
         p.wristNear=enter*(-4+1.2*Math.sin(time*2-.4));
         p.wristFar=enter*3;
+        break;
+      }
+      case 'arrive': {
+        p.blink=Math.max(p.blink, smoothstep(time/.1)*(1-smoothstep((time-.18)/.12)));
+        p.headAngle*=1-smoothstep(time/.4);
+        break;
+      }
+      case 'stretch': {
+        const lift=smoothstep(time/.6)*(1-smoothstep((time-1.0)/.7));
+        p.armNear=lift*145;p.armFar=-lift*145;
+        p.elbowNear=8+lift*12;p.elbowFar=6+lift*12;
+        p.bodyY-=lift*3;
+        p.headAngle-=lift*5;
+        p.blink=Math.max(p.blink,lift);
         break;
       }
       case 'thinking':

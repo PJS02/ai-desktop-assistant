@@ -167,6 +167,23 @@ def test_malformed_word_alignment_blocks_request(word_data, screenshot, use_ocr)
         screen_privacy.redact_screen(screenshot, "")
 
 
+def test_protruding_word_masks_whole_line_and_protrusion(screenshot, use_ocr):
+    result = ocr_result(["010-1234-5678"])
+    result.update(text_word=[["010"]], text_word_region=[[polygon(15, 10, 45, 35)]])
+    use_ocr(result)
+    masked, _, _ = screen_privacy.redact_screen(screenshot, "")
+    assert masked.getpixel((200, 20)) == (0, 0, 0)
+    assert masked.getpixel((20, 10)) == (0, 0, 0)
+
+
+def test_zero_width_word_masks_its_parent_line(screenshot, use_ocr):
+    result = ocr_result(["010-1234-5678"])
+    result.update(text_word=[["010"]], text_word_region=[[polygon(20, 15, 20, 30)]])
+    use_ocr(result)
+    masked, _, _ = screen_privacy.redact_screen(screenshot, "")
+    assert masked.getpixel((200, 20)) == (0, 0, 0)
+
+
 def test_ner_failure_blocks_request(screenshot, use_ocr, ner_predictions):
     use_ocr(ocr_result(["김민수"]))
     ner_predictions.side_effect = RuntimeError("private name")

@@ -114,6 +114,14 @@ def test_worker_hides_private_exception_text(monkeypatch):
     connection.close.assert_called_once()
 
 
+def test_worker_interrupt_while_waiting_closes_connection():
+    connection = Mock()
+    connection.recv.side_effect = KeyboardInterrupt
+    ocr_worker._serve(connection)
+    connection.close.assert_called_once()
+    connection.send.assert_not_called()
+
+
 @pytest.mark.skipif(os.environ.get("RUN_PADDLE_OCR_TEST") != "1", reason="requires local OCR models")
 def test_real_paddleocr_keeps_main_thread_responsive():
     worker = ocr_worker.OCRWorker()

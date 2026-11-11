@@ -14,6 +14,8 @@ from .events import PerceptionEvent, parse_perception_event
 class PerceptionController:
     """공통 인식 이벤트를 중복과 노이즈가 제거된 캐릭터 반응으로 바꾼다."""
 
+    AWAY_CONFIRM_SECONDS = 5.0
+
     def __init__(
         self,
         mood_system,
@@ -30,6 +32,7 @@ class PerceptionController:
         on_speech_with_context: Callable[[str, dict], None] | None = None,
         on_dialogue_with_context: Callable[[str, dict], None] | None = None,
         on_affect: Callable[..., dict] | None = None,
+        get_character_idle_time: Callable[[], float] | None = None,
     ) -> None:
         self.mood_system = mood_system
         self.on_dialogue = on_dialogue or (lambda _text: None)
@@ -44,6 +47,7 @@ class PerceptionController:
         self.on_speech_with_context = on_speech_with_context
         self.on_dialogue_with_context = on_dialogue_with_context
         self.on_affect = on_affect
+        self.get_character_idle_time = get_character_idle_time
         self.current_trace_id = None
         self._last_greeting_at = -math.inf
         self.emotion_samples = max(3, emotion_samples)
@@ -317,13 +321,19 @@ class PerceptionController:
                           previous=state['presence'], current=None, source=event.source)
             state['presence'] = None
             return
-        if observed - previous['since'] < (5. if attention == 'away' else 1.):
+        required = self.AWAY_CONFIRM_SECONDS if attention == 'away' else 1.
+        if observed - previous['since'] < required or state['presence'] == attention:
             return
-        if state['presence'] != attention:
-            log_event('perception.attention.changed', '사용자 주의 상태 변경',
-                      category='사용자 인식', trace_id=self.current_trace_id,
-                      previous=state['presence'], current=attention, source=event.source)
-            state['presence'] = attention
+        if attention == 'away' and self.get_character_idle_time is not None:
+            idle_seconds = self.get_character_idle_time()
+            if idle_seconds < required:
+                self._reject('attention', 'recent_interaction', event,
+                             idle_seconds=idle_seconds, required_seconds=required)
+                return
+        log_event('perception.attention.changed', '사용자 주의 상태 변경',
+                  category='사용자 인식', trace_id=self.current_trace_id,
+                  previous=state['presence'], current=attention, source=event.source)
+        state['presence'] = attention
         # Existing character-idle pressure owns absence; no second OCC penalty.
 
     def _affect(self, event, signal, *, label=None, quality=1., maintenance=1., observation=None):
