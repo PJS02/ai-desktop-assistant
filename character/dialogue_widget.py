@@ -44,6 +44,17 @@ class DialogueBubble(QWidget):
         if duration > 0 and not preview:
             self.close_timer.start(duration)
 
+    def set_text(self, text: str):
+        if text == self.text:
+            return
+        self.text = text
+        self.text_view.setPlainText(text)
+        if self._anchor is None:
+            self._calculate_size()
+        else:
+            self.set_position_below_character(*self._anchor)
+        self.update()
+
     def set_style(self, style):
         self.style = normalize_dialogue_style(style, strict=True)
         subtitle = self.style == 'subtitle'

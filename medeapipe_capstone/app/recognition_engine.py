@@ -907,7 +907,7 @@ class RecognitionEngine(SettingsBridge):
             # STT 이벤트 재전송이나 카메라 중단 시 과거 손으로 판정하지 않게 한다.
             self.rps_sample = {
                 "session": self.rps_session,
-                "captured_at": time.time(),
+                "captured_at": frame.captured_at,
                 "hands": dict(self.mode_result.get("result") or {}),
             }
         if annotated is not None:

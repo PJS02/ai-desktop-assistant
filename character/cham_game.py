@@ -1,21 +1,27 @@
-"""Five-round face-direction game using the existing character overlay card."""
+"""Single-round face-direction game using the existing character overlay card."""
 import math
 import secrets
 import time
 import uuid
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtWidgets import QWidget
 
 from app_logging import log_event
+from .dialogue_widget import UserDialogueBubble
 from .rps_game import RpsGameOverlay
 
 
 DIRECTIONS = {"LEFT": "← 왼쪽", "RIGHT": "오른쪽 →"}
+DIRECTION_LABELS = {"CENTER": "정면", **DIRECTIONS}
+DIRECTION_PENDING = "방향 확인 중…"
+DIRECTION_STATES = {"ready", "countdown", "waiting"}
 
 
 class DirectionTracker:
     """Only fresh, distinct camera frames from this game can establish a pose."""
+
+    FRESH_SECONDS = 0.6
 
     def __init__(self, session, since):
         self.session, self.since = session, since
@@ -35,7 +41,7 @@ class DirectionTracker:
         label = sample.get("direction")
         if label not in {"LEFT", "RIGHT", "CENTER"}:
             label = None
-        if label != self.label or stamp - self.last_time > 0.6:
+        if label != self.label or stamp - self.last_time > self.FRESH_SECONDS:
             self.first_time, self.count = stamp, 0
         self.label, self.last_time = label, stamp
         self.count += 1
@@ -43,7 +49,7 @@ class DirectionTracker:
 
     def stable_direction(self, now):
         if (self.label and self.count >= 2 and self.last_time - self.first_time >= 0.12
-                and 0 <= now - self.last_time <= 0.6):
+                and 0 <= now - self.last_time <= self.FRESH_SECONDS):
             return self.label
         return None
 
@@ -51,7 +57,7 @@ class DirectionTracker:
 class ChamGameOverlay(RpsGameOverlay):
     """Reuse card layout/placement; keep recognition, timing and scoring separate."""
 
-    ROUNDS = 5
+    ROUNDS = 1
     BEAT_SECONDS = 0.7
     CAPTURE_SECONDS = 1.4
     RESULT_SECONDS = 1.8
@@ -70,6 +76,10 @@ class ChamGameOverlay(RpsGameOverlay):
         self.player_score = self.character_score = 0
         self._yaw = self._turn_from = self._turn_to = 0.0
         self._turn_at = 0.0
+        self.direction_bubble = UserDialogueBubble(DIRECTION_PENDING, duration=0, parent=self)
+        self.direction_bubble.setWindowFlag(Qt.WindowType.WindowTransparentForInput)
+        self._direction_last_seen = None
+        self._direction_anchor = None
         self._setup_game_card()
 
     def _setup_game_card(self):
@@ -77,30 +87,33 @@ class ChamGameOverlay(RpsGameOverlay):
         layout = self.card.layout()
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
-        layout.removeWidget(self.title)
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header_style = 'font-size: 11px; font-weight: 600; color: #4e5e6c;'
-        self.title.setStyleSheet(header_style)
+        self.title.setStyleSheet('font-size: 11px; font-weight: 600; color: #4e5e6c;')
         self.title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.title.setWordWrap(False)
-        self.score = QLabel(self.card)
-        self.score.setStyleSheet(header_style)
-        self.score.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        header.addWidget(self.title)
-        header.addStretch()
-        header.addWidget(self.score)
-        layout.insertLayout(0, header)
         self.opponent_image.setFixedHeight(44)
         self.opponent_image.setStyleSheet('font-size: 24px; font-weight: bold; color: #2e4f69;')
-        self.hint.setFixedHeight(34)
-        self.hint.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
-    def _show_message(self, main, hint):
+    def _show_message(self, main):
         self.title.setText(f'참참참  {self.round_number}/{self.ROUNDS}')
-        self.score.setText(f'나 {self.player_score} : {self.character_score} 캐릭터')
         self.opponent_image.setText(main)
-        self.hint.setText(hint)
+
+    def update_position(self):
+        super().update_position()
+        parent = self._anchor
+        anchor = self.geometry()
+        avoid = self.geometry()
+        if parent is not None:
+            body = getattr(parent, '_physics_body_rect', parent.rect)()
+            anchor = QRect(parent.mapToGlobal(body.topLeft()), body.size())
+            dialogue = getattr(parent, 'dialogue_system', None)
+            for name in ('current_dialogue', 'current_user_dialogue'):
+                bubble = getattr(dialogue, name, None)
+                if bubble is not None and bubble.isVisible():
+                    avoid = avoid.united(bubble.geometry())
+        position = (*anchor.getRect(), avoid)
+        if position != self._direction_anchor:
+            self._direction_anchor = position
+            self.direction_bubble.update_position_with_character(*position)
 
     def _command(self, command):
         try:
@@ -146,7 +159,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.show()
         self._recognition_session = self.session
         if not self._command(f"cham_begin {self.session}"):
-            self._error("카메라에 연결하지 못했어.\n캐릭터를 더블클릭해 다시 시작해줘.")
+            self._error()
         else:
             self.start_round()
             log_event('game.cham.started', '참참참 게임 시작', category='캐릭터 상태',
@@ -164,7 +177,11 @@ class ChamGameOverlay(RpsGameOverlay):
         self.player = self.opponent = self.result = None
         self._reaction = None
         self._turn(0, now)
-        self._show_message('정면 봐줘', '마지막 ‘참!’에 고개를 돌려봐')
+        self._show_message('정면 봐줘')
+        self._direction_last_seen = None
+        self.direction_bubble.set_text(DIRECTION_PENDING)
+        self.update_position()
+        self.direction_bubble.show()
 
     def _begin_countdown(self, now):
         # Commit before reading any of the player's response frames.
@@ -172,7 +189,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.state = "countdown"
         self._report_emotion('game_start', 'expect', round=True)
         self.deadline = now + 2 * self.BEAT_SECONDS
-        self._show_message('참', '준비…')
+        self._show_message('참')
         self._request_cue('cham_1')
 
     def _begin_capture(self, now):
@@ -181,7 +198,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.deadline = now + self.CAPTURE_SECONDS
         self.tracker = DirectionTracker(self.session, now)
         self._turn(-65 if self.opponent == "LEFT" else 65, now)
-        self._show_message('참!', '')
+        self._show_message('참!')
         self._request_cue('cham_final')
         log_event('game.cham.revealed', '참참참 방향 공개', category='캐릭터 상태',
                   trace_id=self.session, round=self.round_number, opponent=self.opponent)
@@ -189,11 +206,14 @@ class ChamGameOverlay(RpsGameOverlay):
     def handle_payload(self, payload):
         now = time.time()
         self.tick()
-        if self.state not in {"ready", "countdown", "waiting"}:
+        if self.state not in DIRECTION_STATES:
             return
         if not self.tracker.feed(payload, now):
             return
         direction = self.tracker.stable_direction(now)
+        if direction is not None:
+            self._direction_last_seen = self.tracker.last_time
+            self.direction_bubble.set_text(DIRECTION_LABELS[direction])
         if self.state == "ready" and direction == "CENTER":
             self._begin_countdown(now)
         elif self.state == "waiting" and direction in DIRECTIONS:
@@ -216,30 +236,34 @@ class ChamGameOverlay(RpsGameOverlay):
             self._reaction_until = now + 1.15
         self.state = "result"
         self.deadline = now + self.RESULT_SECONDS
-        self._show_message('잡혔다!' if caught else '피했다!',
-                           '이번엔 같은 쪽이네' if caught else '이번엔 네가 이겼네')
+        self._show_message('잡혔다!' if caught else '피했다!')
         log_event('game.cham.result', '참참참 판정 완료', category='캐릭터 상태',
                   trace_id=self.session, round=self.round_number, player=direction,
                   opponent=self.opponent, result=self.result,
                   player_score=self.player_score, character_score=self.character_score)
 
-    def _error(self, message):
+    def _error(self):
         self._report_emotion('game_cancel', 'cancel')
         self.cue_stopped.emit()
         self.state = "error"
         self.deadline = time.time() + self.ERROR_SECONDS
         self._reaction = None
         self._turn(0, time.time())
-        self._show_message('잠깐만', message)
+        self._show_message('잠깐만')
+        self.direction_bubble.hide()
         self._end_recognition()
 
     def tick(self):
         if self.state == "idle":
             return
         now = time.time()
+        if (self.state in DIRECTION_STATES and self._direction_last_seen is not None
+                and now - self._direction_last_seen > DirectionTracker.FRESH_SECONDS):
+            self._direction_last_seen = None
+            self.direction_bubble.set_text(DIRECTION_PENDING)
         self._animate_turn(now)
         if self.state == "ready" and now >= self.deadline:
-            self._error("얼굴이 잘 안 보여.\n카메라를 확인하고 다시 시작해줘.")
+            self._error()
         elif self.state == "countdown":
             if now >= self.deadline:
                 self._begin_capture(now)
@@ -249,7 +273,8 @@ class ChamGameOverlay(RpsGameOverlay):
         elif self.state == "waiting" and now >= self.deadline:
             self.state = "retry"
             self.deadline = now + self.RESULT_SECONDS
-            self._show_message('한 번 더', '잘 못 봤어. 점수는 그대로야')
+            self._show_message('한 번 더')
+            self.direction_bubble.set_text(DIRECTION_PENDING)
             log_event('game.cham.no_result', '참참참 판정 없이 재시도', category='캐릭터 상태',
                       trace_id=self.session, round=self.round_number)
         elif self.state == "retry" and now >= self.deadline:
@@ -263,7 +288,8 @@ class ChamGameOverlay(RpsGameOverlay):
                 self.deadline = now + 6.0
                 self._turn(0, now)
                 self._show_message('네가 이겼어!' if self.player_score > self.character_score
-                                   else '내가 이겼어!', '캐릭터를 더블클릭하면 다시 할 수 있어')
+                                   else '내가 이겼어!')
+                self.direction_bubble.hide()
                 won = self.character_score > self.player_score
                 event = ("game_win" if won else "game_disappointed"
                          if self._best_lead >= 2 else "game_loss")
@@ -286,6 +312,7 @@ class ChamGameOverlay(RpsGameOverlay):
                       character_score=self.character_score, state=self.state)
         self.timer.stop()
         self._end_recognition()
+        self.direction_bubble.hide()
         self.state, self.session = "idle", None
         if self.pose_callback:
             self.pose_callback(None, None)
