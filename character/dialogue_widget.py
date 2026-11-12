@@ -349,11 +349,15 @@ class _ChatMessageRow(QWidget):
         self.timestamp = QLabel(QLocale(QLocale.Language.Korean).toString(time, 'AP h:mm'))
         self.timestamp.setObjectName('chatTime')
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        self._line = QHBoxLayout()
+        self._line.setContentsMargins(0, 0, 0, 0)
+        self._line.setSpacing(5)
+        outer.addLayout(self._line)
         bottom = Qt.AlignmentFlag.AlignBottom
-        self.retry_button = None
+        self.retry_button = self.cancel_button = self.cancelled_label = None
         if role == 'user':
             self.retry_button = QPushButton()
             self.retry_button.setObjectName('chatRetry')
@@ -363,15 +367,30 @@ class _ChatMessageRow(QWidget):
             self.retry_button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.retry_button.setAccessibleName('실패한 메시지 다시 보내기')
             self.retry_button.setToolTip('다시 보내기')
-            self.retry_button.hide()
-            layout.addStretch()
-            layout.addWidget(self.timestamp, alignment=bottom)
-            layout.addWidget(self.retry_button, alignment=bottom)
-            layout.addWidget(self.bubble)
+            self.cancel_button = QPushButton('전송 취소')
+            self.cancel_button.setObjectName('chatCancel')
+            self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.cancelled_label = QLabel('전송 취소됨')
+            self.cancelled_label.setObjectName('chatNote')
+            self._line.addStretch()
+            self._line.addWidget(self.timestamp, alignment=bottom)
+            for control in (self.retry_button, self.cancel_button, self.cancelled_label):
+                self._line.addWidget(control, alignment=bottom)
+            self._line.addWidget(self.bubble)
+            self.set_delivery_state(message.get('state'))
         else:
-            layout.addWidget(self.bubble)
-            layout.addWidget(self.timestamp, alignment=bottom)
-            layout.addStretch()
+            self._line.addWidget(self.bubble)
+            self._line.addWidget(self.timestamp, alignment=bottom)
+            self._line.addStretch()
+            if message.get('source') == 'automatic':
+                note = QLabel('자동대화')
+                note.setObjectName('chatNote')
+                outer.addWidget(note, alignment=Qt.AlignmentFlag.AlignLeft)
+
+    def set_delivery_state(self, state):
+        self.retry_button.setVisible(state == 'failed')
+        self.cancel_button.setVisible(state == 'queued')
+        self.cancelled_label.setVisible(state == 'cancelled')
 
     def fit(self, available_width):
         bubble = self.bubble
@@ -379,10 +398,12 @@ class _ChatMessageRow(QWidget):
         document = bubble.document()
         metrics = bubble.fontMetrics()
         text_width = max(metrics.horizontalAdvance(line) for line in bubble.toPlainText().split('\n'))
-        spacing = self.layout().spacing()
+        spacing = self._line.spacing()
         reserved = self.timestamp.sizeHint().width() + spacing
-        if self.retry_button is not None and not self.retry_button.isHidden():
-            reserved += self.retry_button.width() + spacing
+        for control in (self.retry_button, self.cancel_button, self.cancelled_label):
+            if control is not None and not control.isHidden():
+                size = control.sizeHint().expandedTo(control.minimumSize()).boundedTo(control.maximumSize())
+                reserved += size.width() + spacing
         border = 2 * bubble.frameWidth()
         preferred = text_width + 2 * document.documentMargin() + border + 2
         width = max(1, min(ceil(preferred), int(available_width * .78), available_width - reserved))
@@ -396,6 +417,7 @@ class DialogueInputWidget(QWidget):
 
     text_submitted = pyqtSignal(str)
     retry_requested = pyqtSignal(int)
+    cancel_requested = pyqtSignal(int)
     POSITION_KEY = 'chat/position'
     SIZE_KEY = 'chat/size'
     RESIZE_MARGIN = 8
@@ -493,11 +515,12 @@ class DialogueInputWidget(QWidget):
             QTextBrowser[chatRole] { background: #ffffff; border: 1px solid #cbd3dc;
                                      border-radius: 8px; }
             QTextBrowser[chatRole="user"] { background: #e9f1fa; }
-            QLabel#chatTime { color: #586677; font-size: 11px; }
+            QLabel#chatTime, QLabel#chatNote { color: #586677; font-size: 11px; }
             QLineEdit, QPushButton { border: 1px solid #c2cedb; border-radius: 6px; }
             QLineEdit { background: #ffffff; padding: 0 9px; }
             QPushButton { background: #e9f1fa; color: #274965; font-weight: bold; }
             QPushButton#chatClose { background: #f1f4f8; color: #515e6a; }
+            QPushButton#chatCancel { padding: 2px 4px; font-size: 10px; font-weight: normal; }
             QPushButton:hover, QPushButton#chatClose:hover { background: #dfe7f0; }
             QPushButton:pressed, QPushButton#chatClose:pressed { background: #cbd7e5; }
             QLineEdit:focus, QPushButton:focus { border-color: #4d6b89; }
@@ -522,23 +545,25 @@ class DialogueInputWidget(QWidget):
             self._turns[chat_id] = turn
             self._messages.insertLayout(self._messages.count() - 1, turn)
         else:
-            user_row = turn.itemAt(0).widget()
+            self.set_message_state(chat_id, message['state'])
             if message['role'] == 'user':
-                user_row.retry_button.hide()
                 if turn.count() > 1:
                     failed_reply = turn.takeAt(1).widget()
                     failed_reply.hide()
                     failed_reply.deleteLater()
-                user_row.fit(width)
                 return
-            user_row.retry_button.setVisible(message['state'] == 'failed')
-            user_row.fit(width)
 
         row = _ChatMessageRow(message, self._retry_icon)
         if row.retry_button is not None:
             row.retry_button.clicked.connect(lambda: self.retry_requested.emit(chat_id))
+            row.cancel_button.clicked.connect(lambda: self.cancel_requested.emit(chat_id))
         turn.addWidget(row)
         row.fit(width)
+
+    def set_message_state(self, chat_id, state):
+        row = self._turns[chat_id].itemAt(0).widget()
+        row.set_delivery_state(state)
+        row.fit(self._message_width())
 
     def _message_width(self):
         margins = self._messages.contentsMargins()
