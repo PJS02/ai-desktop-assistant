@@ -64,10 +64,10 @@
     };
   }
 
-  function jumpBody(pose, t, side) {
+  function jumpBody(pose, t, side, jumpHeight = 30) {
     const {crouch, flight, land, lift, reach} = jumpBeat(t);
     const toward = side || -1;
-    const height = 30 * flight;
+    const height = jumpHeight * flight;
     const footTravel = (side === 1 ? -1 : 1) * toward * flight;
     pose.bodyX += toward * (8 * reach - 4 * crouch);
     pose.bodyY += 10 * crouch - height + 9 * land;

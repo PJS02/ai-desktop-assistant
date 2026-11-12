@@ -485,8 +485,7 @@ class Renderer{
      hand.angle-hand.flex*(1-M.smoothstep((y+1)/10)),opening);
     this.mesh(art.textureName(amount),p=>place(x+p.x/2,y+p.y/2),opacity,1,12);
     const contact=highFiveHand.contact;
-    const palm=place(contact.x,contact.y);
-    this.highFivePalm=point(180+(palm.x-180)*this.viewZoom,535+(palm.y-535)*this.viewZoom);
+    this.highFivePalm=place(contact.x,contact.y);
    }else{
     this.drawSprite(hand.name,hand.pivot,opening,.29,hand.angle,opacity);
    }
@@ -710,11 +709,12 @@ class Renderer{
    const side=cfg.prefix==='left'?-1:cfg.prefix==='right'?1:0;
    pose=Object.assign({},pose,{idleGesture:0,airArms:1,thinkGesture:0,snackGesture:0,
     waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
-   art.jump.body(pose,clipTime,side);
+   // The desktop viewport needs a shorter hop to leave room for the full-size head.
+   art.jump.body(pose,clipTime,side,20);
+   pose.framingZoom=1;
    const frame=art.jump.layout(cfg,pose,clipTime,this.bodyPoint),reach=frame.reach;
-   // The target is in viewport coordinates. Solve the arm before framing zoom.
-   const x=180+(target[0]-180)/pose.framingZoom,y=535+(target[1]-535)/pose.framingZoom;
-   const dip=Math.min(15,Math.max(0,target[1]-300))*reach/pose.framingZoom;
+   const [x,y]=target;
+   const dip=Math.min(15,Math.max(0,y-300))*reach;
    pose.bodyY+=dip;
    this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
     contact:point(-13.3*reach,11),
