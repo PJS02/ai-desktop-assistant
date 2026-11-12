@@ -204,7 +204,7 @@ class Renderer{
  }
  limb(cfg,index,type,pose,opacity,surface='all'){
   const part=(type==='leg'?cfg.legs:cfg.arms)[index],name=key(cfg.prefix,part.i),near=index===0,suffix=near?'Near':'Far',scale=type==='leg'?.48:.34;
-  const highFiveHand=near&&type==='arm'?this.highFiveGrip:null;
+  const highFiveHand=!near&&type==='arm'?this.highFiveGrip:null;
   const src=part.j.map(([x,y])=>({x:x*scale,y:y*scale}));
   let dest,hand;
   if(type==='leg'){
@@ -485,7 +485,8 @@ class Renderer{
      hand.angle-hand.flex*(1-M.smoothstep((y+1)/10)),opening);
     this.mesh(art.textureName(amount),p=>place(x+p.x/2,y+p.y/2),opacity,1,12);
     const contact=highFiveHand.contact;
-    this.highFivePalm=place(contact.x,contact.y);
+    const palm=place(contact.x,contact.y);
+    this.highFivePalm=point(180+(palm.x-180)*this.viewZoom,535+(palm.y-535)*this.viewZoom);
    }else{
     this.drawSprite(hand.name,hand.pivot,opening,.29,hand.angle,opacity);
    }
@@ -652,33 +653,16 @@ class Renderer{
   if(root.CloudyEmotionFX&&this.emotionEffects!==false)root.CloudyEmotionFX.draw(this,cfg,pose,time,mapping,opacity,emotion);
  }
  renderView(cfg,pose,opacity,time=0){
-  if(this.highFive){
-   const art=root.CloudyHighFive,{time:clipTime,target}=this.highFive;
-   const side=cfg.prefix==='left'?-1:cfg.prefix==='right'?1:0;
-   pose=Object.assign({},pose,{idleGesture:0,airArms:1,framingZoom:1,thinkGesture:0,snackGesture:0,
-    waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
-   art.body(pose,clipTime,side);
-   const reach=M.smoothstep((clipTime-.44)/(art.impactTime-.44))*
-    (1-M.smoothstep((clipTime-art.impactTime)/.55));
-   // Bend the knees for a lower desktop palm so the wrist can stay upright.
-   pose.bodyY+=Math.max(0,Math.min(35,target[1]-cfg.shoulders[0][1]-14))*reach;
-   const frame=art.layout(cfg,pose,clipTime,this.bodyPoint);
-   this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
-    contact:point(8.6*reach,11+3*reach),
-    target:point(mix(frame.palm.x,target[0],reach),mix(frame.palm.y,target[1],reach))};
-   this.aimHand(cfg,pose,0,this.highFiveGrip);
-  }
   // Air poses keep the near arm fully in front of the head, including its hair.
   // Both frontal arms share this depth. Switch draw order without alpha mixing
   // so a moving hand never becomes translucent as it crosses the face.
   const airInFront=(pose.airArms||0)>.001;
-  // A frontal view has two arms at the same depth. Only side views place the
-  // far arm behind the torso; otherwise one front sleeve disappears in clothes.
-  if(cfg.prefix!=='front')this.limb(cfg,1,'arm',pose,opacity);
+  const farArmBehindBody=cfg.prefix!=='front'||Boolean(this.highFiveGrip);
+  if(farArmBehindBody)this.limb(cfg,1,'arm',pose,opacity);
   this.limb(cfg,1,'leg',pose,opacity);this.limb(cfg,0,'leg',pose,opacity);
   const [i,x,y,s]=cfg.body,location=this.bodyPoint({x:180,y:250},pose);
   this.drawSprite(key(cfg.prefix,i),{x,y},location,s,pose.lean,opacity);
-  if(cfg.prefix==='front'&&!airInFront)this.limb(cfg,1,'arm',pose,opacity);
+  if(!farArmBehindBody&&!airInFront)this.limb(cfg,1,'arm',pose,opacity);
   // A waving arm is one opaque surface throughout lifting and lowering too.
   // Blending two depth orders made the sleeve and palm translucent over hair.
   const waveInFront=(cfg.prefix!=='front'&&pose.waveSideGesture!==undefined?pose.waveSideGesture:pose.waveGesture||0)>.001;
@@ -692,9 +676,8 @@ class Renderer{
   if(handInFront<1)this.limb(cfg,0,'arm',pose,opacity*(1-handInFront));
   if(splitWave)this.limb(cfg,0,'arm',pose,opacity,'upper');
   this.face(cfg,pose,opacity,time);
-  if(cfg.prefix==='front'&&airInFront)this.limb(cfg,1,'arm',pose,opacity);
+  if(!farArmBehindBody&&airInFront)this.limb(cfg,1,'arm',pose,opacity);
   if(handInFront>.001)this.limb(cfg,0,'arm',pose,opacity*handInFront,splitWave?'forearm':'all');
-  this.highFiveGrip=null;
  }
  effects(pose,time){
   const thinking=Math.max(0,Math.min(1,pose.thinkGesture||0)),sleep=Math.max(0,Math.min(1,pose.exprSleep||0));
@@ -708,7 +691,7 @@ class Renderer{
   // An explicit action keeps the same cuff present before the lift begins and
   // after it ends. Gesture thresholds control bone mapping, never asset swaps.
   this.action=options.action||null;
-  this.highFive=options.highFive||null;
+  this.highFiveGrip=null;
   this.highFivePalm=null;
   const gl=this.gl;gl.useProgram(this.program);gl.activeTexture(gl.TEXTURE0);gl.enable(gl.BLEND);gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
   // Running is a side-only clip. Direct callers requesting a frontal run use
@@ -721,13 +704,31 @@ class Renderer{
    const projection=cfg.prefix==='right'?-1:1;
    pose={...pose,lean:pose.lean+(projection-1)*pose.runLean};
   }
+  let companionDrop=0;
+  if(options.highFive){
+   const art=root.CloudyHighFive,{time:clipTime,target}=options.highFive;
+   const side=cfg.prefix==='left'?-1:cfg.prefix==='right'?1:0;
+   pose=Object.assign({},pose,{idleGesture:0,airArms:1,thinkGesture:0,snackGesture:0,
+    waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
+   art.jump.body(pose,clipTime,side);
+   const frame=art.jump.layout(cfg,pose,clipTime,this.bodyPoint),reach=frame.reach;
+   // The target is in viewport coordinates. Solve the arm before framing zoom.
+   const x=180+(target[0]-180)/pose.framingZoom,y=535+(target[1]-535)/pose.framingZoom;
+   const dip=Math.min(15,Math.max(0,target[1]-300))*reach/pose.framingZoom;
+   pose.bodyY+=dip;
+   this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
+    contact:point(-13.3*reach,11),
+    target:point(mix(frame.palm.x,x,reach),mix(frame.palm.y+dip,y,reach))};
+   this.aimHand(cfg,pose,1,this.highFiveGrip);
+   if(side>=0)companionDrop=49*frame.lift;
+  }
   // Keep a fixed framing throughout each air-action cycle: the character must
   // not shrink and grow with jump height. Blend only when entering/leaving it.
   this.viewZoom=Number.isFinite(pose.framingZoom)?Math.max(.86,Math.min(1,pose.framingZoom)):1-.14*Math.max(0,Math.min(1,pose.airArms||0));
   this.emotionEffects=options.emotionEffects!==false;
   this.renderView(cfg,pose,1,time);
   this.effects(pose,time);
-  if(options.companion!==false)this.drawSprite('front_14',{x:791,y:1100},{x:303+3*Math.sin(time*.8),y:220+5*Math.sin(time*1.6)},.19,3*Math.sin(time),1);
+  if(options.companion!==false)this.drawSprite('front_14',{x:791,y:1100},{x:303+3*Math.sin(time*.8),y:220+5*Math.sin(time*1.6)+companionDrop},.19,3*Math.sin(time),1);
  }
 }
 root.CloudyRenderer=Renderer;

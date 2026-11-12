@@ -318,7 +318,6 @@
     state = state || {}; prepareRenderer();
     var frame = sample(state), yaw = finite(state.yaw, 0);
     var highFive = state.highFive;
-    if (highFive) frame.pose.framingZoom = 1;
     renderer.render(frame.pose, yaw, frame.time, {
       action: frame.action, emotionEffects: state.emotionEffects,
       companion: state.companion, highFive: highFive

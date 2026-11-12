@@ -6,8 +6,10 @@ from app_logging import log_event
 from .renderer import closest_hand_point
 
 
-IMPACT_TIME = .98
-CLIP_DURATION = 2.4
+# The authored jump high-five's takeoff, apex and end in high-five.js.
+TAKEOFF_TIME = .46
+IMPACT_TIME = .76
+CLIP_DURATION = 1.85
 
 
 def upright_palm(points):
@@ -74,19 +76,22 @@ class DesktopHighFive:
         c = self.character
         points, palm = hand
         side = side or (-1 if palm[0] < stage.center().x() else 1)
-        shoulder_x, shoulder_y = (202 if side < 0 else 158), 268
-        origin = (stage.x() + shoulder_x * stage.width() / 360,
-                  stage.y() + shoulder_y * stage.height() / 540)
+        scale = stage.width() / 360
+        reference_x = 202 if side < 0 else 158
+        origin = (stage.x() + reference_x * scale, stage.y() + 268 * stage.height() / 540)
         contact = closest_hand_point(points, origin)
         x, y = self._rig_point(stage, contact)
-        outward = side * (x - shoulder_x)
-        # The two side rigs have a 38 + 46 unit arm. Reserve room for elbow
-        # bend and the cuff, which sits below the palm when striking.
-        height = y - shoulder_y + 11
-        if not 0 <= outward <= 325 or abs(height) > 74:
+        # The far shoulder moves forward and up at the apex. A low target
+        # brings the torso down slightly while the feet still leave the floor.
+        shoulder_x, shoulder_y = (145 if side < 0 else 216), 255
+        height = y - shoulder_y + 10 - min(15., max(0., y - 300))
+        if not 0 <= side * (x - reference_x) <= 325 or abs(height) > 72:
             return None
-        reach = min(63., math.sqrt(80 ** 2 - height ** 2))
-        target = c.x() + side * max(0., outward - reach) * stage.width() / 360
+        reach = min(87., 15 + math.sqrt(76 ** 2 - height ** 2))
+        outward = side * (x - shoulder_x)
+        # Leave room for the rear arm to emerge past the torso at contact.
+        distance = max(min(48., reach), min(outward, reach))
+        target = c.x() + side * (outward - distance) * scale
         if abs(target - c.x()) <= 2:
             return side, c.x(), contact
         left, right = c._horizontal_limits()
@@ -223,8 +228,12 @@ class DesktopHighFive:
         elif attempt.recovering:
             attempt.clip += dt
         elif attempt.withdrawing or now - attempt.last_seen > .20:
-            attempt.withdrawing = True
-            attempt.clip -= 1.6 * dt
+            if attempt.clip >= TAKEOFF_TIME:
+                attempt.recovering = True
+                attempt.clip += dt
+            else:
+                attempt.withdrawing = True
+                attempt.clip -= 1.6 * dt
         else:
             attempt.clip = min(IMPACT_TIME, attempt.clip + dt)
 

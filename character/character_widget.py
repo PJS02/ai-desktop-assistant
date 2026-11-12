@@ -1119,6 +1119,11 @@ class CharacterWidget(QLabel):
         self._cursor_over_character = inside
         return inside
 
+    def _uses_fixed_support_anchor(self):
+        rig = getattr(self, 'rig_view', None)
+        return rig is not None and (self.sprite_animator.current_action == 'run'
+                                    or getattr(rig, 'high_five_pose_active', False))
+
     def _align_grounded_pose(self):
         """Keep rendered feet on their existing support in the same paint frame.
 
@@ -1132,9 +1137,8 @@ class CharacterWidget(QLabel):
                 or getattr(self, 'is_jumping', False) or getattr(self, '_character_closing', False)
                 or getattr(self, 'velocity_y', 0) != 0):
             return
-        if (self.rig_view is not None and self.sprite_animator.current_action == 'run'):
-            # Running lifts both feet within the authored pose; pin its support
-            # anchor instead of moving the host to cancel that airborne phase.
+        if CharacterWidget._uses_fixed_support_anchor(self):
+            # Running and jump high-fives lift the feet within the authored pose.
             return
         standing = getattr(self, 'current_surface', None)
         if standing is None or standing not in getattr(self, 'surfaces', ()):
@@ -3538,8 +3542,8 @@ class CharacterWidget(QLabel):
                 and current_x + body.x() < standing.x_max):
             self.velocity_y = 0
             self.velocity_x *= 0.95 ** frames
-            support_bottom = (previous_bottom if self.rig_view is not None
-                              and self.sprite_animator.current_action == 'run' else body_bottom)
+            support_bottom = (previous_bottom if CharacterWidget._uses_fixed_support_anchor(self)
+                              else body_bottom)
             self._grounded_body_bottom = support_bottom
             self._grounded_surface_level = standing.y_level
             self._physics_position_x = current_x

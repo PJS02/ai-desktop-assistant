@@ -273,6 +273,10 @@ class CloudyRigView(QOpenGLWidget):
         })
         self.update()
 
+    @property
+    def high_five_pose_active(self):
+        return self._high_five is not None or bool(self._last_plan and self._last_plan.get('highFivePalm'))
+
     def stage_rect(self):
         """The 360 by 540 rig viewport in logical widget pixels."""
         dpr = self.devicePixelRatioF()
