@@ -528,7 +528,7 @@ class DialogueInputWidget(QWidget):
                                      border-radius: 8px; }
             QTextBrowser[chatRole="user"] { background: #e9f1fa; }
             QLabel#chatTime, QLabel#chatNote { color: #586677; font-size: 11px; }
-            QLabel#chatAutomaticNote { color: rgba(73, 77, 84, 200); font-size: 8pt; background: transparent; }
+            QLabel#chatAutomaticNote { color: rgba(73, 77, 84, 200); font-size: 6pt; background: transparent; }
             QLineEdit, QPushButton { border: 1px solid #c2cedb; border-radius: 6px; }
             QLineEdit { background: #ffffff; padding: 0 9px; }
             QPushButton { background: #e9f1fa; color: #274965; font-weight: bold; }
