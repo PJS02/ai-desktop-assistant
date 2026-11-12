@@ -2571,9 +2571,6 @@ class CharacterWidget(QLabel):
         console_action.triggered.connect(self.show_perception_console)
         show_action = menu.addAction("감정 판단 근거 보기")
         show_action.triggered.connect(self.show_russell_dialog)
-        if getattr(self.dialogue_system, '_last_failed_input', None) is not None:
-            retry_action = menu.addAction("실패한 대화 다시 보내기")
-            retry_action.triggered.connect(self.dialogue_system.retry_last_input)
         self._context_menu = menu
         menu.popup(global_pos)
 

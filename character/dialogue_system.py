@@ -1,5 +1,5 @@
 # 캐릭터 대화 시스템
-from PyQt6.QtCore import QTimer, pyqtSignal, pyqtSlot, QObject, Qt
+from PyQt6.QtCore import QDateTime, QTimer, pyqtSignal, pyqtSlot, QObject, Qt
 from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrationBox, DialogueInputWidget
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
@@ -56,7 +56,7 @@ class DialogueSystem(QObject):
         self.manual_dialogue_active = False
         self._request_generation = 0
         self._active_input = None
-        self._last_failed_input = None
+        self._failed_inputs = {}
         self.user_input_epoch = 0
         self.pending_inputs = deque()
         self.conversation_history = []
@@ -420,7 +420,7 @@ class DialogueSystem(QObject):
         """Optional perception bridge; legacy callbacks still receive only text."""
         return self.submit_speech(text, log_context=context)
 
-    def _submit_input(self, text: str, source: str, *, log_context=None, retry_of=None) -> bool:
+    def _submit_input(self, text: str, source: str, *, log_context=None, retry=None) -> bool:
         context = dict(log_context or {})
         trace_id = context.get('trace_id') or new_trace_id('turn')
         register_secret(self.gemini_config.get('api_key', ''))
@@ -435,11 +435,15 @@ class DialogueSystem(QObject):
         self.user_input_epoch += 1
         # A direct user turn takes priority over a delayed ambient script.
         self.clear_queue(reason='user_input_priority')
+        turn_id = len(self.conversation_history)
+        chat_id = retry['chat_id'] if retry is not None else turn_id
+        retry_of = retry['trace_id'] if retry is not None else None
         turn = {'role': 'user', 'text': text, 'source': source,
-                'state': 'queued', 'turn_id': len(self.conversation_history),
+                'state': 'queued', 'turn_id': turn_id, 'chat_id': chat_id,
                 'trace_id': trace_id, 'log_context': {**context, 'trace_id': trace_id, 'source': source},
                 'queued_at': self._time_provider(), 'retry_of': retry_of}
-        self._append_chat_turn(turn)
+        self.conversation_history.append(turn)
+        self._display_chat_message(turn)
         self.pending_inputs.append(turn)
         log_event('dialogue.input_accepted', '사용자 입력 접수', category='대화·AI',
                   trace_id=trace_id, source=source, raw_text=raw_text, text=text,
@@ -661,11 +665,13 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                       trace_id=trace_id, reason='no_active_input', generation=generation)
             return
         turn['state'] = 'failed' if failed else 'completed'
-        self._last_failed_input = dict(turn) if failed else None
-        self._append_chat_turn({
+        if failed:
+            self._failed_inputs[turn['chat_id']] = turn
+        reply_index = len(self.conversation_history)
+        self.conversation_history.append({
             'role': 'assistant', 'text': response_text,
             'source': turn['source'], 'state': turn['state'],
-            'turn_id': turn['turn_id'], 'trace_id': turn['trace_id']})
+            'turn_id': turn['turn_id'], 'chat_id': turn['chat_id'], 'trace_id': turn['trace_id']})
         log_event('dialogue.turn_failed' if failed else 'dialogue.turn_completed',
                   '대화 요청 실패' if failed else '대화 요청 완료', category='대화·AI',
                   level='ERROR' if failed else 'INFO', trace_id=turn['trace_id'],
@@ -674,19 +680,27 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         self._active_input = None
         self.is_ai_responding = False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(response_text, log_context=turn['log_context'], failed=failed)
+        context = {**turn['log_context'], 'chat_reply_index': reply_index}
+        self.show_ai_response(response_text, log_context=context, failed=failed)
         self._process_next_input()
 
+    @property
+    def _last_failed_input(self):
+        return next(reversed(self._failed_inputs.values()), None)
+
     def retry_last_input(self):
-        """A failed user turn remains in history and can be resubmitted explicitly."""
-        if self._last_failed_input is None or self._closed:
-            return False
         previous = self._last_failed_input
-        self._last_failed_input = None
+        return previous is not None and self.retry_input(previous['chat_id'])
+
+    def retry_input(self, chat_id):
+        if self._closed:
+            return False
+        previous = self._failed_inputs.pop(chat_id, None)
+        if previous is None:
+            return False
         log_event('dialogue.retry_requested', '실패한 대화 재시도 요청', category='대화·AI',
                   trace_id=previous['trace_id'], turn_id=previous['turn_id'])
-        return self._submit_input(previous['text'], previous['source'],
-                                  retry_of=previous['trace_id'])
+        return self._submit_input(previous['text'], previous['source'], retry=previous)
 
     def _on_tts_speaking_changed(self, speaking):
         if speaking or self._speaking:
@@ -730,6 +744,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.ai_motion_changed.emit('idle')
         # Count the normal reading interval from display, including delayed audio.
         self._response_hold_until = max(self._response_hold_until, self._time_provider() + 5.0)
+        if (reply_index := context.get('chat_reply_index')) is not None:
+            self._display_chat_message(self.conversation_history[reply_index])
         if legacy and getattr(self.show_dialogue, '__func__', None) is not DialogueSystem.show_dialogue:
             self.show_dialogue(text, duration=5000)
         else:
@@ -828,10 +844,10 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.current_input_widget = None
         self.tts.close()
 
-    def _append_chat_turn(self, turn):
-        self.conversation_history.append(turn)
+    def _display_chat_message(self, turn):
+        turn['displayed_at'] = QDateTime.currentDateTime()
         if self.current_input_widget is not None:
-            self.current_input_widget.append_message(turn['role'], turn['text'])
+            self.current_input_widget.append_message(turn)
 
     def open_input_dialog(self):
         """Show the chat and keep the current draft and transcript."""
@@ -840,8 +856,10 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         if self.current_input_widget is None:
             self.current_input_widget = DialogueInputWidget()
             self.current_input_widget.text_submitted.connect(self.ask_ai)
+            self.current_input_widget.retry_requested.connect(self.retry_input)
             for turn in self.conversation_history:
-                self.current_input_widget.append_message(turn['role'], turn['text'])
+                if 'displayed_at' in turn:
+                    self.current_input_widget.append_message(turn)
 
         input_widget = self.current_input_widget
         input_widget.showNormal()
@@ -872,7 +890,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         elif error and ("403" in response or "Forbidden" in response):
             return normalized("접근 권한이 없네요... 설정을 다시 확인해주세요.", 'error_fallback', status=403)
         elif error and ("503" in response or "Service Unavailable" in response):
-            return normalized("지금 AI 서버가 붐비고 있어. 잠시 후 '실패한 대화 다시 보내기'를 눌러줘.", 'error_fallback', status=503)
+            return normalized('지금 AI 서버가 붐비고 있어. 잠시 후 채팅창의 다시 보내기 버튼을 눌러줘.',
+                              'error_fallback', status=503)
         elif error and ("500" in response or "502" in response or "504" in response or "Internal Server Error" in response):
             return normalized("AI 서버에 문제가 생겼어요... 잠시 후에 다시 시도해주세요.", 'error_fallback', status=500)
         elif error:

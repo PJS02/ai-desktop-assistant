@@ -1,7 +1,8 @@
 # 캐릭터 대화 말풍선 UI
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget, QApplication, QLineEdit, QPushButton, QHBoxLayout, QTextBrowser, QFrame, QScrollArea, QSizePolicy
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMetrics
-from PyQt6.QtCore import QEvent, QSettings, QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMetrics, QIcon, QTextOption
+from PyQt6.QtCore import QEvent, QLocale, QSettings, QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
+from math import ceil
 from pathlib import Path
 from .dialogue_styles import normalize_dialogue_style
 from .overlay_geometry import place_above_character, place_beside_character
@@ -329,26 +330,106 @@ class DialogueNarrationBox(QWidget):
         super().closeEvent(event)
 
 
+class _ChatMessageRow(QWidget):
+    def __init__(self, message, retry_icon):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        role = message['role']
+        self.bubble = QTextBrowser()
+        self.bubble.setProperty('chatRole', role)
+        self.bubble.setAccessibleName('나' if role == 'user' else '캐릭터')
+        self.bubble.setPlainText(message['text'])
+        self.bubble.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.bubble.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.bubble.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.bubble.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.bubble.document().setDocumentMargin(8)
+        time = message['displayed_at'].time()
+        self.timestamp = QLabel(QLocale(QLocale.Language.Korean).toString(time, 'AP h:mm'))
+        self.timestamp.setObjectName('chatTime')
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        bottom = Qt.AlignmentFlag.AlignBottom
+        self.retry_button = None
+        if role == 'user':
+            self.retry_button = QPushButton()
+            self.retry_button.setObjectName('chatRetry')
+            self.retry_button.setIcon(retry_icon)
+            self.retry_button.setIconSize(QSize(15, 15))
+            self.retry_button.setFixedSize(24, 24)
+            self.retry_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.retry_button.setAccessibleName('실패한 메시지 다시 보내기')
+            self.retry_button.setToolTip('다시 보내기')
+            self.retry_button.hide()
+            layout.addStretch()
+            layout.addWidget(self.timestamp, alignment=bottom)
+            layout.addWidget(self.retry_button, alignment=bottom)
+            layout.addWidget(self.bubble)
+        else:
+            layout.addWidget(self.bubble)
+            layout.addWidget(self.timestamp, alignment=bottom)
+            layout.addStretch()
+
+    def fit(self, available_width):
+        bubble = self.bubble
+        bubble.ensurePolished()
+        document = bubble.document()
+        metrics = bubble.fontMetrics()
+        text_width = max(metrics.horizontalAdvance(line) for line in bubble.toPlainText().split('\n'))
+        spacing = self.layout().spacing()
+        reserved = self.timestamp.sizeHint().width() + spacing
+        if self.retry_button is not None and not self.retry_button.isHidden():
+            reserved += self.retry_button.width() + spacing
+        border = 2 * bubble.frameWidth()
+        preferred = text_width + 2 * document.documentMargin() + border + 2
+        width = max(1, min(ceil(preferred), int(available_width * .78), available_width - reserved))
+        bubble.setFixedWidth(width)
+        document.setTextWidth(max(1, width - border))
+        bubble.setFixedHeight(ceil(document.size().height()) + border)
+
+
 class DialogueInputWidget(QWidget):
-    """Scrollable chat with a saved desktop position."""
+    """Scrollable chat with a saved desktop position and size."""
 
     text_submitted = pyqtSignal(str)
+    retry_requested = pyqtSignal(int)
     POSITION_KEY = 'chat/position'
+    SIZE_KEY = 'chat/size'
+    RESIZE_MARGIN = 8
+    RESIZE_CURSORS = {
+        Qt.Edge.LeftEdge: Qt.CursorShape.SizeHorCursor,
+        Qt.Edge.RightEdge: Qt.CursorShape.SizeHorCursor,
+        Qt.Edge.TopEdge: Qt.CursorShape.SizeVerCursor,
+        Qt.Edge.BottomEdge: Qt.CursorShape.SizeVerCursor,
+        Qt.Edge.TopEdge | Qt.Edge.LeftEdge: Qt.CursorShape.SizeFDiagCursor,
+        Qt.Edge.BottomEdge | Qt.Edge.RightEdge: Qt.CursorShape.SizeFDiagCursor,
+        Qt.Edge.TopEdge | Qt.Edge.RightEdge: Qt.CursorShape.SizeBDiagCursor,
+        Qt.Edge.BottomEdge | Qt.Edge.LeftEdge: Qt.CursorShape.SizeBDiagCursor,
+    }
 
     def __init__(self, parent=None, *, settings=None):
         super().__init__(parent)
         self._settings = settings if settings is not None else QSettings('PJS02', 'AIDesktopAssistant')
         self._drag_offset = None
         self._follow_latest = True
+        self._turns = {}
+        self._retry_icon = QIcon(str(Path(__file__).resolve().parent.parent / 'assets/ui/chat_retry.svg'))
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle('채팅하기')
-        self.resize(376, 448)
+        self.setMinimumSize(300, 250)
+        saved_size = self._settings.value(self.SIZE_KEY)
+        self.resize(saved_size if isinstance(saved_size, QSize) and not saved_size.isEmpty()
+                    else QSize(376, 448))
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         panel = QFrame(self)
+        self._panel = panel
         panel.setObjectName('chatPanel')
         outer.addWidget(panel)
         layout = QVBoxLayout(panel)
@@ -360,7 +441,6 @@ class DialogueInputWidget(QWidget):
         self.title_bar.setObjectName('chatTitle')
         self.title_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.title_bar.setCursor(Qt.CursorShape.SizeAllCursor)
-        self.title_bar.installEventFilter(self)
         self.close_button = QPushButton('×')
         self.close_button.setObjectName('chatClose')
         self.close_button.setAccessibleName('채팅창 닫기')
@@ -410,9 +490,10 @@ class DialogueInputWidget(QWidget):
             QLabel#chatTitle { font-size: 16px; font-weight: bold; padding-left: 2px; }
             QScrollArea#chatHistory, QWidget#chatMessages { background: #f4f7fb; border-radius: 6px; }
             QLabel#chatEmpty { color: #515e6a; padding: 8px; }
-            QLabel[chatRole] { background: #ffffff; border: 1px solid #cbd3dc;
-                               border-radius: 8px; padding: 7px 10px; }
-            QLabel[chatRole="user"] { background: #e9f1fa; }
+            QTextBrowser[chatRole] { background: #ffffff; border: 1px solid #cbd3dc;
+                                     border-radius: 8px; }
+            QTextBrowser[chatRole="user"] { background: #e9f1fa; }
+            QLabel#chatTime { color: #586677; font-size: 11px; }
             QLineEdit, QPushButton { border: 1px solid #c2cedb; border-radius: 6px; }
             QLineEdit { background: #ffffff; padding: 0 9px; }
             QPushButton { background: #e9f1fa; color: #274965; font-weight: bold; }
@@ -421,28 +502,47 @@ class DialogueInputWidget(QWidget):
             QPushButton:pressed, QPushButton#chatClose:pressed { background: #cbd7e5; }
             QLineEdit:focus, QPushButton:focus { border-color: #4d6b89; }
         """)
+        panel.setMouseTracking(True)
+        panel.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self._viewport = self.history.viewport()
+        panel.installEventFilter(self)
+        self._viewport.installEventFilter(self)
+        self.title_bar.installEventFilter(self)
 
-    def append_message(self, role, text):
+    def append_message(self, message):
         scrollbar = self.history.verticalScrollBar()
         self._follow_latest = scrollbar.value() == scrollbar.maximum()
         self._empty.hide()
-        bubble = QLabel(self.history.widget())
-        bubble.setProperty('chatRole', role)
-        bubble.setAccessibleName('나' if role == 'user' else '캐릭터')
-        bubble.setTextFormat(Qt.TextFormat.PlainText)
-        bubble.setText(text)
-        bubble.setWordWrap(True)
-        bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._fit_bubble(bubble)
-        side = Qt.AlignmentFlag.AlignRight if role == 'user' else Qt.AlignmentFlag.AlignLeft
-        self._messages.insertWidget(self._messages.count() - 1, bubble, alignment=side)
+        chat_id = message['chat_id']
+        turn = self._turns.get(chat_id)
+        width = self._message_width()
+        if turn is None:
+            turn = QVBoxLayout()
+            turn.setSpacing(5)
+            self._turns[chat_id] = turn
+            self._messages.insertLayout(self._messages.count() - 1, turn)
+        else:
+            user_row = turn.itemAt(0).widget()
+            if message['role'] == 'user':
+                user_row.retry_button.hide()
+                if turn.count() > 1:
+                    failed_reply = turn.takeAt(1).widget()
+                    failed_reply.hide()
+                    failed_reply.deleteLater()
+                user_row.fit(width)
+                return
+            user_row.retry_button.setVisible(message['state'] == 'failed')
+            user_row.fit(width)
 
-    def _fit_bubble(self, bubble):
-        bubble.ensurePolished()
-        text_width = max(bubble.fontMetrics().horizontalAdvance(line) for line in bubble.text().split('\n'))
-        width = min(text_width + 28, int(self.width() * .74))
-        bubble.setFixedWidth(width)
-        bubble.setFixedHeight(bubble.heightForWidth(width))
+        row = _ChatMessageRow(message, self._retry_icon)
+        if row.retry_button is not None:
+            row.retry_button.clicked.connect(lambda: self.retry_requested.emit(chat_id))
+        turn.addWidget(row)
+        row.fit(width)
+
+    def _message_width(self):
+        margins = self._messages.contentsMargins()
+        return self._viewport.width() - margins.left() - margins.right()
 
     def _scroll_to_latest(self):
         if self._follow_latest:
@@ -461,17 +561,52 @@ class DialogueInputWidget(QWidget):
         saved = self._settings.value(self.POSITION_KEY)
         screen = QApplication.screenAt(saved) if isinstance(saved, QPoint) else None
         bounds = (screen or QApplication.primaryScreen()).availableGeometry()
-        self.resize(min(376, bounds.width()), min(448, bounds.height()))
-        for index in range(1, self._messages.count() - 1):
-            self._fit_bubble(self._messages.itemAt(index).widget())
+        self.resize(self.size().boundedTo(bounds.size()))
         position = saved if screen else bounds.bottomRight() - QPoint(self.width() + 15, self.height() + 15)
         self._move_inside(position, bounds)
+
+    def closeEvent(self, event):
+        self._settings.setValue(self.POSITION_KEY, self.pos())
+        self._settings.setValue(self.SIZE_KEY, self.size())
+        self._settings.sync()
+        super().closeEvent(event)
 
     def _move_inside(self, position, bounds):
         self.move(max(bounds.left(), min(position.x(), bounds.right() - self.width() + 1)),
                   max(bounds.top(), min(position.y(), bounds.bottom() - self.height() + 1)))
 
+    def _resize_edges(self, position):
+        edges = Qt.Edge(0)
+        margin = self.RESIZE_MARGIN
+        if position.x() < margin:
+            edges |= Qt.Edge.LeftEdge
+        elif position.x() >= self.width() - margin:
+            edges |= Qt.Edge.RightEdge
+        if position.y() < margin:
+            edges |= Qt.Edge.TopEdge
+        elif position.y() >= self.height() - margin:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
     def eventFilter(self, watched, event):
+        if watched is self._viewport and event.type() == QEvent.Type.Resize:
+            width = self._message_width()
+            for turn in self._turns.values():
+                for index in range(turn.count()):
+                    turn.itemAt(index).widget().fit(width)
+        if watched is self._panel:
+            if event.type() == QEvent.Type.HoverMove:
+                edges = self._resize_edges(event.position().toPoint())
+                if edges:
+                    watched.setCursor(self.RESIZE_CURSORS[edges])
+                else:
+                    watched.unsetCursor()
+            elif event.type() == QEvent.Type.HoverLeave:
+                watched.unsetCursor()
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                edges = self._resize_edges(event.position().toPoint())
+                if edges and self.windowHandle().startSystemResize(edges):
+                    return True
         if watched is self.title_bar:
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._drag_offset = event.globalPosition().toPoint() - self.pos()
