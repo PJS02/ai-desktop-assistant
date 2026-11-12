@@ -3563,17 +3563,15 @@ class CharacterWidget(QLabel):
         new_y = (current_y + velocity * accelerated + .5 * self.gravity * accelerated ** 2
                  + terminal * (frames - accelerated))
         self.velocity_y = min(velocity + self.gravity * frames, terminal)
-        if throwing and new_y + body.y() < screen_top:
+        if new_y + body.y() <= screen_top:
             new_y = screen_top - body.y()
-            self.velocity_y = max(0., -self.velocity_y * self.bounce_damping)
+            if self.velocity_y < 0:
+                self.velocity_y = 0. if self.is_jumping else -self.velocity_y * self.bounce_damping
         if (self.rig_view is not None and self.velocity_y > 0
                 and self.sprite_animator.current_action != "fall"):
             self.current_action = "fall"
             self.update_render("fall")
         if self.is_jumping:
-            if new_y + body.y() < screen_top:
-                new_y = screen_top - body.y()
-                self.velocity_y = max(0, self.velocity_y)
             self._jump_physics_y = new_y
             phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
             initial = getattr(self, '_jump_initial_velocity', self.jump_force)
