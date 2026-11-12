@@ -2321,7 +2321,7 @@ class CharacterWidget(QLabel):
                 self.velocity_x = self.velocity_y = 0.
             if self.rig_view is not None and math.hypot(self.velocity_x, self.velocity_y) > .1:
                 self._mouse_throw_face = True
-                self.sprite_animator.set_motion_emotion('dizzy_plain')
+                self.sprite_animator.set_motion_emotion('dizzy')
         if hand_throw_velocity is not None:
             vx, vy = hand_throw_velocity
             self.velocity_x = vx / 60
@@ -2332,7 +2332,7 @@ class CharacterWidget(QLabel):
             experience(self, 'throw', speed=math.hypot(vx, vy) / max(1, self._physics_body_rect().height()),
                        reaction=False, event_id=getattr(self, '_drag_trace_id', None))
             if self.rig_view is not None:
-                self.sprite_animator.set_motion_emotion('dizzy_plain')
+                self.sprite_animator.set_motion_emotion('dizzy')
         if was_dragging:
             log_event('character.drag_finished', '드래그 종료', category='캐릭터 상태', trace_id=getattr(self, '_drag_trace_id', None), duration=drag_duration,
                       start_position=getattr(self, '_drag_start_position', None), release_position=(self.x(), self.y()), velocity_x=self.velocity_x, velocity_y=self.velocity_y, mood=CharacterWidget._log_mood_snapshot(self))
