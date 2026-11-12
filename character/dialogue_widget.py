@@ -384,7 +384,7 @@ class _ChatMessageRow(QWidget):
             self._line.addWidget(self.timestamp, alignment=bottom)
             self._line.addStretch()
             if message.get('source') == 'automatic':
-                self.automatic_note = QLabel('자동대화', self.bubble)
+                self.automatic_note = QLabel('  자동대화', self.bubble)
                 self.automatic_note.setObjectName('chatAutomaticNote')
                 self.automatic_note.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
@@ -528,7 +528,7 @@ class DialogueInputWidget(QWidget):
                                      border-radius: 8px; }
             QTextBrowser[chatRole="user"] { background: #e9f1fa; }
             QLabel#chatTime, QLabel#chatNote { color: #586677; font-size: 11px; }
-            QLabel#chatAutomaticNote { color: rgba(73, 77, 84, 200); font-size: 10px; background: transparent; }
+            QLabel#chatAutomaticNote { color: rgba(73, 77, 84, 200); font-size: 8pt; background: transparent; }
             QLineEdit, QPushButton { border: 1px solid #c2cedb; border-radius: 6px; }
             QLineEdit { background: #ffffff; padding: 0 9px; }
             QPushButton { background: #e9f1fa; color: #274965; font-weight: bold; }
