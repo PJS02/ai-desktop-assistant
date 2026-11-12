@@ -2,6 +2,7 @@
 from copy import deepcopy
 import base64
 import binascii
+from ai.gemini_client import is_screen_privacy_enabled
 from app_logging import log_event
 
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
@@ -84,6 +85,7 @@ class SettingsDialog(QDialog):
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
         local['voice'].setdefault('sync_bubble', False)
+        local['ai']['screen_privacy_enabled'] = is_screen_privacy_enabled(local['ai'])
         local['game_rules'] = normalize_game_rules(local.get('game_rules'))
         self.setWindowTitle('설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
@@ -1052,6 +1054,12 @@ class SettingsDialog(QDialog):
         hint = QLabel('끄면 주기적인 감지와 자동 대화를 중지합니다. 직접 입력·음성 대화와 직접 조작의 대사 생성은 계속 사용할 수 있습니다.')
         hint.setWordWrap(True)
         form.addRow('', hint)
+        self.screen_privacy = QCheckBox('OCR·개인정보 마스킹')
+        self.screen_privacy.setChecked(local['ai']['screen_privacy_enabled'])
+        form.addRow(self.screen_privacy)
+        privacy_hint = QLabel('끄면 활성 창 이미지와 창 제목·주소를 가리지 않고 Gemini에 보냅니다.')
+        privacy_hint.setWordWrap(True)
+        form.addRow('', privacy_hint)
         self.dialogue_inputs = {}
         for key, label in (
             ('activity_monitor_interval', '활성 창 감지 주기'),
@@ -1149,7 +1157,8 @@ class SettingsDialog(QDialog):
                                                      for key, control in self.personality_trait_inputs.items()}},
                  'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData(),
                            'sync_bubble': self.sync_bubble.isChecked()},
-                 'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
+                 'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip(),
+                        'screen_privacy_enabled': self.screen_privacy.isChecked()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         local['character']['window_occlusion'] = self.window_occlusion.isChecked()
@@ -1195,7 +1204,9 @@ class SettingsDialog(QDialog):
             self.tabs.setCurrentWidget(self.game_rules_tab)
             self.game_processes.setFocus()
             return
-        if 'ai' in changes['local'] and changes['local']['ai']['api_key'] and not changes['local']['ai']['model']:
+        ai = changes['local'].get('ai')
+        if ai and ai['api_key'] and not ai['model'] and any(
+                ai[key] != self.local_baseline['ai'][key] for key in ('api_key', 'model')):
             self.status.setText('API 키를 사용하려면 모델 ID를 입력하세요.')
             self.tabs.setCurrentWidget(self.dialogue_page)
             self.ai_section.setChecked(True)

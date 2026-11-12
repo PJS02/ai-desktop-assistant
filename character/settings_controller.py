@@ -67,7 +67,8 @@ class SettingsController(QObject):
                                'personality_traits': personality_traits},
                  'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
                            'sync_bubble': tts.sync_bubble},
-                 'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
+                 'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', ''),
+                        'screen_privacy_enabled': ai.get('screen_privacy_enabled', True)}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
         local['game_rules'] = load_game_rules()
@@ -252,7 +253,9 @@ class SettingsController(QObject):
                     value = save_game_rules(value, trace_id=self.operation_id)
                     self.character.game_spectator.poll()
                 elif section == 'ai':
-                    save_ai_settings(value['api_key'], value['model'], trace_id=self.operation_id)
+                    save_ai_settings(value['api_key'], value['model'],
+                                     screen_privacy_enabled=value.get('screen_privacy_enabled'),
+                                     trace_id=self.operation_id)
                     self.character._load_gemini_config()
                     self.character.dialogue_system._load_gemini_config()
                 elif section == 'hand_overlay':

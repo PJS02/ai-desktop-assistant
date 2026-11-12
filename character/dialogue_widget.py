@@ -358,6 +358,7 @@ class _ChatMessageRow(QWidget):
         outer.addLayout(self._line)
         bottom = Qt.AlignmentFlag.AlignBottom
         self.retry_button = self.cancel_button = self.cancelled_label = None
+        self.automatic_note = None
         if role == 'user':
             self.retry_button = QPushButton()
             self.retry_button.setObjectName('chatRetry')
@@ -383,9 +384,9 @@ class _ChatMessageRow(QWidget):
             self._line.addWidget(self.timestamp, alignment=bottom)
             self._line.addStretch()
             if message.get('source') == 'automatic':
-                note = QLabel('자동대화')
-                note.setObjectName('chatNote')
-                outer.addWidget(note, alignment=Qt.AlignmentFlag.AlignLeft)
+                self.automatic_note = QLabel('자동대화', self.bubble)
+                self.automatic_note.setObjectName('chatAutomaticNote')
+                self.automatic_note.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def set_delivery_state(self, state):
         self.retry_button.setVisible(state == 'failed')
@@ -398,6 +399,10 @@ class _ChatMessageRow(QWidget):
         document = bubble.document()
         metrics = bubble.fontMetrics()
         text_width = max(metrics.horizontalAdvance(line) for line in bubble.toPlainText().split('\n'))
+        note = self.automatic_note
+        if note is not None:
+            note.adjustSize()
+            text_width = max(text_width, note.width())
         spacing = self._line.spacing()
         reserved = self.timestamp.sizeHint().width() + spacing
         for control in (self.retry_button, self.cancel_button, self.cancelled_label):
@@ -405,11 +410,18 @@ class _ChatMessageRow(QWidget):
                 size = control.sizeHint().expandedTo(control.minimumSize()).boundedTo(control.maximumSize())
                 reserved += size.width() + spacing
         border = 2 * bubble.frameWidth()
-        preferred = text_width + 2 * document.documentMargin() + border + 2
+        margin = ceil(document.documentMargin())
+        preferred = text_width + 2 * margin + border + 2
         width = max(1, min(ceil(preferred), int(available_width * .78), available_width - reserved))
         bubble.setFixedWidth(width)
         document.setTextWidth(max(1, width - border))
-        bubble.setFixedHeight(ceil(document.size().height()) + border)
+        body_height = ceil(document.size().height())
+        height = body_height + border
+        if note is not None:
+            gap = 2
+            note.move(bubble.frameWidth() + margin, bubble.frameWidth() + body_height - margin + gap)
+            height += note.height() + gap
+        bubble.setFixedHeight(height)
 
 
 class DialogueInputWidget(QWidget):
@@ -516,6 +528,7 @@ class DialogueInputWidget(QWidget):
                                      border-radius: 8px; }
             QTextBrowser[chatRole="user"] { background: #e9f1fa; }
             QLabel#chatTime, QLabel#chatNote { color: #586677; font-size: 11px; }
+            QLabel#chatAutomaticNote { color: rgba(73, 77, 84, 200); font-size: 10px; background: transparent; }
             QLineEdit, QPushButton { border: 1px solid #c2cedb; border-radius: 6px; }
             QLineEdit { background: #ffffff; padding: 0 9px; }
             QPushButton { background: #e9f1fa; color: #274965; font-weight: bold; }

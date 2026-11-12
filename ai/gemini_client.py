@@ -57,7 +57,19 @@ def load_gemini_config() -> dict:
     return config
 
 
-def save_gemini_config(api_key, model, *, trace_id=None):
+def is_screen_privacy_enabled(config):
+    return config.get("screen_privacy_enabled") is not False
+
+
+def _allows_unmasked_screen():
+    try:
+        config, _ = _read_config()
+    except (OSError, ValueError):
+        return False
+    return not is_screen_privacy_enabled(config)
+
+
+def save_gemini_config(api_key, model, *, screen_privacy_enabled=None, trace_id=None):
     """Atomically update the one shared config, preserving unrelated settings."""
     register_secret(api_key)
     try:
@@ -65,6 +77,10 @@ def save_gemini_config(api_key, model, *, trace_id=None):
             raise ValueError("API 키와 모델은 문자열이어야 합니다.")
         config, _ = _read_config()
         config.update(api_key=api_key, model=model)
+        if screen_privacy_enabled is not None:
+            if not isinstance(screen_privacy_enabled, bool):
+                raise ValueError("화면 개인정보 마스킹 설정은 켬 또는 끔이어야 합니다.")
+            config["screen_privacy_enabled"] = screen_privacy_enabled
         _write_config(config)
         log_event("settings.ai.saved", "AI 공통 설정 저장", trace_id=trace_id,
                   path=str(CONFIG_PATH), model=model, api_key_present=bool(api_key))
@@ -108,7 +124,9 @@ def request_gemini(
     if expired():
         return '[gemini error] request deadline exceeded'
 
-    if image is not None:
+    unmasked_screen = (image is not None and not is_screen_privacy_enabled(config)
+                       and _allows_unmasked_screen())
+    if image is not None and not unmasked_screen:
         try:
             image, prompt, system_instruction = redact_screen(image, prompt, system_instruction)
         except ScreenPrivacyError:
@@ -136,17 +154,25 @@ def request_gemini(
         payload["system_instruction"] = {"parts": [{"text": system_instruction}]}
 
     log_payload = dict(payload)
+    log_prompt = "[UNMASKED SCREEN CONTEXT OMITTED]" if unmasked_screen else prompt
     log_payload["contents"] = [{"parts": [
         {"inlineData": {"mimeType": "image/png", "data": "[IMAGE OMITTED]"}}
-        if "inlineData" in part else part for part in parts]}]
+        if "inlineData" in part else {"text": log_prompt} for part in parts]}]
+    if unmasked_screen:
+        log_payload.pop("system_instruction", None)
     log_event("gemini.request", "Gemini 요청 본문 (이미지 데이터 제외)", category="대화·AI",
               trace_id=trace_id, model=model, payload=log_payload,
-              source=context.get("source"), timeout_seconds=timeout, max_attempts=attempts)
+              source=context.get("source"), timeout_seconds=timeout, max_attempts=attempts,
+              unmasked_screen=unmasked_screen)
     request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), method="POST")
     request.add_header("Content-Type", "application/json")
     for attempt in range(attempts):
         if expired():
             return '[gemini error] request deadline exceeded'
+        if unmasked_screen and not _allows_unmasked_screen():
+            log_event("gemini.skipped", "화면 마스킹 설정이 변경되어 요청을 중단했습니다.",
+                      category="대화·AI", trace_id=trace_id, reason="screen_privacy_reenabled")
+            return "[gemini error] 화면 마스킹 설정이 변경되었습니다. 다시 요청해 주세요."
         started = time.monotonic()
         log_event("gemini.attempt_started", "Gemini HTTP 요청 시작", category="대화·AI",
                   trace_id=trace_id, attempt=attempt + 1, model=model)

@@ -337,6 +337,7 @@ def main():
     from character.preparation_status import PreparationOverlay, PreparationStatus
     preparation = PreparationStatus(app)
 
+    from ai.gemini_client import is_screen_privacy_enabled
     from character.character_widget import CharacterWidget, HAS_CONTEXT
     from character.model_preparation import ModelPreparation
     from character.config_manager import (load_config, load_character_options,
@@ -385,7 +386,8 @@ def main():
     character._show_settings_callback = settings_controller.show
     character.preparation_overlay = PreparationOverlay(preparation, character)
     model_preparation = ModelPreparation(character.dialogue_system.long_term_memory,
-                                        screen_enabled=HAS_CONTEXT and character.auto_program_detection)
+                                        screen_enabled=(HAS_CONTEXT and character.auto_program_detection
+                                                        and is_screen_privacy_enabled(character.gemini_config)))
     character.model_preparation = model_preparation
     picker = StartupPersonalityDialog(personality)
 

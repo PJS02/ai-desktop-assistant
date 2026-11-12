@@ -29,7 +29,7 @@ from .reactions import Reactions, choose_face, react, reaction_mood, experience
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .personality_system import PersonalitySystem
-from ai.gemini_client import load_gemini_config, request_gemini
+from ai.gemini_client import is_screen_privacy_enabled, load_gemini_config, request_gemini
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
@@ -1195,7 +1195,9 @@ class CharacterWidget(QLabel):
         self.dialogue_system._process_next_input()
         model_preparation = getattr(self, 'model_preparation', None)
         if model_preparation is not None:
-            model_preparation.configure_screen(HAS_CONTEXT and self.auto_program_detection)
+            config = getattr(self, 'gemini_config', {})
+            model_preparation.configure_screen(HAS_CONTEXT and self.auto_program_detection
+                                               and is_screen_privacy_enabled(config))
 
     def _load_gemini_config(self):
         """Gemini 설정 파일 로드"""
@@ -1207,6 +1209,11 @@ class CharacterWidget(QLabel):
                 print("[경고] Gemini 설정 파일이 없거나 비어 있습니다.")
         except Exception as e:
             print(f"[오류] Gemini 설정 로드 실패: {e}")
+            return
+        model_preparation = getattr(self, 'model_preparation', None)
+        if model_preparation is not None:
+            model_preparation.configure_screen(HAS_CONTEXT and self.auto_program_detection
+                                               and is_screen_privacy_enabled(self.gemini_config))
     
     def _on_activity_monitor(self, *, manual=False):
         """Start ambient work only when the user conversation has released the UI."""
