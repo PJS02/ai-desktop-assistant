@@ -49,6 +49,64 @@
     };
   }
 
+  const jumpImpact = .76;
+
+  function jumpBeat(t) {
+    const bell = (start, end) => t > start && t < end
+      ? Math.sin(Math.PI * (t - start) / (end - start)) ** 2 : 0;
+    const airTime = Math.max(0, Math.min(1, (t - .46) / .60));
+    return {
+      crouch: bell(.12, .49),
+      flight: 4 * airTime * (1 - airTime),
+      land: bell(1.04, 1.34),
+      lift: ease((t - .24) / .40) * (1 - ease((t - 1.04) / .56)),
+      reach: ease((t - .51) / (jumpImpact - .51)) * (1 - ease((t - jumpImpact) / .39))
+    };
+  }
+
+  function jumpBody(pose, t, side) {
+    const {crouch, flight, land, lift, reach} = jumpBeat(t);
+    const toward = side || -1;
+    const height = 30 * flight;
+    const footTravel = (side === 1 ? -1 : 1) * toward * flight;
+    pose.bodyX += toward * (8 * reach - 4 * crouch);
+    pose.bodyY += 10 * crouch - height + 9 * land;
+    pose.lean += toward * (8 * reach - 3 * crouch + 3 * land);
+    pose.headAngle += toward * (4 * lift - 6 * reach);
+    pose.footNearX += 8 * footTravel;
+    pose.footFarX += 4 * footTravel;
+    pose.footNearY -= height + 3 * flight;
+    pose.footFarY -= height + 7 * flight;
+    pose.footNearAngle += 9 * flight;
+    pose.footFarAngle -= 11 * flight;
+    pose.armNear -= 13 * crouch + 30 * flight;
+    pose.elbowNear += 12 * flight + 6 * land;
+    pose.airborne = flight;
+    pose.framingZoom = .95; // Reserve headroom throughout the hop.
+    pose.exprExcited = lift;
+  }
+
+  function jumpLayout(cfg, pose, t, bodyPoint) {
+    const toward = cfg.prefix === 'right' ? 1 : -1;
+    const front = cfg.prefix === 'front';
+    const {crouch, lift, reach} = jumpBeat(t);
+    const [x, y] = cfg.shoulders[1];
+    const stretchX = front ? 32 : 36;
+    const stretchY = front ? 34 : 19;
+    const dx = mix(5 - 9 * crouch, 45, lift) + stretchX * reach;
+    const dy = mix(91 - 4 * crouch, -24, lift) - stretchY * reach;
+    const palm = bodyPoint({x: x + toward * dx, y: y + dy}, pose);
+    return {
+      lift, reach, open: lift, palm,
+      impact: bodyPoint({x: x + toward * (45 + stretchX), y: y - 24 - stretchY}, pose),
+      roll: -toward * mix(5, 153 + (front ? 7 : 11) * reach, lift),
+      mirror: toward * (.90 + .06 * reach),
+      size: .91 + .12 * lift + .10 * reach
+    };
+  }
+
+  const jump = {impactTime: jumpImpact, duration: 1.85, body: jumpBody, layout: jumpLayout};
+
   function paintPalm(ctx, open) {
     const thumb = mix(-8.3, -12.1, open);
     const index = mix(-4.9, -7.2, open);
@@ -101,5 +159,5 @@
     ctx.restore();
   }
 
-  root.CloudyHighFive = {impactTime, duration, bounds, contact, textureName, body, layout, paintPalm};
+  root.CloudyHighFive = {impactTime, duration, bounds, contact, textureName, body, layout, paintPalm, jump};
 })(window);

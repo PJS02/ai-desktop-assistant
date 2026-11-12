@@ -471,28 +471,39 @@
     ctx.restore();
   }
 
-  const highFive = {
-    label: '하이파이브',
-    duration: highFiveMotion.duration,
-    once: true,
-    held: true,
-    body: highFiveMotion.body,
-    frame(cfg, pose, t) {
-      const side = direction(cfg);
-      const {lift, open, palm, roll, mirror, size, impact} = highFiveMotion.layout(cfg, pose, t, bodyPoint);
-      const age = (t - highFiveMotion.impactTime) / .27;
-      return {
-        hands: [hand('highFive', mirror, size, palm, roll, open)],
-        companionDrop: side >= 0 ? 49 * lift : 0,
-        bounds: [-49, -49, 98, 97],
-        point: (x, y) => ({x: impact.x + x, y: impact.y + y}),
-        foreground: age >= 0 && age < 1 ? ctx => highFiveSpark(ctx, age, side) : null
-      };
-    }
-  };
+  function highFiveClip(label, motion, arm) {
+    return {
+      label,
+      duration: motion.duration,
+      once: true,
+      held: true,
+      body: motion.body,
+      frame(cfg, pose, t) {
+        const side = direction(cfg);
+        const {lift, open, palm, roll, mirror, size, impact} = motion.layout(cfg, pose, t, bodyPoint);
+        const age = (t - motion.impactTime) / .27;
+        const hands = [];
+        hands[arm] = hand('highFive', mirror, size, palm, roll, open);
+        return {
+          hands,
+          farArmBehindBody: arm === 1,
+          companionDrop: side >= 0 ? 49 * lift : 0,
+          bounds: [-49, -49, 98, 97],
+          point: (x, y) => ({x: impact.x + x, y: impact.y + y}),
+          foreground: age >= 0 && age < 1
+            ? ctx => highFiveSpark(ctx, age, side || (arm === 1 ? -1 : 0)) : null
+        };
+      }
+    };
+  }
 
   const games = root.CloudyActivityGames.createClips({heldLayout, bodyPoint, shape, box, oval, shade});
-  const clips = {music, ...games, writing, reading, documents, 'high-five': highFive, ...trip.clips};
+  const clips = {
+    music, ...games, writing, reading, documents,
+    'high-five': highFiveClip('하이파이브', highFiveMotion, 0),
+    'high-five-jump': highFiveClip('점프 하이파이브', highFiveMotion.jump, 1),
+    ...trip.clips
+  };
 
   function clipTime(clip, seconds) {
     return clip.once ? Math.max(0, Math.min(clip.duration, seconds)) : loop(seconds, clip.duration);
@@ -533,6 +544,9 @@
         // Solve against the pose being painted so the moving props and fingers
         // share the same body transform even while the pose is transitioning.
         frame.hands.forEach((grip, index) => this.aimHand(cfg, posed, index, grip));
+      }
+      if (frame?.farArmBehindBody) {
+        this.paintArm(cfg, 1, posed, opacity, frame.hands[1]);
       }
       super.renderView(cfg, posed, opacity, time);
       if (frame?.foreground) this.paintLayer(frame, frame.foreground);
@@ -580,8 +594,8 @@
         super.limb(cfg, index, type, pose, opacity, surface);
         return;
       }
-      // The far hand strikes the top of the rhythm pad from both side views.
-      if (index === 1 && cfg.prefix !== 'front' && this.activityFrame.farArmInFront) return;
+      if (index === 1 && (this.activityFrame.farArmBehindBody ||
+        (cfg.prefix !== 'front' && this.activityFrame.farArmInFront))) return;
       this.paintArm(cfg, index, pose, opacity, grip, surface);
     }
 
