@@ -28,6 +28,7 @@ from .rig_state import RigAnimator
 from .reactions import Reactions, choose_face, react, reaction_mood, experience
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
+from .status_windows import EmotionStatusWindow, MemoryStatusWindow
 from .personality_system import PersonalitySystem
 from ai.gemini_client import is_screen_privacy_enabled, load_gemini_config, request_gemini
 from .sandbox_manager import SandboxManager
@@ -112,6 +113,7 @@ class CharacterWidget(QLabel):
     automatic_response_ready = pyqtSignal(object)
     occ_changed = pyqtSignal(str, dict)
     arousal_changed = pyqtSignal(str, float)
+    popup_coordinates_changed = pyqtSignal(str, tuple, float, float)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -196,8 +198,10 @@ class CharacterWidget(QLabel):
         if personality_traits is not None:
             self.personality_system.set_traits(personality_traits, preset_name=personality_preset)
         self.mood_system = MoodSystem(self.personality_system, on_occ_change=self.occ_changed.emit,
-                                      on_arousal_change=self.arousal_changed.emit)
+                                      on_arousal_change=self.arousal_changed.emit,
+                                      on_popup_coordinates=self.popup_coordinates_changed.emit)
         self.russell_dialog = None
+        self._emotion_status = self._memory_status = None
         self.current_action = "idle"
         self.drag_pos = None
         self.action_menu = None
@@ -311,6 +315,7 @@ class CharacterWidget(QLabel):
             self, options['emotion_delta_duration_ms'], enabled=options['emotion_delta_enabled'])
         self.occ_changed.connect(self.emotion_delta_overlay.collect)
         self.arousal_changed.connect(self.emotion_delta_overlay.collect_arousal)
+        self.popup_coordinates_changed.connect(self.emotion_delta_overlay.collect_coordinates)
         self._pet_last_position = None
         self._pet_last_time = 0.0
         self._cursor_over_character = False
@@ -903,6 +908,10 @@ class CharacterWidget(QLabel):
         CharacterWidget._cancel_pointer_input(self)
         if getattr(self, 'action_menu', None) is not None:
             self.action_menu.dismiss('shutdown')
+        for name in ('_emotion_status', '_memory_status'):
+            window = getattr(self, name, None)
+            if window is not None:
+                window.close()
         if not getattr(self, '_character_closing', False):
             log_event('character.shutdown', '캐릭터 종료 시작', category='캐릭터 상태',
                       action=getattr(self, 'current_action', None), moving=getattr(self, 'is_moving', False))
@@ -2725,6 +2734,16 @@ class CharacterWidget(QLabel):
 
     
     #  <캐릭터 감정 확인 버튼 누를 시 >
+    def show_emotion_status(self):
+        if self._emotion_status is None:
+            self._emotion_status = EmotionStatusWindow(self)
+        self._emotion_status.open_beside_character(self._memory_status)
+
+    def show_memory_status(self):
+        if self._memory_status is None:
+            self._memory_status = MemoryStatusWindow(self)
+        self._memory_status.open_beside_character(self._emotion_status)
+
     def show_russell_dialog(self):
         """Russell 감정 상태 다이얼로그 표시"""
         print("[show_russell_dialog] called")
@@ -3651,8 +3670,10 @@ class CharacterWidget(QLabel):
             self_hwnd = self._get_self_window_handle()
             hand_overlay = getattr(self, 'hand_overlay', None)
             hand_handles = hand_overlay.window_handles if hand_overlay is not None else set()
-            action_menu = getattr(self, 'action_menu', None)
-            action_handle = int(action_menu.winId()) if action_menu is not None and action_menu.isVisible() else None
+            auxiliary_windows = (getattr(self, name, None) for name in
+                                 ('action_menu', '_emotion_status', '_memory_status'))
+            auxiliary_handles = {int(window.winId()) for window in auxiliary_windows
+                                 if window is not None and window.isVisible()}
 
             # 첫 스캔 여부 확인
             first_scan = not hasattr(self, '_first_scan_done')
@@ -3678,7 +3699,7 @@ class CharacterWidget(QLabel):
                     continue
                 if window_handle in hand_handles:
                     continue
-                if action_handle is not None and window_handle == action_handle:
+                if window_handle in auxiliary_handles:
                     continue
 
                 # 화면에 실제로 보이는 창만 사용 (첫 스캔에만 debug 로그 출력)

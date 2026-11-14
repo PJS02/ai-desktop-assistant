@@ -1,10 +1,10 @@
-"""Four nearby actions, sharing the character's existing game and dialogue paths."""
+"""Nearby actions for the character's games, chat, emotion and memory."""
 from functools import lru_cache
 from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QFont, QIcon
-from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
+from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
                              QStyle, QStyleOptionToolButton, QStylePainter, QToolButton)
 
 from app_logging import log_event
@@ -34,7 +34,7 @@ def action_menu_position(body, size, available, avoid=()):
     return min(placements, key=lambda item: item[0])[1]
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=6)
 def action_icon(kind):
     directory = Path(__file__).resolve().parent.parent / 'assets/ui/character_actions'
     return QIcon(str(directory / f'{kind}.svg'))
@@ -54,13 +54,14 @@ class _ActionButton(QToolButton):
         font = self.font()
         painter.setPen(QColor('#273542' if enabled else '#65717c'))
         painter.setFont(font)
-        painter.drawText(QRect(0, 31, self.width(), 16), Qt.AlignmentFlag.AlignCenter, name)
+        painter.drawText(QRect(0, 32 if action else 36, self.width(), 18),
+                         Qt.AlignmentFlag.AlignCenter, name)
 
         font.setPixelSize(11)
         font.setBold(False)
         painter.setPen(QColor('#515e6a' if enabled else '#65717c'))
         painter.setFont(font)
-        painter.drawText(QRect(0, 46, self.width(), 15), Qt.AlignmentFlag.AlignCenter, action)
+        painter.drawText(QRect(0, 49, self.width(), 15), Qt.AlignmentFlag.AlignCenter, action)
 
 
 class CharacterActionMenu(QFrame):
@@ -85,9 +86,12 @@ class CharacterActionMenu(QFrame):
         panel.setStyleSheet('''
             QFrame#characterActions { background: #ffffff; border: 1px solid #cbd3dc;
                 border-radius: 9px; }
-            QToolButton { background: #ffffff; border: 1px solid #d4dce5;
+            QToolButton { background: #ffffff; border: 1px solid #d6e0ea;
                 border-radius: 6px; padding: 0; padding-bottom: 32px; }
-            QToolButton:hover { background: #dfe4ea; border-color: #a6b5c4; }
+            QToolButton[infoAction="true"] { background: #f4f7fb; }
+            QToolButton:hover, QToolButton[infoAction="true"]:hover {
+                background: #e8f0fa; border-color: #a6b5c4;
+            }
             QToolButton:pressed { background: #cdd6de; }
             QToolButton:focus { border: 2px solid #4d6b89; }
             QToolButton:disabled { background: #f0f3f7; }
@@ -98,16 +102,17 @@ class CharacterActionMenu(QFrame):
         shadow.setColor(QColor(25, 45, 69, 30))
         panel.setGraphicsEffect(shadow)
         outer.addWidget(panel)
-        row = QHBoxLayout(panel)
-        row.setContentsMargins(7, 7, 7, 7)  # The panel border adds the remaining pixel.
-        row.setSpacing(6)
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(7, 7, 7, 7)  # The panel border adds the remaining pixel.
+        grid.setSpacing(6)
         font = QFont('Malgun Gothic')
         font.setPixelSize(12)
         font.setWeight(QFont.Weight.DemiBold)
-        for key in ('talk', 'cham', 'rps', 'ball'):
+        for index, key in enumerate(('cham', 'rps', 'ball', 'talk', 'emotion', 'memory')):
             button = _ActionButton(panel)
+            button.setProperty('infoAction', index >= 3)
             button.setFont(font)
-            button.setFixedSize(64, 68)
+            button.setFixedSize(72, 68)
             button.setIcon(action_icon(key))
             button.setIconSize(QSize(24, 24))
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -116,7 +121,7 @@ class CharacterActionMenu(QFrame):
             button.clicked.connect(lambda checked=False, action=key: self.select_action(action))
             button.installEventFilter(self)
             self.buttons[key] = button
-            row.addWidget(button)
+            grid.addWidget(button, index // 3, index % 3)
         self.timer = QTimer(self)
         self.timer.setInterval(150)
         self.timer.timeout.connect(self.refresh)
@@ -139,12 +144,14 @@ class CharacterActionMenu(QFrame):
         c = self.character
         ball = c.sandbox_manager.ball
         actions = {
-            'talk': ('대화\n입력', c.dialogue_system.open_input_dialog, ''),
+            'talk': ('채팅하기', c.dialogue_system.open_input_dialog, ''),
             'cham': self._game_action('cham', '참참참', c.show_cham_game, c.end_cham_game,
                                       {'finished', 'error'}),
             'rps': self._game_action('rps', '가위바위보', c.show_rps_game, c.end_rps_game,
                                      {'result', 'error'}),
             'ball': ('공\n치우기', ball.close, '') if ball is not None else ('공\n꺼내기', c.select_ball, ''),
+            'emotion': ('감정 표시', c.show_emotion_status, ''),
+            'memory': ('기억 표시', c.show_memory_status, ''),
         }
         for key, (text, callback, reason) in actions.items():
             button = self.buttons[key]
@@ -164,7 +171,8 @@ class CharacterActionMenu(QFrame):
         if screen is None:
             return
         dialogue = c.dialogue_system
-        widgets = [getattr(c, name, None) for name in ('rps_game', 'cham_game')]
+        widgets = [getattr(c, name, None) for name in
+                   ('rps_game', 'cham_game', '_emotion_status', '_memory_status')]
         widgets += [getattr(dialogue, name, None) for name in
                     ('current_dialogue', 'current_user_dialogue', 'current_narration', 'current_input_widget')]
         avoid = [widget.geometry() for widget in widgets if widget is not None and widget.isVisible()]
@@ -241,16 +249,22 @@ class CharacterActionMenu(QFrame):
         if event.key() == Qt.Key.Key_Escape:
             self.dismiss('escape')
             return True
-        enabled = [button for button in self.buttons.values() if button.isEnabled()]
-        if not enabled:
-            return False
-        current = next((index for index, button in enumerate(enabled) if button.hasFocus()), 0)
-        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
-            step = -1 if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Up) else 1
-            enabled[(current + step) % len(enabled)].setFocus(Qt.FocusReason.TabFocusReason)
+        buttons = list(self.buttons.values())
+        current = next((index for index, button in enumerate(buttons) if button.hasFocus()), 3)
+        step = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1,
+                Qt.Key.Key_Up: -3, Qt.Key.Key_Down: 3}.get(event.key())
+        if step is not None:
+            if abs(step) == 3:
+                candidates = [buttons[(current + step) % len(buttons)]]
+            else:
+                candidates = [buttons[(current + step * offset) % len(buttons)]
+                              for offset in range(1, len(buttons))]
+            target = next((button for button in candidates if button.isEnabled()), None)
+            if target is not None:
+                target.setFocus(Qt.FocusReason.TabFocusReason)
             return True
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            enabled[current].click()
+            buttons[current].click()
             return True
         return False
 

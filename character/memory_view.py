@@ -1,11 +1,12 @@
 """Read-only, paged view of the running character's long-term memory store."""
+from html import escape
 import sqlite3
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHeaderView, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from app_logging import log_event
@@ -15,19 +16,22 @@ class MemoryView(QWidget):
     PAGE_SIZE = 100
     page_ready = pyqtSignal(object)
 
-    def __init__(self, memory, parent=None):
+    def __init__(self, memory, parent=None, *, compact=False):
         super().__init__(parent)
         self.memory = memory
+        self._compact = compact
         self._rows = []
         self._offset = 0
         self._loading = False
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 22)
-        hint = QLabel('저장된 장기기억을 최신순으로 표시합니다. 행을 선택하면 기억 내용과 최초 원문을 확인할 수 있습니다.')
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        margins = 0 if compact else 22
+        layout.setContentsMargins(margins, margins, margins, margins)
+        if not compact:
+            hint = QLabel('저장된 장기기억을 최신순으로 표시합니다. 행을 선택하면 기억 내용과 최초 원문을 확인할 수 있습니다.')
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
         navigation = QHBoxLayout()
-        self.status = QLabel('탭을 열면 저장된 기억을 불러옵니다.')
+        self.status = QLabel('탭을 열면 저장된 기억을 불러옵니다.', objectName='statusMeta')
         self.status.setWordWrap(True)
         navigation.addWidget(self.status, 1)
         self.refresh_button = QPushButton('새로고침')
@@ -42,6 +46,15 @@ class MemoryView(QWidget):
         self.previous_button.clicked.connect(lambda _checked=False: self.refresh(self._offset - self.PAGE_SIZE))
         self.next_button.clicked.connect(lambda _checked=False: self.refresh(self._offset + self.PAGE_SIZE))
         layout.addLayout(navigation)
+        self.page_ready.connect(self._display_page, Qt.ConnectionType.QueuedConnection)
+        if compact:
+            self.previous_button.hide()
+            self.next_button.hide()
+            self.contents = QTextBrowser(accessibleName='저장된 장기기억')
+            self.contents.document().setDocumentMargin(12)
+            layout.addWidget(self.contents, 1)
+            return
+
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(['기억 내용', '중요도', '저장 시각 (UTC)'])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -59,7 +72,6 @@ class MemoryView(QWidget):
         self.details.setReadOnly(True)
         self.details.setPlaceholderText('기억을 선택하면 상세 내용을 표시합니다.')
         layout.addWidget(self.details, 1)
-        self.page_ready.connect(self._display_page, Qt.ConnectionType.QueuedConnection)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -100,17 +112,31 @@ class MemoryView(QWidget):
         rows, total, offset, error = result
         self._loading = False
         self._offset = offset
-        self.table.setRowCount(0)
-        self.details.clear()
         self._rows = rows
         self.refresh_button.setEnabled(True)
         self.previous_button.setEnabled(not error and offset > 0)
         self.next_button.setEnabled(not error and offset + len(rows) < total)
-        if error:
-            self.status.setText(error)
+        summary = f'총 {total}개 · {offset + 1}–{offset + len(rows)}번째' if rows else '저장된 장기기억이 없습니다.'
+        self.status.setText(error or summary)
+        if self._compact:
+            has_pages = total > self.PAGE_SIZE
+            self.previous_button.setVisible(has_pages)
+            self.next_button.setVisible(has_pages)
+            entries = []
+            for memory in rows:
+                state = ('대체된 기억' if memory['superseded_by'] is not None
+                         else '망각된 기억' if memory['strength'] == 0 else '')
+                text = escape(memory['text']).replace('\n', '<br>')
+                label = f'<br><span style="color: #516278; font-size: 11px;">{state}</span>' if state else ''
+                entries.append(
+                    '<table width="100%" cellspacing="0" cellpadding="10" '
+                    'style="border: 1px solid #d6e0ea; border-collapse: collapse;">'
+                    f'<tr><td bgcolor="#f4f7fb">{text}{label}</td></tr></table>')
+            self.contents.setHtml('<p style="font-size: 6px;">&nbsp;</p>'.join(entries))
             return
-        self.status.setText(f'총 {total}개 · {offset + 1}–{offset + len(rows)}번째' if rows
-                            else '저장된 장기기억이 없습니다.')
+
+        self.table.setRowCount(0)
+        self.details.clear()
         self.table.setRowCount(len(rows))
         for row, memory in enumerate(rows):
             values = (' '.join(memory['text'].split()),

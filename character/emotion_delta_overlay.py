@@ -3,6 +3,7 @@
 import random
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSlot
@@ -34,10 +35,22 @@ PRECISE_SOURCES = frozenset((*FACE_SOURCES.values(), *GESTURE_SOURCES.values()))
 class EmotionPopup:
     cause: QPainterPath
     text: QPainterPath
+    cause_label: str
+    change_label: str
     color: QColor
     origin: QPointF
     drift: QPointF
     delay: float
+
+
+@dataclass(frozen=True)
+class PopupRecord:
+    timestamp: float
+    cause: str
+    change: str
+    valence: float | None
+    arousal: float | None
+    color: str
 
 
 class EmotionDeltaOverlay(QWidget):
@@ -61,7 +74,9 @@ class EmotionDeltaOverlay(QWidget):
         self._cause_font.setPixelSize(13)
         self._pending = {}
         self._pending_at = {}
+        self._pending_coordinates = {}
         self._popups = []
+        self.history = deque(maxlen=100)
         self.enabled = enabled
         self.duration_ms = duration_ms
         self._duration = duration_ms / 1000
@@ -85,6 +100,7 @@ class EmotionDeltaOverlay(QWidget):
             now = time.monotonic()
             if now - self._pending_at.get(key, now) > 4.:
                 self._pending.pop(key, None)
+                self._pending_coordinates.pop(key, None)
             self._pending[key] = self._pending.get(key, 0.0) + delta
             self._pending_at[key] = now
         if not self._batch.isActive():
@@ -93,6 +109,14 @@ class EmotionDeltaOverlay(QWidget):
     @pyqtSlot(str, float)
     def collect_arousal(self, source, change):
         self.collect(source, {'arousal': change})
+
+    @pyqtSlot(str, tuple, float, float)
+    def collect_coordinates(self, source, emotions, valence, arousal):
+        for emotion in emotions:
+            key = (source, emotion)
+            if key in self._pending:
+                before_valence, before_arousal = self._pending_coordinates.get(key, (0.0, 0.0))
+                self._pending_coordinates[key] = (before_valence + valence, before_arousal + arousal)
 
     def set_enabled(self, enabled):
         self.enabled = enabled
@@ -104,6 +128,7 @@ class EmotionDeltaOverlay(QWidget):
         self._animation.stop()
         self._pending.clear()
         self._pending_at.clear()
+        self._pending_coordinates.clear()
         self._popups.clear()
         self.hide()
 
@@ -118,6 +143,7 @@ class EmotionDeltaOverlay(QWidget):
             if now - self._pending_at.get(key, now) > 4.:
                 del self._pending[key]
                 self._pending_at.pop(key, None)
+                self._pending_coordinates.pop(key, None)
         ranked = []
         for key, delta in self._pending.items():
             # Confirmed recognition events can be smaller than one display point.
@@ -133,6 +159,13 @@ class EmotionDeltaOverlay(QWidget):
             self._pending[source, emotion] -= points / 100
         if lines:
             self._popups = self._make_popups(lines)
+            timestamp = time.time()
+            for (source, emotion, _), popup in zip(lines, self._popups):
+                # The leftover display fraction can contribute to another popup.
+                # Its event's actual coordinate movement was already recorded here.
+                valence, arousal = self._pending_coordinates.pop((source, emotion), (None, None))
+                self.history.appendleft(PopupRecord(timestamp, popup.cause_label, popup.change_label,
+                                                    valence, arousal, popup.color.name()))
             self._duration = self.duration_ms / 1000
             self._started = time.monotonic()
             self._elapsed = 0.0
@@ -175,7 +208,7 @@ class EmotionDeltaOverlay(QWidget):
             else:
                 positive_gain = (points > 0) != (OccEmotionToMood(emotion) in NEGATIVE_OCC_EMOTIONS)
                 color = QColor('#a6f284' if positive_gain else '#ff797d')
-            popups.append(EmotionPopup(cause, path, color, origin, drift, delay))
+            popups.append(EmotionPopup(cause, path, label, text, color, origin, drift, delay))
         return popups
 
     def _advance(self):

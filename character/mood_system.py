@@ -149,7 +149,8 @@ class MoodSystem:
     _NEGATIVE_EMOTION_RETENTION = 0.95
     _POSITIVE_EMOTION_RETENTION = 0.94
     
-    def __init__(self, personality_system=None, *, on_occ_change=None, on_arousal_change=None):
+    def __init__(self, personality_system=None, *, on_occ_change=None, on_arousal_change=None,
+                 on_popup_coordinates=None):
         # Russell 감정 좌표 (Valence, Arousal)
         self.russell = RussellState()
         
@@ -160,6 +161,7 @@ class MoodSystem:
         self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
         self._on_occ_change = on_occ_change
         self._on_arousal_change = on_arousal_change
+        self._on_popup_coordinates = on_popup_coordinates
         
         # Russell 공간에서 17개 감정의 위치 (Valence, Arousal)
         # 코드 상 감정을 정의하는 구간
@@ -733,6 +735,11 @@ class MoodSystem:
         arousal_change = inputs.get('arousal_change', 0.)
         if arousal_change and category != 'recovery' and self._on_arousal_change is not None:
             self._on_arousal_change(source, arousal_change)
+        if category != 'recovery' and self._on_popup_coordinates is not None:
+            names = tuple(occ_changes) + (('arousal',) if arousal_change else ())
+            if names:
+                self._on_popup_coordinates(source, names, self.russell.valence - before[0],
+                                           self.russell.arousal - before[1])
 
 
     def _apply_occ_to_mood(self) -> None:

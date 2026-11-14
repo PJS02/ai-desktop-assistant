@@ -39,7 +39,7 @@ class RussellEmotionCanvas(QWidget):
         for i, (_, label) in enumerate(SECTORS) if i % 4 == 0
     )
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, interactive=True):
         super().__init__(parent)
         self.valence_current = 0.0
         self.arousal_current = 0.0
@@ -47,6 +47,7 @@ class RussellEmotionCanvas(QWidget):
         self.arousal_target = 0.0
         self.dominant = "idle"
         self._dragging = False
+        self._interactive = interactive
         self.coordinate_history = []
         self.setMinimumSize(360, 360)
         self.setMouseTracking(True)  # 마우스 추적 활성화
@@ -54,7 +55,8 @@ class RussellEmotionCanvas(QWidget):
         # 애니메이션 타이머 (매 16ms = 60fps)
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._update_animation)
-        self.animation_timer.start(16)
+        if interactive:
+            self.animation_timer.start(16)
     
     def _update_animation(self) -> None:
         """부드러운 이동 애니메이션"""
@@ -246,7 +248,7 @@ class RussellEmotionCanvas(QWidget):
         painter.end()
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if self._interactive and event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
             self._apply_mouse_state(event.position())
             event.accept()
@@ -286,7 +288,7 @@ class RussellEmotionCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if self._interactive and event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
             event.accept()
             return
