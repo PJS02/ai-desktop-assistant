@@ -1257,7 +1257,8 @@ class CharacterWidget(QLabel):
         tone = self.mood_system.get_emotion_tone_instructions()
         voice_config = dict(self.gemini_config)
         voice_config['game_spectator'] = getattr(self, 'game_spectator_enabled', True)
-        voice_config['character_voice'] = character_voice(getattr(self, 'personality_system', None))
+        voice_config['character_voice'] = character_voice(
+            getattr(self, 'personality_system', None), automatic=True)
         self._automatic_request_active = True
         context = {'trace_id': new_trace_id('ambient'), 'source': 'manual_generation' if manual else 'activity',
                    'generation': generation, 'input_epoch': epoch}
@@ -1320,17 +1321,14 @@ class CharacterWidget(QLabel):
 
             # Game context is explicit about the limits of process-only detection.
             prompt = (
-                f"{config.get('character_voice', '')}\n\n{game_instruction}\n"
+                f"{game_instruction}\n"
                 f"입력 정보:\n"
                 f"- 활동 분류: {category}\n"
                 f"- 프로세스: {process}\n"
                 f"- 창 제목: {title}\n"
-                f"\n【 캐릭터 감정 상태 】\n"
-                f"{emotion_description}\n"
-                f"\n【 말투 지침 】\n"
-                f"{tone_instruction}\n"
-                f"\n위의 감정 상태와 말투 지침을 고려하여 활동에 대한 자연스러운 한두 문장의 반응을 생성하세요."
             )
+            voice = config.get('character_voice') or character_voice(automatic=True)
+            voice = f"{voice}\n\n【 현재 캐릭터 감정과 말투 】\n{emotion_description}\n{tone_instruction}"
             captured_at = time.monotonic()
             image = capture_active_window_image()
             if image is None:
@@ -1355,8 +1353,7 @@ class CharacterWidget(QLabel):
                 config,
                 image=image,
                 response_schema=game_response_schema() if game_visual else build_response_schema(),
-                system_instruction=(game_response_instruction(config.get('character_voice')) if game_visual
-                                    else build_system_instruction(config.get('character_voice'))),
+                system_instruction=game_response_instruction(voice) if game_visual else build_system_instruction(voice),
                 log_context=context,
                 **({'timeout_seconds': 8, 'max_attempts': 1,
                     'deadline': captured_at + GAME_RESPONSE_MAX_AGE} if game_visual else {}),

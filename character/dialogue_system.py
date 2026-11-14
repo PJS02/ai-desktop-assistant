@@ -617,7 +617,7 @@ class DialogueSystem(QObject):
 현재 감정 상태:
 {mood.get_emotion_description_for_prompt()}
 감정별 말투 지침:
-{mood.get_emotion_tone_instructions()}
+{mood.get_emotion_tone_instructions()} 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요.
 
 이전 대화:
 {history}

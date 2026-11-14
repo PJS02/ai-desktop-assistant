@@ -1179,7 +1179,4 @@ class MoodSystem:
             "relieved": "만족스럽고 편안한 기색을 담으세요.",
             "serene": "편안한 기색을 부드럽게 담으세요.",
         }
-        return (
-            tone_instructions[self.get_display_emotion()]
-            + " 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요."
-        )
+        return tone_instructions[self.get_display_emotion()]
