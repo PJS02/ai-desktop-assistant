@@ -1,5 +1,7 @@
 # 캐릭터 대화 시스템
 from PyQt6.QtCore import QDateTime, QTimer, pyqtSignal, pyqtSlot, QObject, Qt
+from PyQt6.QtGui import QCursor
+from PyQt6.QtWidgets import QToolTip
 from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrationBox, DialogueInputWidget
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
@@ -916,6 +918,18 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         if self.current_input_widget is not None:
             self.current_input_widget.append_message(turn)
 
+    def _speak_chat_message(self, text):
+        if self._closed:
+            return
+        if not getattr(self.tts, 'enabled', True):
+            QToolTip.showText(QCursor.pos(), '대화·음성 설정에서 AI 답변 음성으로 읽기를 켜 주세요.',
+                              self.current_input_widget)
+        elif self._pending_ai_response is not None:
+            QToolTip.showText(QCursor.pos(), '새 답변이 표시된 뒤 다시 눌러 주세요.',
+                              self.current_input_widget)
+        else:
+            self.tts.speak(text)
+
     def open_input_dialog(self):
         """Show the chat and keep the current draft and transcript."""
         if self._closed:
@@ -925,6 +939,7 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.current_input_widget.text_submitted.connect(self.ask_ai)
             self.current_input_widget.retry_requested.connect(self.retry_input)
             self.current_input_widget.cancel_requested.connect(self.cancel_input)
+            self.current_input_widget.speech_requested.connect(self._speak_chat_message)
             for turn in self.conversation_history:
                 if 'displayed_at' in turn:
                     self.current_input_widget.append_message(turn)

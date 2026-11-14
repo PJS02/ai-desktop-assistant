@@ -331,7 +331,7 @@ class DialogueNarrationBox(QWidget):
 
 
 class _ChatMessageRow(QWidget):
-    def __init__(self, message, retry_icon):
+    def __init__(self, message, retry_icon, speaker_icon):
         super().__init__()
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         role = message['role']
@@ -358,6 +358,7 @@ class _ChatMessageRow(QWidget):
         outer.addLayout(self._line)
         bottom = Qt.AlignmentFlag.AlignBottom
         self.retry_button = self.cancel_button = self.cancelled_label = None
+        self.speaker_button = None
         self.automatic_note = None
         if role == 'user':
             self.retry_button = QPushButton()
@@ -381,6 +382,16 @@ class _ChatMessageRow(QWidget):
             self.set_delivery_state(message.get('state'))
         else:
             self._line.addWidget(self.bubble)
+            if message.get('state') != 'failed':
+                self.speaker_button = QPushButton()
+                self.speaker_button.setObjectName('chatSpeaker')
+                self.speaker_button.setIcon(speaker_icon)
+                self.speaker_button.setIconSize(QSize(15, 15))
+                self.speaker_button.setFixedSize(24, 24)
+                self.speaker_button.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.speaker_button.setAccessibleName('이 답변 음성으로 읽기')
+                self.speaker_button.setToolTip('음성으로 읽기')
+                self._line.addWidget(self.speaker_button, alignment=bottom)
             self._line.addWidget(self.timestamp, alignment=bottom)
             self._line.addStretch()
             if message.get('source') == 'automatic':
@@ -405,7 +416,7 @@ class _ChatMessageRow(QWidget):
             text_width = max(text_width, note.width())
         spacing = self._line.spacing()
         reserved = self.timestamp.sizeHint().width() + spacing
-        for control in (self.retry_button, self.cancel_button, self.cancelled_label):
+        for control in (self.retry_button, self.cancel_button, self.cancelled_label, self.speaker_button):
             if control is not None and not control.isHidden():
                 size = control.sizeHint().expandedTo(control.minimumSize()).boundedTo(control.maximumSize())
                 reserved += size.width() + spacing
@@ -430,6 +441,7 @@ class DialogueInputWidget(QWidget):
     text_submitted = pyqtSignal(str)
     retry_requested = pyqtSignal(int)
     cancel_requested = pyqtSignal(int)
+    speech_requested = pyqtSignal(str)
     POSITION_KEY = 'chat/position'
     SIZE_KEY = 'chat/size'
     RESIZE_MARGIN = 8
@@ -450,7 +462,9 @@ class DialogueInputWidget(QWidget):
         self._drag_offset = None
         self._follow_latest = True
         self._turns = {}
-        self._retry_icon = QIcon(str(Path(__file__).resolve().parent.parent / 'assets/ui/chat_retry.svg'))
+        icons = Path(__file__).resolve().parent.parent / 'assets/ui'
+        self._retry_icon = QIcon(str(icons / 'chat_retry.svg'))
+        self._speaker_icon = QIcon(str(icons / 'chat_speaker.svg'))
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -566,10 +580,12 @@ class DialogueInputWidget(QWidget):
                     failed_reply.deleteLater()
                 return
 
-        row = _ChatMessageRow(message, self._retry_icon)
+        row = _ChatMessageRow(message, self._retry_icon, self._speaker_icon)
         if row.retry_button is not None:
             row.retry_button.clicked.connect(lambda: self.retry_requested.emit(chat_id))
             row.cancel_button.clicked.connect(lambda: self.cancel_requested.emit(chat_id))
+        if row.speaker_button is not None:
+            row.speaker_button.clicked.connect(lambda: self.speech_requested.emit(message['text']))
         turn.addWidget(row)
         row.fit(width)
 
