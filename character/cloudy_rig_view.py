@@ -27,9 +27,8 @@ from .texture_cache import BoundedTextureCache
 
 
 _VERTEX = """attribute vec2 pos;attribute vec2 uv;uniform vec2 viewport;uniform vec2 stageOrigin;
-uniform vec2 sceneOffset;varying vec2 stagePoint;
-varying vec2 tex;void main(){stagePoint=pos+sceneOffset;
-vec2 canvasPoint=(stagePoint+stageOrigin)/viewport;
+uniform vec2 sceneOffset;varying vec2 tex;
+void main(){vec2 canvasPoint=(pos+sceneOffset+stageOrigin)/viewport;
 gl_Position=vec4(canvasPoint.x*2.0-1.0,1.0-canvasPoint.y*2.0,0.0,1.0);tex=uv;}"""
 _FRAGMENT = """uniform sampler2D image;uniform sampler2D replacement;
 uniform sampler2D bodyNegativeLower;uniform sampler2D bodyNegativeUpper;
@@ -37,13 +36,14 @@ uniform float replacementAmount;uniform float bodyBlendEnabled;
 uniform float bodyPositiveWeight;uniform float sourceClipEnabled;
 uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;
 uniform vec4 occlusion0;uniform vec4 occlusion1;uniform vec4 occlusion2;uniform vec4 occlusion3;
-uniform vec4 revealEllipse;varying vec2 stagePoint;
+uniform vec4 revealEllipse;
 uniform vec3 skinOffset;uniform vec3 replacementSkinOffset;
 uniform vec2 skinCenter;uniform vec2 skinRadius;
 uniform vec2 replacementSkinCenter;uniform vec2 replacementSkinRadius;
 varying vec2 tex;
 bool covered(vec4 rect){
- return stagePoint.x>=rect.x&&stagePoint.y>=rect.y&&stagePoint.x<=rect.z&&stagePoint.y<=rect.w;
+ vec2 pixel=floor(gl_FragCoord.xy);
+ return pixel.x>=rect.x&&pixel.x<rect.z&&pixel.y>=rect.y&&pixel.y<rect.w;
 }
 vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
  if(color.a<0.001||dot(abs(offset),vec3(1.0))<0.000001)return color;
@@ -59,7 +59,7 @@ vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
 void main(){
 bool reveal=false;
 if(revealEllipse.z>0.0&&revealEllipse.w>0.0){
- vec2 q=(stagePoint-revealEllipse.xy)/revealEllipse.zw;
+ vec2 q=(gl_FragCoord.xy-revealEllipse.xy)/revealEllipse.zw;
  reveal=dot(q,q)<1.0;
 }
 if(!reveal&&(covered(occlusion0)||covered(occlusion1)||covered(occlusion2)||covered(occlusion3)))discard;
@@ -195,7 +195,8 @@ class CloudyRigView(QOpenGLWidget):
         if not QRectF(body).adjusted(-margin, 0, margin, 0).translated(dx, dy).contains(point.x(), point.y()):
             return False
         for layer in self._scene_layers.values():
-            if any(r.contains(point.x(), point.y()) for r in layer['occlusions']):
+            if any(r.left() <= point.x() < r.right() and r.top() <= point.y() < r.bottom()
+                   for r in layer['occlusions']):
                 reveal = layer['reveal']
                 if not reveal or reveal[2] <= 0 or reveal[3] <= 0:
                     return False
@@ -203,20 +204,25 @@ class CloudyRigView(QOpenGLWidget):
                     return False
         return True
 
-    def _scene_uniforms(self, stage, enabled):
+    def _scene_uniforms(self, stage, dpr, framebuffer_height, enabled):
         sx, sy = 360 / stage.width(), 540 / stage.height()
-        ox, oy = stage.x(), stage.y()
         layers = tuple(self._scene_layers.values()) if enabled else ()
         dx = sum(v['offset'][0] for v in layers)
         dy = sum(v['offset'][1] for v in layers)
         self._program.setUniformValue(self._locations['sceneOffset'], QVector2D(dx*sx, dy*sy))
+        # Mask directly in framebuffer pixels, with OpenGL's bottom-left origin.
         rects = [r for layer in layers for r in layer['occlusions']][:4]
         for i in range(4):
             r = rects[i] if i < len(rects) else None
-            values = ((r.left()-ox)*sx, (r.top()-oy)*sy, (r.right()-ox)*sx, (r.bottom()-oy)*sy) if r else (0, 0, -1, -1)
+            values = (0, 0, -1, -1)
+            if r is not None:
+                left, top, right, bottom = (math.floor(edge * dpr + .5)
+                                            for edge in (r.left(), r.top(), r.right(), r.bottom()))
+                values = (left, framebuffer_height - bottom, right, framebuffer_height - top)
             self._program.setUniformValue(self._locations[f'occlusion{i}'], QVector4D(*values))
         reveal = next((v['reveal'] for v in layers if v['reveal']), None)
-        values = ((reveal[0]-ox)*sx, (reveal[1]-oy)*sy, reveal[2]*sx, reveal[3]*sy) if reveal else (0,0,0,0)
+        values = (reveal[0] * dpr, framebuffer_height - reveal[1] * dpr,
+                  reveal[2] * dpr, reveal[3] * dpr) if reveal else (0, 0, 0, 0)
         self._program.setUniformValue(self._locations['revealEllipse'], QVector4D(*values))
 
     def set_action(self, action: str, loop: bool = True):
@@ -573,7 +579,8 @@ class CloudyRigView(QOpenGLWidget):
             self._cache.prepare(sizes)
             # Use the original projection even when a fall needs a wider canvas.
             dpr = self.devicePixelRatioF()
-            width, height = round(self.width() * dpr), round(self.height() * dpr)
+            framebuffer_size = self.size() * dpr
+            width, height = framebuffer_size.width(), framebuffer_size.height()
             stage = self.stage_rect()
             vx, vy = round(stage.x() * dpr), round(stage.y() * dpr)
             vw, vh = round(stage.width() * dpr), round(stage.height() * dpr)
@@ -592,13 +599,13 @@ class CloudyRigView(QOpenGLWidget):
             self._buffer.bind()
             program.enableAttributeArray(self._pos)
             program.enableAttributeArray(self._uv)
-            self._scene_uniforms(stage, False)
+            self._scene_uniforms(stage, dpr, height, False)
             # Controlled peeks use stable physics bounds; avoid GPU readback on
             # every animated frame (and don't measure the clipped silhouette).
             if not any(v['animated'] for v in self._scene_layers.values()) or self._character_pixel_rect is None:
                 self._character_pixel_rect = None
                 self._measure_character_pixels(plan, width, height, dpr)
-            self._scene_uniforms(stage, True)
+            self._scene_uniforms(stage, dpr, height, True)
             self._draw_commands(plan['commands'])
             program.disableAttributeArray(self._pos)
             program.disableAttributeArray(self._uv)

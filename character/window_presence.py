@@ -4,7 +4,7 @@ import os
 import time
 from types import SimpleNamespace
 
-from PyQt6.QtCore import QObject, QPointF, QRect, QTimer, Qt
+from PyQt6.QtCore import QObject, QPointF, QRect, QRectF, QTimer, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
@@ -92,15 +92,26 @@ def occluding_window(host):
 
 class TearOverlay(QWidget):
     """Only paper edges are drawn: the live foreground window remains intact."""
-    def __init__(self, host):
+    def __init__(self, host, body, window):
         super().__init__(host, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus
                          | Qt.WindowType.WindowTransparentForInput)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        pad_x, pad_y = round(body.width() * .25), round(body.height() * .12)
+        full_bounds = body.adjusted(-pad_x, -pad_y, pad_x, pad_y)
+        self._center = QRectF(full_bounds).center()
+        self._radii = full_bounds.width() * .38, full_bounds.height() * .40
+        # Crop the overlay after laying out the full tear, including strokes and flaps.
+        self.setGeometry(full_bounds.adjusted(-7, -7, 7, 7).intersected(window))
         self.amount = 0.
         self.opacity = 1.
+
+    def reveal_ellipse(self):
+        """Center and radii in desktop coordinates, shared with the rig mask."""
+        rx, ry = self._radii
+        return self._center.x(), self._center.y(), rx * self.amount, ry * self.amount
 
     def paintEvent(self, event):
         if self.amount <= 0:
@@ -108,8 +119,8 @@ class TearOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setOpacity(self.opacity)
-        cx, cy = self.width()/2, self.height()/2
-        rx, ry = self.width()*.38*self.amount, self.height()*.40*self.amount
+        cx, cy, rx, ry = self.reveal_ellipse()
+        cx, cy = cx - self.x(), cy - self.y()
         points = []
         for i in range(32):
             a = 2*math.pi*i/32
@@ -319,7 +330,11 @@ class WindowPresence(QObject):
     def begin_escape(self):
         h = self.host
         support = self._standing_support()
-        if support is None:
+        if support is None or not self.cover:
+            return
+        window = self.cover[1]
+        body = h._physics_body_rect().translated(h.pos())
+        if not body.intersects(window):
             return
         self._escape_surface, self._escape_level = support, support.y_level
         h._cancel_autonomous_behavior()
@@ -334,11 +349,7 @@ class WindowPresence(QObject):
         h.sprite_animator.set_yaw(0)
         h.sprite_animator.set_emotion_override('excited')
         h.sprite_animator.play('break_out')
-        self._anchor_escape()
-        body = h._physics_body_rect().translated(h.pos())
-        self.overlay = TearOverlay(h)
-        self.overlay.setGeometry(body.adjusted(-round(body.width()*.25), -round(body.height()*.12),
-                                               round(body.width()*.25), round(body.height()*.12)))
+        self.overlay = TearOverlay(h, body, window)
         self.overlay.show()
         self._frame_view = h.rig_view
         self._frame_view.frame_requested.connect(self.animate)
@@ -352,14 +363,14 @@ class WindowPresence(QObject):
         if not self._anchor_escape():
             self.cancel()
             return
-        elapsed = time.monotonic()-self.started
-        opening = smooth((elapsed-.2)/1.0)
-        geometry = self.overlay.geometry()
-        center = geometry.center()-h.pos()
-        self._apply_clip((center.x(), center.y(), geometry.width()*.38*opening,
-                          geometry.height()*.40*opening))
-        self.overlay.amount = opening
-        self.overlay.opacity = 1-smooth((elapsed-1.6)/.5)
+        elapsed = time.monotonic() - self.started
+        fade = smooth((elapsed - 1.6) / .5)
+        self.overlay.amount = smooth((elapsed - .2) / 1.0)
+        cx, cy, rx, ry = self.overlay.reveal_ellipse()
+        # Finish revealing the corners before removing the foreground mask.
+        spread = 1 + .6 * fade**3
+        self._apply_clip((cx - h.x(), cy - h.y(), rx * spread, ry * spread))
+        self.overlay.opacity = 1 - fade
         self.overlay.update()
         if elapsed >= 2.1:
             self.finish(escaped=True)
