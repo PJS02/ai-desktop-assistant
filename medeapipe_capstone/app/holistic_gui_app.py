@@ -229,11 +229,11 @@ class HolisticGuiApp(RecognitionEngine):
         self.add_section_label(control_panel, LABEL_MODE)
         mode_grid = tk.Frame(control_panel, bg="#161c22")
         mode_grid.pack(fill="x", padx=18)
-        mode_grid.columnconfigure(0, weight=1)
-        mode_grid.columnconfigure(1, weight=1)
 
+        mode_choices = (*MODE_LABELS.items(), (None, "게임 끄기"))
         self.mode_buttons = {}
-        for index, (mode_key, label) in enumerate(MODE_LABELS.items()):
+        for index, (mode_key, label) in enumerate(mode_choices):
+            mode_grid.columnconfigure(index, weight=1, uniform="mode")
             button = tk.Button(
                 mode_grid,
                 text=label,
@@ -244,14 +244,14 @@ class HolisticGuiApp(RecognitionEngine):
                 activebackground="#314051",
                 activeforeground="#ffffff",
                 font=("Malgun Gothic", 10, "bold"),
-                width=12,
+                width=9,
                 wraplength=132,
             )
             button.grid(
-                row=index // 2,
-                column=index % 2,
+                row=0,
+                column=index,
                 sticky="ew",
-                padx=(0, 8 if index % 2 == 0 else 0),
+                padx=(0, 8 if index < len(mode_choices) - 1 else 0),
                 pady=(0, 8),
             )
             self.mode_buttons[mode_key] = button
