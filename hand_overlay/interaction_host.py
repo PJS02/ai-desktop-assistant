@@ -120,6 +120,7 @@ class CharacterHandActions:
                 and not c._manual_control_active()
                 and not getattr(c, '_pointer_interaction_active', lambda: False)()
                 and not getattr(c, '_hand_throw_active', False)
+                and not getattr(c, '_mouse_throw_active', False)
                 and QApplication.activePopupWidget() is None
                 and QApplication.activeModalWidget() is None
                 and not (getattr(c, 'rps_game', None) and c.rps_game.isVisible())
@@ -148,13 +149,11 @@ class CharacterHandActions:
         else:
             if c.is_dragging:
                 return False
-            self.offset = (point[0] - c.x(), point[1] - c.y())
             self.palm_offset = self.body_rect().center[0] - point[0]
             c.is_dragging = True
             c._hand_control_mode = mode
             c.drag_pos = QPoint(round(point[0]), round(point[1]))
             c.drag_time = 0
-            c._drag_velocity_x = c._drag_velocity_y = 0
             c._drag_trace_id = new_trace_id('hand-hold')
             c._drag_start_position = (c.x(), c.y())
             c._move_timer.stop()
@@ -167,6 +166,7 @@ class CharacterHandActions:
             c.sprite_animator.stop()
             c.current_action = 'idle' if mode == 'palm' else 'hovering'
             c.update_render(c.current_action)
+            self.offset = (point[0] - c.x(), point[1] - c.y())
         self.mode = mode
         c._mark_character_interaction()
         if mode == 'palm':
@@ -210,7 +210,6 @@ class CharacterHandActions:
                 ball.end_hand_drag(velocity, reason=reason)
         elif mode is not None:
             c._hand_control_mode = None
-            c._drag_velocity_x = c._drag_velocity_y = 0
             if c._character_closing:
                 c.is_dragging = False
             elif c.is_dragging:

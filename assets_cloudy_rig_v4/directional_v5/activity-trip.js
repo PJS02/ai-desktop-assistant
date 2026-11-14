@@ -180,14 +180,14 @@
         const idle = motionPose('idle', 0);
         const initial = {time: 0, pose: () => fallen};
         const [from, to, amount] = segment(t - start, initial);
-        const a = {...idle, ...from.pose?.(side)};
-        const b = {...idle, ...to.pose?.(side)};
+        const a = Object.assign({}, idle, from.pose?.(side));
+        const b = Object.assign({}, idle, to.pose?.(side));
         return Object.fromEntries(Object.keys(idle).map(key => [key, mix(a[key], b[key], amount)]));
       },
       fall(t, cfg) {
         const base = fall.fall(Math.min(t, start), cfg);
         if (t <= start) return base;
-        const [from, to, amount] = segment(t - start, {time: 0, ...base});
+        const [from, to, amount] = segment(t - start, Object.assign({time: 0}, base));
         return {
           ...base,
           angle: mix(from.angle, to.angle, amount),
@@ -282,7 +282,7 @@
     return points;
   }
 
-  function layout(cfg, t, fall, meshes, outlineFor) {
+  function layout(cfg, t, fall, meshes, outlineFor, desktopDuration = 0) {
     const sign = cfg.prefix === 'left' ? -1 : 1;
     const {angle: rotation, shift, lift, impactTime, impactOffset, footPlant, handPlant, standingShift} = fall(t, cfg);
     const angle = sign * rotation * radians;
@@ -297,9 +297,8 @@
     let right = -Infinity;
     let bottom = -Infinity;
     for (const {name, map, args} of meshes) {
-      const [opacity = 1, , , , , , , clip, rect] = args;
-      if (opacity < .001 || clip || rect) continue;
-      for (const sample of outlineFor(name)) {
+      if (args[0] < .001 || args[7] || args[8]) continue;
+      for (const sample of outlineFor(name, args)) {
         const point = rotate(map(sample));
         left = Math.min(left, point.x);
         right = Math.max(right, point.x);
@@ -309,7 +308,7 @@
 
     const {canvas: [width], groundY} = root.CloudyRig;
     const padding = 11;
-    const scale = Math.min(.64, (width - 2 * padding) / (right - left));
+    const scale = desktopDuration ? 1 : Math.min(.64, (width - 2 * padding) / (right - left));
     let desiredX = width / 2 + sign * shift;
     if (handPlant > 0) {
       // The chest is turned over the far hand in side views.
@@ -335,7 +334,14 @@
         desiredX = mix(desiredX, target - ankle.x * scale, footPlant);
       }
     }
-    const x = clamp(desiredX, padding - left * scale, width - padding - right * scale);
+    if (desktopDuration) {
+      // Desktop physics supplies the approach. Keep the authored shift within
+      // the clip, but align its standing poses with the host's center.
+      const firstShift = fall(0, cfg).shift;
+      const lastShift = fall(desktopDuration, cfg).shift;
+      desiredX -= sign * mix(firstShift, lastShift, ease(t / desktopDuration));
+    }
+    const x = desktopDuration ? desiredX : clamp(desiredX, padding - left * scale, width - padding - right * scale);
     const y = groundY - 1 - bottom * scale - lift;
     return {
       map(point) {
@@ -388,5 +394,29 @@
     trip: recoveringFall(forward, 1.82, forwardRecovery),
     'trip-backward': recoveringFall(backward, 1.96, backwardRecovery)
   };
-  root.CloudyActivityTrip = {clips, contour, layout};
+
+  function landingClip(clip, impact) {
+    const tipDuration = .42;
+    const savedTime = impact - tipDuration;
+    const authoredTime = t => t + savedTime * Math.min(1, t / tipDuration);
+    return {
+      duration: clip.duration - savedTime,
+      sample(t, side) { return clip.sample(authoredTime(t), side); },
+      fall(t, cfg) {
+        const pose = clip.fall(authoredTime(t), cfg);
+        // The throw already supplies momentum, so the body tips from contact.
+        if (t < tipDuration) {
+          pose.angle = clip.fall(impact, cfg).angle * Math.sin(t / tipDuration * Math.PI / 2);
+        }
+        pose.lift = 0;
+        return pose;
+      }
+    };
+  }
+
+  const landings = {
+    trip: landingClip(clips.trip, forwardImpact),
+    'trip-backward': landingClip(clips['trip-backward'], backwardImpact)
+  };
+  root.CloudyActivityTrip = {clips, landings, contour, layout};
 })(window);

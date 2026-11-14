@@ -3,6 +3,7 @@ import time
 
 from PyQt6.QtCore import QObject, QTimer
 from .reactions import experience
+from .rig_state import LANDING_ACTIONS
 
 
 class AutomaticActions(QObject):
@@ -63,7 +64,7 @@ class AutomaticActions(QObject):
                    or host._rig_manual_action is not None or host.is_dragging
                    or getattr(host, '_autonomous_behavior_active', False)
                    or host.is_jumping or not host.on_ground
-                   or (host.sprite_animator.current_action == 'land' and host.sprite_animator.is_playing)
+                   or (host.sprite_animator.current_action in LANDING_ACTIONS and host.sprite_animator.is_playing)
                    or any(getattr(getattr(host, name, None), 'is_active', False)
                           for name in ('cham_game', 'rps_game')))
         if blocked:

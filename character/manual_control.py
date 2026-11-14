@@ -5,6 +5,8 @@ from app_logging import log_event, new_trace_id
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtCore import QRect
 
+from .rig_state import LANDING_ACTIONS
+
 
 COMMAND_ROWS = (
     (('look_left', '왼쪽 보기'), ('look_front', '정면 보기'), ('look_right', '오른쪽 보기')),
@@ -104,7 +106,7 @@ class ManualControl(QObject):
         host = self.host
         return (host.on_ground and not host.is_jumping
                 and not (host.rig_view is not None and host.sprite_animator.is_playing
-                         and host.sprite_animator.current_action == 'land'))
+                         and host.sprite_animator.current_action in LANDING_ACTIONS))
 
     def _screen_body(self):
         host = self.host

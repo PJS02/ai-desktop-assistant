@@ -5,6 +5,7 @@
     throw new Error('Load the original Cloudy rig sources before rig_bridge.js');
   }
   var P = root.CLOUDY_PARTS;
+  var trip = root.CloudyActivityTrip;
   var copy = function (value) { return JSON.parse(JSON.stringify(value)); };
   var finite = function (value, fallback) { return Number.isFinite(value) ? value : fallback; };
   var textureToken = function (name) { return {name: name}; };
@@ -212,6 +213,34 @@
     Object.keys(renderer.parts).forEach(function (name) { renderer.textures[name] = textureToken(name); });
   }
 
+  function renderTripView(cfg, pose, opacity, time) {
+    var clip = trip.landings[this.action];
+    // Capture the same mesh maps as the preview before applying the floor roll.
+    var meshes = [], drawMesh = this.mesh;
+    this.mesh = function (name, map, ...args) { meshes.push({name, map, args}); };
+    try {
+      root.CloudyRenderer.prototype.renderView.call(this, cfg, pose, opacity, time);
+    } finally {
+      this.mesh = drawMesh;
+    }
+    var parts = this.parts;
+    var layout = trip.layout(cfg, Math.max(0, Math.min(time, clip.duration)), clip.fall, meshes, function (name, args) {
+      if (!/^(front|left|right)_/.test(name) || !parts[name]) return [];
+      var [x, y, w, h] = parts[name].bbox;
+      var cols = args[1] || 1, rows = args[2] || 1, edge = [];
+      for (var row = 0; row <= rows; row++) {
+        var py = y + h * (row / rows);
+        edge.push({x: x, y: py}, {x: x + w, y: py});
+      }
+      for (var col = 1; col < cols; col++) {
+        var px = x + w * (col / cols);
+        edge.push({x: px, y: y}, {x: px, y: y + h});
+      }
+      return edge;
+    }, clip.duration);
+    for (var mesh of meshes) this.mesh(mesh.name, p => layout.map(mesh.map(p)), ...mesh.args);
+  }
+
   var hostJumpArmChannels = ['armNear', 'armFar', 'elbowNear', 'elbowFar', 'wristNear', 'wristFar',
     'idleGesture', 'airArms', 'thinkGesture', 'waveGesture', 'waveSideGesture',
     'waveArmOffset', 'waveElbowOffset', 'waveWristOffset', 'waveForearmShorten'];
@@ -252,7 +281,10 @@
     var authoredFlight = state.jumpActive === true && Number.isFinite(state.jumpPhase);
     var sampleAction = authoredFlight ? 'jump' : action;
     var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
-    var pose = root.CloudyMotion.pose(sampleAction, sampleTime, options);
+    var clip = Object.prototype.hasOwnProperty.call(trip.landings, action) ? trip.landings[action] : null;
+    var yaw = finite(state.yaw, 0);
+    var pose = clip ? clip.sample(Math.max(0, Math.min(time, clip.duration)), yaw < -21 ? -1 : yaw > 21 ? 1 : 0)
+      : root.CloudyMotion.pose(sampleAction, sampleTime, options);
     var originalPose = copy(pose), adjustment = 0, hostJumpArms = null;
     if (state.externalPhysics === true) {
       if (Number.isFinite(state.externalRootHeight)) adjustment = -state.externalRootHeight;
@@ -318,6 +350,8 @@
     state = state || {}; prepareRenderer();
     var frame = sample(state), yaw = finite(state.yaw, 0);
     var highFive = state.highFive;
+    renderer.renderView = Object.prototype.hasOwnProperty.call(trip.landings, frame.action)
+      ? renderTripView : root.CloudyRenderer.prototype.renderView;
     renderer.render(frame.pose, yaw, frame.time, {
       action: frame.action, emotionEffects: state.emotionEffects,
       companion: state.companion, highFive: highFive

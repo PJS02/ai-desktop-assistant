@@ -18,9 +18,11 @@ HOST_EMOTIONS = {
     "pride": "proud", "relief": "relieved", "pain": "hurt", "fatigue": "tired",
     "bored": "tired",
 }
+TRIP_ACTIONS = frozenset({'trip', 'trip-backward'})
+LANDING_ACTIONS = TRIP_ACTIONS | {'land'}
 RIG_ACTIONS = frozenset({
     "idle", "walk", "run", "wave", "stretch", "arrive", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate", "game_cheer", "game_oops",
-})
+}) | TRIP_ACTIONS
 
 
 def rig_emotion(name):

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import math
 
 from app_logging import log_event
+from character.rig_state import LANDING_ACTIONS
 from .renderer import closest_hand_point
 
 
@@ -111,7 +112,7 @@ class DesktopHighFive:
                 and not getattr(c, '_autonomous_behavior_active', False)
                 and not getattr(getattr(c, 'entrance', None), 'active', False)
                 and not (getattr(spectator, 'is_game_mode', False) or getattr(spectator, 'is_active', False))
-                and not (c.sprite_animator.current_action == 'land' and c.sprite_animator.is_playing))
+                and not (c.sprite_animator.current_action in LANDING_ACTIONS and c.sprite_animator.is_playing))
 
     def interrupt_tracking(self):
         self._candidate = None

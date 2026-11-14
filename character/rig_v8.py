@@ -68,6 +68,7 @@ class NodeRigPlanner:
         try:
             init = self._request({"op": "init"}, timeout=10)
             self.parts, self.source_hashes = init["parts"], init["hashes"]
+            self.trip_durations = init["tripDurations"]
             self._recipes, self._effects = init["recipes"], init["effects"]
             log_event('renderer.worker.ready', 'Node 렌더 데이터 준비가 끝났습니다.',
                       trace_id=self.log_trace_id, parts=len(self.parts), source_hashes=self.source_hashes)

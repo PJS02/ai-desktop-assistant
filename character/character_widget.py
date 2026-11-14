@@ -7,6 +7,7 @@ import threading
 import time
 import math
 import inspect
+from collections import deque
 from app_logging import log_event, log_throttled, new_trace_id
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
@@ -24,7 +25,7 @@ from .emotion_delta_overlay import EmotionDeltaOverlay
 from .autonomous_needs import AutonomousNeeds
 from .animations import AnimationController
 from .sprite_animator import SpriteAnimator
-from .rig_state import RigAnimator
+from .rig_state import LANDING_ACTIONS, TRIP_ACTIONS, RigAnimator
 from .reactions import Reactions, choose_face, react, reaction_mood, experience
 from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
@@ -116,6 +117,9 @@ class CharacterWidget(QLabel):
     popup_coordinates_changed = pyqtSignal(str, tuple, float, float)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
+    MOUSE_THROW_MIN_SPEED = 400.  # Logical pixels per second.
+    TRIP_HORIZONTAL_SPEED = 780.  # Shared mouse/hand release threshold, in logical pixels per second.
+    FLOOR_BOUNCE_SPEED = 20.  # Vertical logical pixels per 60 Hz physics frame.
     PET_MIN_SAMPLE_INTERVAL = 0.1
     PET_MIN_DISTANCE = 6
     MANUAL_WINDOW_SELECTION_SECONDS = 5
@@ -254,7 +258,6 @@ class CharacterWidget(QLabel):
         self._autonomous_behavior_active = False
         self._autonomous_behavior_generation = 0
         self.autonomous_needs = AutonomousNeeds(options['boredom_minutes'])
-        self.drag_speed = 0  # 드래그 속도
         self.last_window_count = 0  # 이전 창 개수 (급격한 변화 감지용)
         self.window_change_count = 0  # 창 변화 횟수
         
@@ -294,10 +297,9 @@ class CharacterWidget(QLabel):
         # 드래그 관련
         self.is_dragging = False
         self.drag_time = 0
-        self._drag_velocity_x = 0  # 드래그 중 X축 속도 저장
-        self._drag_velocity_y = 0  # 드래그 중 Y축 속도 저장
-        self._mouse_drag_motion_at = None
-        self._mouse_throw_face = False
+        self._mouse_drag_samples = deque()
+        self._mouse_throw_active = False
+        self._throw_can_trip = False
         self.drag_timer = QTimer()
         self.drag_timer.timeout.connect(self.update_dragging)
         self.drag_timer.start(100)
@@ -566,6 +568,7 @@ class CharacterWidget(QLabel):
                 )
                 self.sprite_animator.animation_finished.connect(self.on_animation_finished)
                 view.failed.connect(self._queue_sprite_fallback)
+                view.stage_padding_changed.connect(self._resize_rig_stage)
                 view.pose_bounds_changed.connect(self._align_grounded_pose, Qt.ConnectionType.DirectConnection)
                 view.pose_bounds_changed.connect(self._refresh_body_hover, Qt.ConnectionType.DirectConnection)
                 view.show()
@@ -606,6 +609,9 @@ class CharacterWidget(QLabel):
         self.rig_view = None
         old_view.hide()
         old_view.deleteLater()
+        pad_x, pad_y = getattr(old_view, 'stage_padding', (0, 0))
+        if pad_x or pad_y:
+            self._resize_rig_stage(-pad_x, -pad_y)
         self._rig_manual_action = None
         self._rig_fallback_pending = False
         self._install_sprite_animator()
@@ -672,20 +678,43 @@ class CharacterWidget(QLabel):
             return preferred
         return self.sprite_animator.yaw
 
-    def _rig_landed(self):
+    def _rig_landed(self, throw_direction=None):
+        action = 'land'
+        if throw_direction is not None and self.rig_view is not None:
+            # Frontal artwork tips to the right in the forward clip.
+            facing_right = self.sprite_animator.yaw >= -21
+            backward = (throw_direction > 0) != facing_right
+            action = 'trip-backward' if backward else 'trip'
+        if getattr(self, '_hand_throw_active', False):
+            self._hand_throw_active = False
+            if throw_direction is None:
+                self.velocity_x = 0.
+            if self.rig_view is not None:
+                self.sprite_animator.set_motion_emotion()
         if (reactions := getattr(self, 'reactions', None)) is not None:
             reactions.safe()
-        CharacterWidget._clear_mouse_throw_face(self)
+        CharacterWidget._clear_mouse_throw(self)
         if self.rig_view is not None:
             self.rig_view.set_jump_active(False)
             phase_setter = getattr(self.rig_view, 'set_physics_jump_phase', None)
             if phase_setter is not None:
                 phase_setter(None, landing=getattr(self, '_authored_jump_landing', False))
             self._rig_manual_action = None
-            self.current_action = "land"
-            self.sprite_animator.play("land", loop=False)
+            self.current_action = action
+            self.sprite_animator.play(action, loop=False)
         else:
             self.update_action(self.mood_system.decide_emotion())
+
+    def _resize_rig_stage(self, dx, dy):
+        """Add transparent room for the rotating rig around its current anchor."""
+        self.setFixedSize(self.width() + 2 * dx, self.height() + 2 * dy)
+        self.move(self.x() - dx, self.y() - dy)
+        for axis, delta in (('_physics_position_x', dx), ('_physics_position_y', dy)):
+            if (position := getattr(self, axis, None)) is not None:
+                setattr(self, axis, position - delta)
+        if hasattr(self, '_grounded_body_bottom'):
+            self._grounded_body_bottom += dy
+        self.animation_controller.update_base_pos(self.pos())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -878,7 +907,8 @@ class CharacterWidget(QLabel):
                 or (self.rps_game is not None and self.rps_game.isVisible())
                 or CharacterWidget._cham_game_active(self)
                 or (self.rig_view is not None and self.sprite_animator.is_playing
-                    and self.sprite_animator.current_action in {'land', 'wave'})):
+                    and (self.sprite_animator.current_action in LANDING_ACTIONS
+                         or self.sprite_animator.current_action == 'wave'))):
             return False
         self._pending_user_greeting_until = None
         self._greeting_retry_timer.stop()
@@ -982,7 +1012,8 @@ class CharacterWidget(QLabel):
         # 중력이 적용되도록, X좌표만 갱신하고 Y는 현재 유지
         if (not CharacterWidget._pointer_interaction_active(self)
                 and not self._manual_control_active() and not self.is_moving
-                and not self.is_dragging and not getattr(self, '_ball_chasing', False)):
+                and self.on_ground and not self.is_dragging and abs(self.velocity_x) <= .1
+                and not getattr(self, '_ball_chasing', False)):
             # X만 변경, Y는 현재 값 유지 (중력 효과 보존)
             self.move(new_pos.x(), self.y())
     
@@ -1164,10 +1195,17 @@ class CharacterWidget(QLabel):
             return
         body_bottom = body.y() + body.height()
         aligned_y = standing.y_level - body_bottom
+        aligned_x = self.x()
+        if self.rig_view is not None and self.sprite_animator.current_action in TRIP_ACTIONS:
+            screen = CharacterWidget._get_screen_geometry(self)
+            aligned_x = max(screen.left() - body.left(), min(aligned_x, screen.right() - body.right()))
+            if aligned_x != self.x():
+                self._physics_position_x = float(aligned_x)
+                self.velocity_x = 0.
         self._grounded_body_bottom = body_bottom
         self._physics_position_y = float(aligned_y)
-        if aligned_y != self.y():
-            self.move(self.x(), aligned_y)
+        if aligned_x != self.x() or aligned_y != self.y():
+            self.move(aligned_x, aligned_y)
             dialogue = getattr(self, 'dialogue_system', None)
             if dialogue is not None:
                 dialogue.update_dialogue_position()
@@ -1694,7 +1732,7 @@ class CharacterWidget(QLabel):
                     or not getattr(self, "on_ground", True)
                     or self._rig_manual_action is not None
                     or getattr(self, '_automatic_pose', None) is not None
-                    or (self.sprite_animator.current_action == "land"
+                    or (self.sprite_animator.current_action in LANDING_ACTIONS
                         and self.sprite_animator.is_playing))
             if not busy:
                 self.current_action = "idle"
@@ -1735,7 +1773,7 @@ class CharacterWidget(QLabel):
             if action.startswith(("walk", "run")):
                 self._rig_manual_action = None
                 self.sprite_animator.set_direction(self.is_flipped)
-            self.sprite_animator.play(action, fps=24, loop=action not in {"wave", "land"})
+            self.sprite_animator.play(action, fps=24, loop=action != 'wave' and action not in LANDING_ACTIONS)
             self._refresh_rig_overlay()
             return
         action = resolve_animation_asset(self.assets_path, action)
@@ -1766,7 +1804,7 @@ class CharacterWidget(QLabel):
         log_event('character.animation_finished', '캐릭터 동작 종료', category='캐릭터 상태', action=getattr(self.sprite_animator, 'current_action', None))
         # walk 애니메이션 끝나면 다시 idle로
         if self.rig_view is not None:
-            if self.sprite_animator.current_action in {"wave", "land"}:
+            if self.sprite_animator.current_action == 'wave' or self.sprite_animator.current_action in LANDING_ACTIONS:
                 self._rig_manual_action = None
                 mood = self.mood_system.decide_emotion()
                 if self.on_ground and (self.is_moving or getattr(self, "_ball_chasing", False)):
@@ -2085,7 +2123,10 @@ class CharacterWidget(QLabel):
             hand_interactions = getattr(self, 'hand_interactions', None)
             if hand_interactions is not None:
                 hand_interactions.cancel('mouse_input')
-            self._pointer_press = (event.globalPosition().toPoint(), time.monotonic(), reaction_mood(self))
+            point = event.globalPosition().toPoint()
+            self._pointer_press = (point, time.monotonic(), reaction_mood(self))
+            self._mouse_drag_samples.clear()
+            self._record_drag_motion(event, point)
             self._pause_pointer_movement()
             event.accept()
 
@@ -2100,7 +2141,10 @@ class CharacterWidget(QLabel):
         hand_interactions = getattr(self, 'hand_interactions', None)
         if hand_interactions is not None:
             hand_interactions.cancel('mouse_input')
-        self._pointer_press = (event.globalPosition().toPoint(), time.monotonic(), reaction_mood(self))
+        point = event.globalPosition().toPoint()
+        self._pointer_press = (point, time.monotonic(), reaction_mood(self))
+        self._mouse_drag_samples.clear()
+        self._record_drag_motion(event, point)
         self._double_click_pending = True
         self._pause_pointer_movement()
         event.accept()
@@ -2112,7 +2156,7 @@ class CharacterWidget(QLabel):
             self.cham_game.close()
         if getattr(self, '_hand_throw_active', False):
             self._finish_hand_throw()
-        CharacterWidget._clear_mouse_throw_face(self)
+        CharacterWidget._clear_mouse_throw(self)
         self._tap = self._last_rough_drag = None
         self._drag_reacted = self._drag_discomfort_shown = False
         self._apply_mouse_click()
@@ -2121,8 +2165,6 @@ class CharacterWidget(QLabel):
         self.drag_time = 0
         self._drag_shake = DragShakeDetector(self._physics_body_rect().width() * .3)
         self._drag_shake.reset(self.drag_pos.x(), self.drag_pos.y(), time.monotonic())
-        self._drag_velocity_x = self._drag_velocity_y = 0
-        self._mouse_drag_motion_at = None
         self._drag_trace_id = new_trace_id('drag')
         self._drag_start_position = (self.x(), self.y())
         log_event('character.drag_started', '드래그 시작', category='캐릭터 상태',
@@ -2136,25 +2178,18 @@ class CharacterWidget(QLabel):
             self._refresh_body_hover(event.position().toPoint())
             event.accept()
             return
+        current_pos = event.globalPosition().toPoint()
         press = getattr(self, '_pointer_press', None)
+        if press is not None or (self.is_dragging and self._mouse_drag_samples):
+            self._record_drag_motion(event, current_pos)
         if (press is not None and not self.is_dragging
-                and (event.globalPosition().toPoint() - press[0]).manhattanLength() > QApplication.startDragDistance()):
+                and (current_pos - press[0]).manhattanLength() > QApplication.startDragDistance()):
             self._begin_mouse_drag()
         if self.is_dragging and self.drag_pos:
-            current_pos = event.globalPosition().toPoint()
             delta = current_pos - self.drag_pos
             tap = getattr(self, '_tap', None)
             if tap is not None and (current_pos - tap[0]).manhattanLength() > QApplication.startDragDistance():
                 self._tap = None
-            
-            # 드래그 속도 계산 (픽셀 거리)
-            drag_distance = (delta.x() ** 2 + delta.y() ** 2) ** 0.5
-            self.drag_speed = drag_distance
-            
-            # X, Y 속도 분리 저장 (나중에 던질 때 사용)
-            self._drag_velocity_x = delta.x()
-            self._drag_velocity_y = delta.y()
-            self._mouse_drag_motion_at = time.monotonic()
             
             detector = getattr(self, '_drag_shake', None)
             if detector and detector.update(current_pos.x(), current_pos.y(), time.monotonic()):
@@ -2287,6 +2322,45 @@ class CharacterWidget(QLabel):
         self._cursor_over_character = False
         super().leaveEvent(event)
 
+    def _record_drag_motion(self, event, point):
+        now = time.monotonic()
+        samples = self._mouse_drag_samples
+        stamp = event.timestamp() / 1000 or None
+        if not samples or point != samples[-1][2]:
+            samples.append((now, stamp, point))
+        # Keep one point just before the last 60 ms of motion for sparse input.
+        while len(samples) > 2:
+            second = samples[1]
+            age = stamp - second[1] if stamp is not None and second[1] is not None else now - second[0]
+            if age <= .06:
+                break
+            samples.popleft()
+
+    def _mouse_release_velocity(self, event):
+        samples = self._mouse_drag_samples
+        if len(samples) < 2:
+            return 0., 0.
+        first_at, first_stamp, first = samples[0]
+        last_at, last_stamp, last = samples[-1]
+        release_stamp = event.timestamp() / 1000 or None
+        if (first_stamp is not None and last_stamp is not None and release_stamp is not None
+                and first_stamp <= last_stamp <= release_stamp):
+            duration = last_stamp - first_stamp
+            pause = release_stamp - last_stamp
+        else:
+            duration = last_at - first_at
+            pause = time.monotonic() - last_at
+        if pause >= .16:
+            return 0., 0.
+        delta = last - first
+        gain = min(1., (.16 - pause) / .08) * .85 / max(1 / 60, duration)
+        vx, vy = delta.x() * gain, delta.y() * gain
+        speed = math.hypot(vx, vy)
+        if speed < CharacterWidget.MOUSE_THROW_MIN_SPEED:
+            return 0., 0.
+        scale = min(1., 3600. / speed)
+        return vx * scale, vy * scale
+
     def mouseReleaseEvent(self, event, *, hand_throw_velocity=None):
         if event is not None and event.button() == Qt.MouseButton.LeftButton:
             if self._double_click_pending:
@@ -2323,38 +2397,28 @@ class CharacterWidget(QLabel):
         self._chase_last_time = None
         self.drag_time = 0
         self.drag_pos = None
-        self._mark_character_interaction()
         
-        # 드래그 속도를 velocity로 변환 (관성 적용)
-        # 저장된 드래그 속도가 있으면 그것을 사용, 없으면 0
-        self.velocity_x = getattr(self, '_drag_velocity_x', 0) * 0.5  # 0.5배 감쇠
-        self.velocity_y = getattr(self, '_drag_velocity_y', 0) * 0.5
-        if event is not None:
-            last_motion = getattr(self, '_mouse_drag_motion_at', None)
-            if last_motion is None or time.monotonic() - last_motion > .12:
-                self.velocity_x = self.velocity_y = 0.
-            if self.rig_view is not None and math.hypot(self.velocity_x, self.velocity_y) > .1:
-                self._mouse_throw_face = True
-                self.sprite_animator.set_motion_emotion('dizzy')
+        vx, vy = self._mouse_release_velocity(event) if event is not None else (0., 0.)
+        self._mouse_throw_active = bool(vx or vy)
+        self._mark_character_interaction()
         if hand_throw_velocity is not None:
             vx, vy = hand_throw_velocity
-            self.velocity_x = vx / 60
-            self.velocity_y = vy / 60
             self._hand_throw_active = True
             if (reactions := getattr(self, 'reactions', None)) is not None:
                 reactions.cancel()
             experience(self, 'throw', speed=math.hypot(vx, vy) / max(1, self._physics_body_rect().height()),
                        reaction=False, event_id=getattr(self, '_drag_trace_id', None))
-            if self.rig_view is not None:
-                self.sprite_animator.set_motion_emotion('dizzy')
+        self.velocity_x, self.velocity_y = vx / 60, vy / 60
+        self._throw_can_trip = abs(vx) >= CharacterWidget.TRIP_HORIZONTAL_SPEED
+        self._throw_direction = 0
+        if self.rig_view is not None and (self._mouse_throw_active or hand_throw_velocity is not None):
+            self.sprite_animator.set_motion_emotion('dizzy')
         if was_dragging:
             log_event('character.drag_finished', '드래그 종료', category='캐릭터 상태', trace_id=getattr(self, '_drag_trace_id', None), duration=drag_duration,
                       start_position=getattr(self, '_drag_start_position', None), release_position=(self.x(), self.y()), velocity_x=self.velocity_x, velocity_y=self.velocity_y, mood=CharacterWidget._log_mood_snapshot(self))
         
-        # 드래그 속도 저장 변수 초기화
-        self._drag_velocity_x = 0
-        self._drag_velocity_y = 0
-        self._mouse_drag_motion_at = None
+        if event is not None:
+            self._mouse_drag_samples.clear()
         
         # 캐릭터가 화면 범위 내에 있는지 확인 (드래그 후 강제 조정)
         self._clamp_position_to_screen()
@@ -2381,9 +2445,9 @@ class CharacterWidget(QLabel):
         self.animation_controller.update_base_pos(self.pos())
         self.animation_controller.idle.stop()
 
-    def _clear_mouse_throw_face(self):
-        if getattr(self, '_mouse_throw_face', False):
-            self._mouse_throw_face = False
+    def _clear_mouse_throw(self):
+        if getattr(self, '_mouse_throw_active', False):
+            self._mouse_throw_active = False
             if self.rig_view is not None:
                 self.sprite_animator.set_motion_emotion()
 
@@ -2648,7 +2712,8 @@ class CharacterWidget(QLabel):
             'emotion_delta_enabled': (self.emotion_delta_overlay.enabled
                                      if emotion_delta_enabled is None else emotion_delta_enabled),
         }, strict=True)
-        old_width, old_height = self.width(), self.height()
+        old_size = self._scaled_character_size()
+        old_width = self.width()
         was_grounded, standing_surface = self.on_ground, self.current_surface
         old_body = self._physics_body_rect()
         center_x = self.x() + old_width / 2
@@ -2679,7 +2744,8 @@ class CharacterWidget(QLabel):
                 self._screen_auto_width = requested_width >= bounds.width()
             if not same_height:
                 self._screen_auto_height = requested_height >= bounds.height()
-        size_changed = self._scaled_character_size() != (old_width, old_height)
+        character_width, character_height = self._scaled_character_size()
+        size_changed = (character_width, character_height) != old_size
         log_event('settings.character.runtime_applied', '캐릭터 설정 실행 적용', category='시스템', trace_id=trace_id,
                   requested_bounds=(requested_width, requested_height), effective_bounds=(width, height),
                   personality=personality, options=options, resize_required=size_changed or bounds_changed)
@@ -2687,7 +2753,8 @@ class CharacterWidget(QLabel):
             return
         self._move_timer.stop()
         self.is_moving = False
-        self.setFixedSize(*self._scaled_character_size())
+        pad_x, pad_y = getattr(self.rig_view, 'stage_padding', (0, 0))
+        self.setFixedSize(character_width + 2 * pad_x, character_height + 2 * pad_y)
         if self.rig_view is None and self.current_pixmap is not None:
             self.set_pixmap_with_flip(self.current_pixmap)
         if self.current_surface is not None and self.on_ground:
@@ -3029,6 +3096,8 @@ class CharacterWidget(QLabel):
             return
         if CharacterWidget._cham_game_active(self):
             return
+        if self.rig_view is not None and self.sprite_animator.current_action in TRIP_ACTIONS:
+            return
         if self._manual_control_active() and not force:
             return
         if self._cursor_over_character and not force:
@@ -3196,7 +3265,7 @@ class CharacterWidget(QLabel):
                 or getattr(self, '_automatic_pose', None)):
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
-                or (self.sprite_animator.current_action == "land"
+                or (self.sprite_animator.current_action in LANDING_ACTIONS
                     and self.sprite_animator.is_playing)):
             return
         if getattr(self, "_ball_session_active", False):
@@ -3293,7 +3362,7 @@ class CharacterWidget(QLabel):
             return
         if self.rig_view is not None and (self._rig_manual_action is not None
                 or not self.on_ground
-                or (self.sprite_animator.current_action == "land"
+                or (self.sprite_animator.current_action in LANDING_ACTIONS
                     and self.sprite_animator.is_playing)):
             self._chase_last_time = None
             return
@@ -3496,7 +3565,7 @@ class CharacterWidget(QLabel):
             else:
                 dt = 1 / 60  # Deterministic windowless callers.
         if self.is_dragging:
-            CharacterWidget._clear_mouse_throw_face(self)
+            CharacterWidget._clear_mouse_throw(self)
             self.on_ground = False
             self.velocity_y = 0
             self.velocity_x = 0
@@ -3508,10 +3577,6 @@ class CharacterWidget(QLabel):
         steps = max(1, math.ceil(dt * 120))
         for _ in range(steps):
             CharacterWidget._gravity_step(self, dt * 60 / steps)
-        if (getattr(self, '_hand_throw_active', False) and self.on_ground
-                and abs(self.velocity_x) < .65):
-            self._finish_hand_throw()
-            self._rig_landed()
         self.dialogue_system.update_dialogue_position()
         self.repaint()
 
@@ -3527,7 +3592,9 @@ class CharacterWidget(QLabel):
             current_x = float(self.x())
         body = self._physics_body_rect()
         body_bottom = body.y() + body.height()
-        throwing = getattr(self, '_hand_throw_active', False)
+        hand_throw = getattr(self, '_hand_throw_active', False)
+        throwing = hand_throw or getattr(self, '_mouse_throw_active', False)
+        recovering = self.rig_view is not None and self.sprite_animator.current_action in TRIP_ACTIONS
 
         if abs(self.velocity_x) > 0.1:
             # Exponential damping has the same total effect at any callback rate.
@@ -3537,11 +3604,13 @@ class CharacterWidget(QLabel):
             new_x = current_x + self.velocity_x * distance
             if new_x + body.x() < screen_left:
                 new_x = screen_left - body.x()
-                self.velocity_x = abs(self.velocity_x) * self.bounce_damping
+                self.velocity_x = 0 if recovering else abs(self.velocity_x) * self.bounce_damping
             elif new_x + body.x() + body.width() > screen_right:
                 new_x = screen_right - body.x() - body.width()
-                self.velocity_x = -abs(self.velocity_x) * self.bounce_damping
+                self.velocity_x = 0 if recovering else -abs(self.velocity_x) * self.bounce_damping
             self.velocity_x *= friction ** frames
+            if throwing and self.velocity_x:
+                self._throw_direction = 1 if self.velocity_x > 0 else -1
             current_x = new_x
         else:
             self.velocity_x = 0
@@ -3562,7 +3631,7 @@ class CharacterWidget(QLabel):
                 and current_x + body.x() + body.width() > standing.x_min
                 and current_x + body.x() < standing.x_max):
             self.velocity_y = 0
-            self.velocity_x *= 0.95 ** frames
+            self.velocity_x *= (.8 if recovering else .95) ** frames
             support_bottom = (previous_bottom if CharacterWidget._uses_fixed_support_anchor(self)
                               else body_bottom)
             self._grounded_body_bottom = support_bottom
@@ -3604,9 +3673,11 @@ class CharacterWidget(QLabel):
         # This also catches fast falls through thin window tops without accepting
         # side entry or upward jumps. Ground also recovers feet below the taskbar.
         landing_surface = (next((surface for surface in self.surfaces if surface.name == 'ground'), None)
-                           if throwing else self.get_landing_surface(current_y, current_x))
+                           if hand_throw else self.get_landing_surface(current_y, current_x))
         reactions = getattr(self, 'reactions', None)
-        if (reactions is not None and not throwing and not self.is_jumping
+        landed = False
+        throw_direction = None
+        if (reactions is not None and not hand_throw and not self.is_jumping
                 and landing_surface is not None and self.velocity_y > 0
                 and new_y + body_bottom < landing_surface.y_level):
             gap = landing_surface.y_level - (current_y + body_bottom)
@@ -3614,11 +3685,16 @@ class CharacterWidget(QLabel):
         if (landing_surface is not None and self.velocity_y >= 0
                 and (landing_surface.name == 'ground' or current_y + body_bottom <= landing_surface.y_level)
                 and new_y + body_bottom >= landing_surface.y_level):
-            if not self.is_jumping and self.velocity_y >= 18.:
+            distance_to_surface = landing_surface.y_level - (current_y + body_bottom)
+            impact_speed = min(terminal, math.sqrt(velocity ** 2 + 2 * self.gravity * distance_to_surface)
+                               if distance_to_surface >= 0 else self.velocity_y)
+            hard_impact = not self.is_jumping and impact_speed >= 18.
+            if hard_impact:
                 experience(self, 'impact', reaction=False)
             new_y = landing_surface.y_level - body_bottom
-            if throwing and self.velocity_y >= 3.:
-                self.velocity_y *= -self.bounce_damping
+            floor_throw = throwing and landing_surface.name == 'ground'
+            if floor_throw and hard_impact and impact_speed >= CharacterWidget.FLOOR_BOUNCE_SPEED:
+                self.velocity_y = -impact_speed * self.bounce_damping
                 self.velocity_x *= .9
             else:
                 self.on_ground = True
@@ -3633,12 +3709,18 @@ class CharacterWidget(QLabel):
                 self._grounded_surface_level = landing_surface.y_level
                 self._last_surface_name = landing_surface.name
                 print(f"[착지!] 표면: {landing_surface.name}, surface_y={landing_surface.y_level}px -> char_y={new_y}px")
-                if not throwing and (self.rig_view is not None or not self.is_moving):
-                    self._rig_landed()
+                if floor_throw and self.rig_view is not None and getattr(self, '_throw_can_trip', False):
+                    throw_direction = getattr(self, '_throw_direction', 0) or None
+                landed = self.rig_view is not None or not self.is_moving or throwing
 
         self._physics_position_x, self._physics_position_y = current_x, new_y
         self.move(round(current_x), round(new_y))
         self._clamp_position_to_screen()
+        if landed:
+            if throw_direction is None:
+                self._rig_landed()
+            else:
+                self._rig_landed(throw_direction)
     
     def _clamp_position_to_screen(self):
         """Keep the painted body inside the full screen, including the taskbar."""

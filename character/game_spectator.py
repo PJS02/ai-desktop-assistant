@@ -8,6 +8,7 @@ from PyQt6.QtCore import QObject, QTimer
 from .game_detection import active_game_activity
 from .spectator_props import draw_spectator_props
 from .game_reactions import GAME_REACTIONS, GAME_RESPONSE_MAX_AGE
+from .rig_state import LANDING_ACTIONS
 
 
 class GameSpectator(QObject):
@@ -44,6 +45,7 @@ class GameSpectator(QObject):
             self._enter_mode()
         self._hold_position()
         paused = (h.rig_view is None or h.is_dragging or h.is_jumping or not h.on_ground
+                  or (h.sprite_animator.current_action in LANDING_ACTIONS and h.sprite_animator.is_playing)
                   or h._manual_control_active()
                   or getattr(getattr(h, 'entrance', None), 'active', False)
                   or any(getattr(getattr(h, name, None), 'is_active', False)
@@ -90,7 +92,9 @@ class GameSpectator(QObject):
         h._chase_last_time = None
         h.animation_controller.idle.stop()
         h.animation_controller.update_base_pos(h.pos())
-        if not h.is_dragging and not getattr(h, '_hand_throw_active', False):
+        landing = h.rig_view is not None and h.sprite_animator.current_action in LANDING_ACTIONS and h.sprite_animator.is_playing
+        if (not h.is_dragging and not landing
+                and not getattr(h, '_hand_throw_active', False) and not getattr(h, '_mouse_throw_active', False)):
             h.velocity_x = 0
             h._physics_position_x = float(h.x())
 
@@ -119,6 +123,7 @@ class GameSpectator(QObject):
         if (not reaction or not self.response_is_current(context)
                 or h.rig_view is None or not h.isVisible()
                 or h.is_dragging or h.is_moving or h.is_jumping or not h.on_ground
+                or (h.sprite_animator.current_action in LANDING_ACTIONS and h.sprite_animator.is_playing)
                 or h._manual_control_active()
                 or getattr(getattr(h, 'entrance', None), 'active', False)
                 or getattr(h.window_presence, 'blocks_physics', False)):
