@@ -427,6 +427,7 @@ class CharacterWidget(QLabel):
         
         # ====== 대화 시스템 초기화 ======
         self.dialogue_system = DialogueSystem(self)
+        self.dialogue_system.dialogue_model_switched.connect(self._load_gemini_config)
         self._pending_game_cues = []
         self.dialogue_system.tts.busy_changed.connect(self._on_game_voice_busy_changed)
         self._automatic_request_generation = 0

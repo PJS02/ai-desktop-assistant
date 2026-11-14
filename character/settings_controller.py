@@ -32,6 +32,9 @@ class SettingsController(QObject):
         self.dialogue_timer.timeout.connect(self._refresh_dialogue_generation)
         manager.settings_message.connect(self.handle_message)
         manager.process_started.connect(self._restore_preview)
+        model_switched = getattr(getattr(character, 'dialogue_system', None), 'dialogue_model_switched', None)
+        if model_switched is not None:
+            model_switched.connect(self._refresh_dialogue_model)
         self.load_timeout = QTimer(self)
         self.load_timeout.setSingleShot(True)
         self.load_timeout.timeout.connect(self.connection_timeout)
@@ -100,6 +103,16 @@ class SettingsController(QObject):
         self._refresh_dialogue_generation()
         self.dialogue_timer.start()
         self.refresh()
+
+    def _refresh_dialogue_model(self, previous, model):
+        if self.dialog is None:
+            return
+        model_input = self.dialog.model
+        if model_input.text().strip() == previous:
+            model_input.setText(model)
+        self.dialog.local_baseline['ai']['model'] = model
+        if 'ai' in self.applied_local:
+            self.applied_local['ai']['model'] = model
 
     def _refresh_dialogue_generation(self):
         if self.dialog is None:

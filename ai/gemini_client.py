@@ -16,6 +16,7 @@ from context.screen_privacy import ScreenPrivacyError, redact_screen
 
 AI_DIR = Path(__file__).resolve().parent
 REQUEST_TIMEOUT_SECONDS = 120
+DAILY_REQUEST_QUOTA_EXHAUSTED = "[gemini error] HTTP 429: daily model request quota exhausted"
 CONFIG_PATH = AI_DIR / "config" / "gemini_config.json"
 LEGACY_CONFIG_PATHS = (
     AI_DIR.parent / "context" / "gemini_config.json",
@@ -88,6 +89,31 @@ def save_gemini_config(api_key, model, *, screen_privacy_enabled=None, trace_id=
         log_event("settings.ai.save_failed", "AI 설정 저장 실패: 기존 파일 유지",
                   category="오류", level="ERROR", trace_id=trace_id, error=str(error))
         raise
+
+
+def _is_daily_model_quota(error_body):
+    try:
+        details = json.loads(error_body)["error"]["details"]
+    except (ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(details, list):
+        return False
+    for detail in details:
+        if not isinstance(detail, dict) or detail.get("@type") != "type.googleapis.com/google.rpc.QuotaFailure":
+            continue
+        violations = detail.get("violations")
+        if not isinstance(violations, list):
+            continue
+        for violation in violations:
+            if isinstance(violation, dict) and (
+                violation.get("quotaId") in (
+                    "GenerateRequestsPerDayPerProjectPerModel",
+                    "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                )
+                or violation.get("quotaMetric") == "generativelanguage.googleapis.com/generate_requests_per_model_per_day"
+            ):
+                return True
+    return False
 
 
 def request_gemini(
@@ -195,6 +221,8 @@ def request_gemini(
                       level="ERROR", trace_id=trace_id, attempt=attempt + 1,
                       status=error.code, error=str(error), body=error_body,
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2))
+            if error.code == 429 and _is_daily_model_quota(error_body):
+                return DAILY_REQUEST_QUOTA_EXHAUSTED
             if error.code in (500, 502, 503, 504) and attempt + 1 < attempts:
                 log_event("gemini.retry_scheduled", "Gemini 서버 오류 재시도", category="대화·AI",
                           level="WARNING", trace_id=trace_id, attempt=attempt + 1,

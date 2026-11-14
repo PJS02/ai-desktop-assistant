@@ -16,13 +16,20 @@ import time
 import re
 from collections import deque
 from app_logging import log_event, new_trace_id, register_secret
-from ai.gemini_client import request_gemini
+from ai.gemini_client import DAILY_REQUEST_QUOTA_EXHAUSTED, request_gemini
 from memory.short_term_memory import ConversationMemory
 from memory.long_term_memory import LongTermMemory
 from memory.long_term_memory.dialogue_memory import (
     DIALOGUE_RESPONSE_SCHEMA, DIALOGUE_SYSTEM_INSTRUCTION,
     parse_dialogue_response, apply_dialogue_memory, build_memory_context, validate_memory_references,
 )
+
+
+FLASH_LITE_FALLBACK = {
+    'gemini-3.5-flash-lite': 'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite': 'gemini-3.5-flash-lite',
+}
+FLASH_LITE_QUOTAS_EXHAUSTED = '[gemini error] Both Flash Lite daily request quotas exhausted'
 
 
 class DialogueSystem(QObject):
@@ -33,6 +40,7 @@ class DialogueSystem(QObject):
     user_input_received = pyqtSignal(str, str)  # text, text/voice
     ai_response_ready = pyqtSignal(object)
     ai_motion_changed = pyqtSignal(str)
+    dialogue_model_switched = pyqtSignal(str, str)
     
     def __init__(self, character_widget, *, tts=None, response_provider=None,
                  time_provider=time.monotonic):
@@ -525,6 +533,7 @@ class DialogueSystem(QObject):
 
         def get_ai_response():
             failed = False
+            model_switch = None
             try:
                 # E5 로딩·검색·저장은 Qt 스레드를 막지 않도록 이 작업 스레드에서 실행한다.
                 candidates = []
@@ -536,6 +545,15 @@ class DialogueSystem(QObject):
 
 {long_term_context}"""
                 raw_response = self._call_ai(memory_prompt, config, log_context=context)
+                fallback_model = FLASH_LITE_FALLBACK.get(config.get('model'))
+                if (fallback_model and raw_response == DAILY_REQUEST_QUOTA_EXHAUSTED
+                        and not self._closed and generation == self._request_generation):
+                    raw_response = self._call_ai(
+                        memory_prompt, {**config, 'model': fallback_model}, log_context=context)
+                    if raw_response == DAILY_REQUEST_QUOTA_EXHAUSTED:
+                        raw_response = FLASH_LITE_QUOTAS_EXHAUSTED
+                    else:
+                        model_switch = (config.get('api_key', ''), config['model'], fallback_model)
                 failed = self._is_error_response(raw_response)
                 log_event('dialogue.model_text_received', '대화 모델 텍스트 전체', category='대화·AI',
                           level='ERROR' if failed else 'INFO', trace_id=turn['trace_id'],
@@ -561,7 +579,7 @@ class DialogueSystem(QObject):
                 failed = True
                 response_text = "미안해요, 지금은 대화할 수 없어요. 다시 시도해 주세요."
             if not self._closed:
-                self.ai_response_ready.emit((generation, response_text, failed))
+                self.ai_response_ready.emit((generation, response_text, failed, model_switch if not failed else None))
             else:
                 log_event('dialogue.response_discarded', '종료 후 늦은 응답 폐기', category='대화·AI',
                           trace_id=turn['trace_id'], reason='shutdown', generation=generation,
@@ -651,9 +669,27 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                 marker in text for marker in ('429', '401', '403', '500',
                     'too many requests', 'unauthorized', 'forbidden', 'internal server error'))
 
+    def _save_dialogue_model_switch(self, api_key, previous, model, *, trace_id):
+        from .ai_settings import load_ai_settings, save_ai_settings
+
+        try:
+            config = load_ai_settings()
+            if (config.get('api_key'), config.get('model')) != (api_key, previous):
+                return  # A newer choice in Settings takes precedence.
+            save_ai_settings(api_key, model, trace_id=trace_id)
+        except (OSError, ValueError) as exc:
+            log_event('dialogue.model_switch_save_failed', '대화용 모델 전환 저장 실패',
+                      category='대화·AI', level='ERROR', trace_id=trace_id, error=str(exc))
+            return
+        self.gemini_config = {**config, 'model': model}
+        log_event('dialogue.model_switched', '일일 요청 한도 초과로 대화용 모델 전환',
+                  category='대화·AI', trace_id=trace_id, previous_model=previous, model=model)
+        self.dialogue_model_switched.emit(previous, model)
+
     @pyqtSlot(object)
     def _finish_ai_request(self, result):
-        generation, response_text, failed = result
+        generation, response_text, failed, *extra = result
+        model_switch = extra[0] if extra else None
         trace_id = self._request_traces.pop(generation, None)
         if self._closed or generation != self._request_generation:
             log_event('dialogue.response_discarded', '만료된 대화 응답 폐기', category='대화·AI',
@@ -665,6 +701,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             log_event('dialogue.response_discarded', '대상 입력 없는 응답 폐기', category='대화·AI',
                       trace_id=trace_id, reason='no_active_input', generation=generation)
             return
+        if model_switch:
+            self._save_dialogue_model_switch(*model_switch, trace_id=trace_id)
         turn['state'] = 'failed' if failed else 'completed'
         if failed:
             self._failed_inputs[turn['chat_id']] = turn
@@ -910,6 +948,10 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
 
         if not response:
             return normalized("뭔가 반응이 없네요... 😔", 'empty_fallback')
+
+        if response == FLASH_LITE_QUOTAS_EXHAUSTED:
+            return normalized('두 Flash Lite 모델의 오늘 요청 한도를 모두 사용했어요. 한도가 초기화되면 다시 보내 주세요.',
+                              'error_fallback', status=429)
 
         # Numeric answers (e.g. 500원) are valid conversation, not HTTP errors.
         error = self._is_error_response(response)
