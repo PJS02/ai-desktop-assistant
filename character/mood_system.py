@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
-from .russell_sectors import russell_face
+from .russell_sectors import SECTOR_NAMES, russell_face
 from .perception_affect import update_label
 
 
@@ -1154,88 +1154,32 @@ class MoodSystem:
         return "\n".join(log_lines)
 
     def get_emotion_description_for_prompt(self) -> str:
-        """AI 프롬프트용 감정 상태 설명 생성"""
-        emotion_info = self.decide_emotion()
-        dominant_emotion = emotion_info["emotion"]
-        intensity = emotion_info["intensity"]
-        
-        descriptions = []
-        
-        # 주요 감정 설명
-        descriptions.append(f"현재 감정: {dominant_emotion} ({int(intensity * 100)}%)")
-        
-        # Russell 좌표 설명
-        valence = self.russell.valence
-        arousal = self.russell.arousal
-        
-        # Valence 설명
-        if valence > 0.5:
-            valence_text = "매우 긍정적"
-        elif valence > 0.2:
-            valence_text = "긍정적"
-        elif valence > -0.2:
-            valence_text = "중립적"
-        elif valence > -0.5:
-            valence_text = "부정적"
-        else:
-            valence_text = "매우 부정적"
-        
-        # Arousal 설명
-        if arousal > 0.5:
-            arousal_text = "매우 흥분되고"
-        elif arousal > 0.2:
-            arousal_text = "흥분되고"
-        elif arousal > -0.2:
-            arousal_text = "보통이고"
-        elif arousal > -0.5:
-            arousal_text = "침착한"
-        else:
-            arousal_text = "매우 침착한"
-        
-        descriptions.append(f"기분: {arousal_text} {valence_text}")
-        
-        return "\n".join(descriptions)
+        """기본 표정과 같은 러셀 구역을 대사 감정으로 전달한다."""
+        emotion = self.get_display_emotion()
+        return f"현재 감정: {emotion} ({SECTOR_NAMES[emotion]})"
 
     def get_emotion_tone_instructions(self) -> str:
-        """AI가 따를 말투 지침 생성 - 17개 감정 기반"""
-        emotion_info = self.decide_emotion()
-        dominant_emotion = emotion_info["emotion"]
-        intensity = emotion_info["intensity"]
-        
-        # 17개 감정별 톤 지침
+        """기본 표정의 러셀 구역에 맞는 말투 지침을 반환한다."""
         tone_instructions = {
-            # 긍정-흥분
-            "joy": "평소 말투에 즐거운 기색을 조금 더하세요.",
-            "delight": "작은 기쁨을 따뜻한 표현으로 드러내세요.",
-            "excitement": "기대감을 한 번 짧게 표현하세요.",
-            "interest": "궁금한 점이 있을 때만 짧게 물어보세요.",
-            "contentment": "만족스럽고 편안한 기색을 담으세요.",
-            
-            # 부정-흥분
-            "anger": "불편함은 한 번 솔직하게 표현하되 날을 세우거나 사용자를 탓하지 마세요.",
-            "disgust": "마음에 들지 않는 점을 담담하게 표현하세요.",
-            "fear": "조심스러움을 살짝 표현하되 과하게 겁내지 마세요.",
-            "anxiety": "작은 걱정을 표현하되 평소의 안정적인 문장 호흡을 유지하세요.",
-            
-            # 긍정-진정
-            "calm": "차분하고 담백하게 표현하세요.",
-            "peaceful": "편안한 기색을 부드럽게 담으세요.",
-            
-            # 부정-진정
-            "sadness": "조금 기운 없는 기색만 담고 대화에는 다정하게 응하세요.",
-            "melancholy": "생각이 잠긴 듯 짧고 차분하게 표현하세요.",
-            "despair": "지친 기색을 살짝 담되 극단적 표현과 자기비하는 피하세요.",
-            
-            # 중립
             "neutral": "설정된 성격과 평소 말투 그대로 표현하세요.",
+            "pleasant": "평소 말투에 즐거운 기색을 조금 더하세요.",
+            "happy": "작은 기쁨을 따뜻한 표현으로 드러내세요.",
+            "proud": "뿌듯한 기색을 짧게 표현하세요.",
+            "excited": "기대감을 한 번 짧게 표현하세요.",
+            "thrilled": "들뜬 기색을 한 번 짧게 표현하세요.",
+            "anxious": "작은 걱정을 표현하되 평소의 안정적인 문장 호흡을 유지하세요.",
+            "hurt": "속상한 기색을 짧게 표현하되 사용자를 탓하지 마세요.",
+            "distressed": "힘든 기색을 짧게 드러내고 극단적 표현과 자기비하는 피하세요.",
+            "displeased": "불편한 기색을 담담하게 표현하되 사용자를 탓하지 마세요.",
+            "sad": "조금 기운 없는 기색만 담고 대화에는 다정하게 응하세요.",
+            "depressed": "가라앉은 기색을 짧고 차분하게 표현하고 자기비하는 피하세요.",
+            "tired": "조금 피곤한 기색을 담아 짧고 담백하게 표현하세요.",
+            "quiet": "말수를 조금 줄이고 담백하게 표현하세요.",
+            "calm": "차분하고 담백하게 표현하세요.",
+            "relieved": "만족스럽고 편안한 기색을 담으세요.",
+            "serene": "편안한 기색을 부드럽게 담으세요.",
         }
-        
-        instruction = tone_instructions.get(dominant_emotion, tone_instructions["neutral"])
-        
-        # 강도에 따라 추가 지침
-        if intensity > 0.8:
-            instruction += " (강한 감정도 한 번만 절제해 드러내고 기본 말투와 성격을 유지하세요)"
-        elif intensity < 0.4:
-            instruction += " (약한 감정 - 완화된 표현을 사용하세요)"
-        
-        return instruction + ' 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요.'
+        return (
+            tone_instructions[self.get_display_emotion()]
+            + " 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요."
+        )
