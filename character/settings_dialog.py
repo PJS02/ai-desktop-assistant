@@ -24,7 +24,16 @@ from .dialogue_options import DIALOGUE_OPTION_RANGES, normalize_dialogue_options
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
 from .game_rules import DEFAULT_GAME_RULES, normalize_game_rules, running_process_names
+from .gemini_usage_view import GeminiUsageView
 from .memory_view import MemoryView
+
+
+GEMINI_MODEL_IDS = (
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+)
 
 
 class _SettingsComboBox(QComboBox):
@@ -599,6 +608,9 @@ class SettingsDialog(QDialog):
         form.addRow('목소리', self.voice)
         self.ai_section, _, ai = self._section(layout, 'AI 연결')
         self._ai_fields(ai, local)
+        _, _, usage = self._section(layout, '모델별 오늘 호출량')
+        self.gemini_usage = GeminiUsageView(lambda: self.local_baseline['ai'], GEMINI_MODEL_IDS)
+        usage.addRow(self.gemini_usage)
         _, _, timing = self._section(layout, '말풍선 표시 시점')
         self.sync_bubble = QCheckBox('음성 재생이 시작될 때 말풍선 표시')
         self.sync_bubble.setChecked(local['voice']['sync_bubble'])

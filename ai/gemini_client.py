@@ -10,8 +10,11 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from PyQt6.QtCore import QDateTime
+
 from app_logging import log_event, new_trace_id, register_secret
 from context.screen_privacy import ScreenPrivacyError, redact_screen
+from .gemini_usage import record_attempt
 
 
 AI_DIR = Path(__file__).resolve().parent
@@ -202,17 +205,22 @@ def request_gemini(
         started = time.monotonic()
         log_event("gemini.attempt_started", "Gemini HTTP 요청 시작", category="대화·AI",
                   trace_id=trace_id, attempt=attempt + 1, model=model)
+        sent_at = QDateTime.currentDateTimeUtc()
+        status = None
+        failed = True
         try:
             remaining_timeout = min(timeout, max(.1, deadline - started)) if deadline is not None else timeout
             with urlopen(request, timeout=remaining_timeout) as response:
-                raw_body = response.read().decode("utf-8")
                 status = getattr(response, "status", None)
+                raw_body = response.read().decode("utf-8")
             log_event("gemini.http_response", "Gemini HTTP 응답 전체", category="대화·AI",
                       trace_id=trace_id, attempt=attempt + 1, status=status,
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2), body=raw_body)
             data = json.loads(raw_body)
+            failed = False
             break
         except HTTPError as error:
+            status = error.code
             try:
                 error_body = error.read().decode("utf-8", errors="replace")
             except Exception:
@@ -250,6 +258,8 @@ def request_gemini(
                       level="ERROR", trace_id=trace_id, attempt=attempt + 1, error=str(error),
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2))
             return f"[gemini error] {error}"
+        finally:
+            record_attempt(api_key, model, sent_at, status, failed)
 
     candidates = data.get("candidates", [])
     if not candidates:
