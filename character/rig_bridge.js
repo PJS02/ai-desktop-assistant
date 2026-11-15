@@ -274,7 +274,7 @@
     state = state || {};
     var action = typeof state.action === 'string' ? state.action : 'idle';
     var time = finite(state.time, 0), options = {};
-    ['emotion', 'speaking', 'speechTime', 'walkAmount'].forEach(function (key) {
+    ['emotion', 'speaking', 'speechTime', 'walkAmount', 'walkTime'].forEach(function (key) {
       if (state[key] !== undefined) options[key] = state[key];
     });
     if (options.emotion === 'dizzy' || options.emotion === 'dizzy_plain') options.emotion = 'neutral';

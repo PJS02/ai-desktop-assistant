@@ -144,6 +144,8 @@ class CloudyRigView(QOpenGLWidget):
         self._speech_start = time.perf_counter()
         self._started = time.perf_counter()
         self._offset = 0.0
+        self._walk_rate = 1.0
+        self._walk_time_offset = 0.0
         self._paused = False
         self._finished = False
         self._fixed_state = None
@@ -307,6 +309,8 @@ class CloudyRigView(QOpenGLWidget):
             return
         self._action, self._loop = action, bool(loop)
         self._offset = 0.0
+        self._walk_rate = 1.0
+        self._walk_time_offset = 0.0
         self._started = time.perf_counter()
         self._finished = False
         self._fixed_state = None
@@ -357,6 +361,14 @@ class CloudyRigView(QOpenGLWidget):
         self._high_five = None if clip_time is None else (65 * side, {
             'time': clip_time, 'target': target,
         })
+        self.update()
+
+    def set_walk_rate(self, rate):
+        if rate == self._walk_rate:
+            return
+        # Preserve the current step when the rate changes mid-walk.
+        self._walk_time_offset += self._time() * (self._walk_rate - rate)
+        self._walk_rate = rate
         self.update()
 
     @property
@@ -521,6 +533,8 @@ class CloudyRigView(QOpenGLWidget):
                  "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
                  "speaking": self._speaking,
                  "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
+        if self._action == 'walk':
+            state['walkTime'] = state['time'] * self._walk_rate + self._walk_time_offset
         if self._high_five is not None:
             state['yaw'], state['highFive'] = self._high_five
         return state

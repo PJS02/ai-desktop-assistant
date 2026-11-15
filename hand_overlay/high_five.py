@@ -134,6 +134,7 @@ class DesktopHighFive:
             return
         c = self.character
         if c.rig_view is attempt.rig:
+            attempt.rig.set_walk_rate(1.)
             attempt.rig.set_high_five()
         if c._rig_manual_action != 'high_five':
             return
@@ -231,7 +232,10 @@ class DesktopHighFive:
                 if c.current_action != 'walk':
                     c.current_action = 'walk'
                     c.sprite_animator.play('walk')
-                c._advance_horizontal(route[1], dt, speed_scale=max(1., 245 * scale / c.movement_speed))
+                speed_scale = max(1., 245 * scale / c.movement_speed)
+                # Very low walking settings can give a boost too fast to show distinct steps.
+                attempt.rig.set_walk_rate(min(3., speed_scale))
+                c._advance_horizontal(route[1], dt, speed_scale=speed_scale)
                 return
             c.current_action = 'idle'
             c.sprite_animator.play('idle')
