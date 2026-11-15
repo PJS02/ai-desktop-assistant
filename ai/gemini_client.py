@@ -32,7 +32,8 @@ def _read_config():
         if path.exists():
             config = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(config, dict) or any(
-                not isinstance(config.get(field, ""), str) for field in ("api_key", "model")
+                not isinstance(config.get(field, ""), str)
+                for field in ("api_key", "model", "automatic_model")
             ):
                 raise ValueError("AI 설정 파일 형식이 올바르지 않습니다.")
             register_secret(config.get("api_key", ""))
@@ -57,8 +58,14 @@ def load_gemini_config() -> dict:
         _write_config(config)
     log_event("settings.ai.loaded" if path else "settings.ai.fallback", "AI 설정 로드",
               path=str(path) if path else None, model=config.get("model", ""),
+              automatic_model=config.get("automatic_model", ""),
               api_key_present=bool(config.get("api_key")))
     return config
+
+
+def automatic_dialogue_config(config):
+    model = config.get("automatic_model")
+    return {**config, "model": model} if model else config
 
 
 def is_screen_privacy_enabled(config):
@@ -73,7 +80,7 @@ def _allows_unmasked_screen():
     return not is_screen_privacy_enabled(config)
 
 
-def save_gemini_config(api_key, model, *, screen_privacy_enabled=None, trace_id=None):
+def save_gemini_config(api_key, model, *, automatic_model=None, screen_privacy_enabled=None, trace_id=None):
     """Atomically update the one shared config, preserving unrelated settings."""
     register_secret(api_key)
     try:
@@ -81,13 +88,18 @@ def save_gemini_config(api_key, model, *, screen_privacy_enabled=None, trace_id=
             raise ValueError("API 키와 모델은 문자열이어야 합니다.")
         config, _ = _read_config()
         config.update(api_key=api_key, model=model)
+        if automatic_model is not None:
+            if not isinstance(automatic_model, str):
+                raise ValueError("자동대화용 모델은 문자열이어야 합니다.")
+            config["automatic_model"] = automatic_model
         if screen_privacy_enabled is not None:
             if not isinstance(screen_privacy_enabled, bool):
                 raise ValueError("화면 개인정보 마스킹 설정은 켬 또는 끔이어야 합니다.")
             config["screen_privacy_enabled"] = screen_privacy_enabled
         _write_config(config)
         log_event("settings.ai.saved", "AI 공통 설정 저장", trace_id=trace_id,
-                  path=str(CONFIG_PATH), model=model, api_key_present=bool(api_key))
+                  path=str(CONFIG_PATH), model=model, automatic_model=config.get("automatic_model", ""),
+                  api_key_present=bool(api_key))
     except (OSError, ValueError) as error:
         log_event("settings.ai.save_failed", "AI 설정 저장 실패: 기존 파일 유지",
                   category="오류", level="ERROR", trace_id=trace_id, error=str(error))

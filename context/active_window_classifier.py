@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ai.gemini_client import load_gemini_config, request_gemini
+from ai.gemini_client import automatic_dialogue_config, load_gemini_config, request_gemini
 from .rules_config import get_rules
 
 
@@ -237,7 +237,7 @@ def call_gemini(prompt, config, image=None, *, log_context=None):
     """Legacy activity wrapper. New callers use request_gemini directly."""
     return request_gemini(
         prompt,
-        config,
+        automatic_dialogue_config(config),
         image=image,
         response_schema=build_response_schema(),
         system_instruction=build_system_instruction(config.get('character_voice')),
@@ -288,7 +288,7 @@ def generate_dialogue_json(start_server=False):
     prompt = build_gemini_prompt(info, category, url)
     response = request_gemini(
         prompt,
-        gemini_config,
+        automatic_dialogue_config(gemini_config),
         image=image,
         response_schema=build_response_schema(),
         system_instruction=build_system_instruction(),
@@ -487,7 +487,7 @@ def main():
             prompt = build_gemini_prompt(info, category, url)
             response = request_gemini(
                 prompt,
-                gemini_config,
+                automatic_dialogue_config(gemini_config),
                 image=image,
                 response_schema=build_response_schema(),
                 system_instruction=build_system_instruction(),

@@ -32,7 +32,7 @@ from .dialogue_system import DialogueSystem, QuickDialoguePresets
 from .russell_emotion_dialog import RussellEmotionDialog
 from .status_windows import EmotionStatusWindow, MemoryStatusWindow
 from .personality_system import PersonalitySystem
-from ai.gemini_client import is_screen_privacy_enabled, load_gemini_config, request_gemini
+from ai.gemini_client import automatic_dialogue_config, is_screen_privacy_enabled, load_gemini_config, request_gemini
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
@@ -1317,7 +1317,7 @@ class CharacterWidget(QLabel):
             request_time = time.time()
             response = request_gemini(
                 prompt,
-                config,
+                automatic_dialogue_config(config),
                 image=image,
                 response_schema=game_response_schema() if game_visual else build_response_schema(),
                 system_instruction=game_response_instruction(voice) if game_visual else build_system_instruction(voice),

@@ -94,6 +94,7 @@ class SettingsDialog(QDialog):
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
         local['voice'].setdefault('sync_bubble', False)
+        local['ai'].setdefault('automatic_model', '')
         local['ai']['screen_privacy_enabled'] = is_screen_privacy_enabled(local['ai'])
         local['game_rules'] = normalize_game_rules(local.get('game_rules'))
         self.setWindowTitle('설정')
@@ -1047,8 +1048,20 @@ class SettingsDialog(QDialog):
         for button in self.device_buttons.values():
             button.setEnabled(False)
 
+    @staticmethod
+    def _model_id_combo(saved_model, placeholder):
+        combo = _SettingsComboBox()
+        combo.addItems(GEMINI_MODEL_IDS)
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.setCurrentIndex(combo.findText(saved_model))
+        combo.setEditText(saved_model)
+        combo.lineEdit().setPlaceholderText(placeholder)
+        return combo
+
     def _ai_fields(self, form, local):
-        self.api_key = QLineEdit(local['ai']['api_key'])
+        ai = local['ai']
+        self.api_key = QLineEdit(ai['api_key'])
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText('API 키 입력')
         self.api_key.setClearButtonEnabled(True)
@@ -1056,9 +1069,12 @@ class SettingsDialog(QDialog):
         reveal = QCheckBox('API 키 표시')
         reveal.toggled.connect(lambda checked: self.api_key.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
         form.addRow(reveal)
-        self.model = QLineEdit(local['ai']['model'])
-        self.model.setPlaceholderText('사용할 모델 ID 입력')
-        form.addRow('모델 ID', self.model)
+        self.model = self._model_id_combo(ai['model'], '사용할 모델 선택 또는 ID 입력')
+        form.addRow('대화용 모델 ID', self.model)
+        self.automatic_model = self._model_id_combo(ai['automatic_model'], '비워 두면 대화용 모델 사용')
+        self.automatic_model.lineEdit().setClearButtonEnabled(True)
+        self.automatic_model.setToolTip('활성 창 이미지를 분석할 수 있는 모델을 선택하거나 ID를 입력하세요.')
+        form.addRow('자동대화용 모델 ID', self.automatic_model)
         options = normalize_dialogue_options(local.get('dialogue'))
         self.auto_program_detection = QCheckBox('활성 창·프로그램 감지로 자동 대화 생성')
         self.auto_program_detection.setChecked(options['auto_program_detection'])
@@ -1169,7 +1185,8 @@ class SettingsDialog(QDialog):
                                                      for key, control in self.personality_trait_inputs.items()}},
                  'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData(),
                            'sync_bubble': self.sync_bubble.isChecked()},
-                 'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip(),
+                 'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.currentText().strip(),
+                        'automatic_model': self.automatic_model.currentText().strip(),
                         'screen_privacy_enabled': self.screen_privacy.isChecked()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
@@ -1219,7 +1236,7 @@ class SettingsDialog(QDialog):
         ai = changes['local'].get('ai')
         if ai and ai['api_key'] and not ai['model'] and any(
                 ai[key] != self.local_baseline['ai'][key] for key in ('api_key', 'model')):
-            self.status.setText('API 키를 사용하려면 모델 ID를 입력하세요.')
+            self.status.setText('API 키를 사용하려면 대화용 모델을 선택하거나 ID를 입력하세요.')
             self.tabs.setCurrentWidget(self.dialogue_page)
             self.ai_section.setChecked(True)
             QTimer.singleShot(0, self._focus_ai_model)

@@ -71,6 +71,7 @@ class SettingsController(QObject):
                  'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
                            'sync_bubble': tts.sync_bubble},
                  'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', ''),
+                        'automatic_model': ai.get('automatic_model', ''),
                         'screen_privacy_enabled': ai.get('screen_privacy_enabled', True)}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
@@ -107,9 +108,10 @@ class SettingsController(QObject):
     def _refresh_dialogue_model(self, previous, model):
         if self.dialog is None:
             return
-        model_input = self.dialog.model
-        if model_input.text().strip() == previous:
-            model_input.setText(model)
+        combo = self.dialog.model
+        if combo.currentText().strip() == previous:
+            combo.setCurrentIndex(combo.findText(model))
+            combo.setEditText(model)
         self.dialog.local_baseline['ai']['model'] = model
         if 'ai' in self.applied_local:
             self.applied_local['ai']['model'] = model
@@ -267,6 +269,7 @@ class SettingsController(QObject):
                     self.character.game_spectator.poll()
                 elif section == 'ai':
                     save_ai_settings(value['api_key'], value['model'],
+                                     automatic_model=value.get('automatic_model'),
                                      screen_privacy_enabled=value.get('screen_privacy_enabled'),
                                      trace_id=self.operation_id)
                     self.character._load_gemini_config()
