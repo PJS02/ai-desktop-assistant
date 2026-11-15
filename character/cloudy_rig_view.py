@@ -14,13 +14,14 @@ import traceback
 from app_logging import log_event
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPainterPath, QPixmap, QSurfaceFormat, QVector2D, QVector3D, QVector4D
 from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
                            QOpenGLTexture, QOpenGLVersionFunctionsFactory,
                            QOpenGLVersionProfile, QOpenGLFramebufferObject)
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
+from .desktop_geometry import NativeWindowClip
 from .rig_v8 import NodeRigPlanner
 from .rig_state import TRIP_ACTIONS
 from .texture_cache import BoundedTextureCache
@@ -151,6 +152,8 @@ class CloudyRigView(QOpenGLWidget):
         self._high_five = None
         self._last_plan = None
         self._scene_layers = {}
+        self._native_window_clip = NativeWindowClip()
+        self.frameSwapped.connect(self._finish_clip_handoff)
         self._last_paint_time = time.perf_counter()
         self._overlay = QPixmap()
         self._debug_painter = None
@@ -170,10 +173,14 @@ class CloudyRigView(QOpenGLWidget):
         self._decoration_painter = callback
         self.update()
 
-    def set_scene_layer(self, name, *, offset=(0., 0.), occlusions=(), reveal=None, animated=False, input_margin=0.):
+    def set_scene_layer(self, name, *, offset=(0., 0.), occlusions=(), reveal=None, animated=False,
+                        input_margin=0., cover_hwnd=None):
         """Offset the rig locally and clip against logical desktop coordinates."""
-        self._scene_layers[name] = dict(offset=offset, occlusions=tuple(QRectF(r) for r in occlusions),
-                                        reveal=reveal, animated=animated, input_margin=input_margin)
+        self._scene_layers[name] = dict(
+            offset=offset, occlusions=tuple(QRectF(r) for r in occlusions), reveal=reveal,
+            animated=animated, input_margin=input_margin,
+            native_frame=self._native_window_clip.frame(cover_hwnd) if cover_hwnd is not None else None)
+        self._sync_native_clip()
         interval = self._frame_interval()
         if self._timer.interval() != interval:
             self._timer.setInterval(interval)
@@ -181,6 +188,7 @@ class CloudyRigView(QOpenGLWidget):
 
     def clear_scene_layer(self, name):
         self._scene_layers.pop(name, None)
+        self._sync_native_clip()
         interval = self._frame_interval()
         if self._timer.interval() != interval:
             self._timer.setInterval(interval)
@@ -189,11 +197,35 @@ class CloudyRigView(QOpenGLWidget):
     def _frame_interval(self):
         return 16 if self._action in TRIP_ACTIONS or any(layer['animated'] for layer in self._scene_layers.values()) else 33
 
+    def _sync_native_clip(self):
+        if self._released:
+            return
+        for layer in self._scene_layers.values():
+            if (frame := layer.get('native_frame')) is not None:
+                layer['native_clip'] = self._native_window_clip.apply(self.window(), frame)
+                if layer['native_clip']:
+                    return
+        if not any(layer['occlusions'] for layer in self._scene_layers.values()):
+            self._native_window_clip.clear()
+
+    def _finish_clip_handoff(self):
+        # Let Qt present the next shader mask before lifting the HWND region.
+        if not any(layer.get('native_clip') for layer in self._scene_layers.values()):
+            self._native_window_clip.clear()
+
+    def prepare_host_move(self, position):
+        for layer in self._scene_layers.values():
+            if layer.get('native_clip'):
+                self._native_window_clip.prepare_move(self.window(), layer['native_frame'], position)
+                return
+
     def host_moved(self, delta):
         if self._scene_layers:
-            viewport = QRectF(self.rect()).translated(QPointF(self.mapToGlobal(QPoint())))
+            self._sync_native_clip()
+            viewport = QRectF(self.rect()).translated(self.mapToGlobal(QPointF()))
             swept = viewport.united(viewport.translated(-QPointF(delta)))
-            if any(swept.intersects(rect) for layer in self._scene_layers.values() for rect in layer['occlusions']):
+            if any(swept.intersects(rect) for layer in self._scene_layers.values()
+                   if not layer.get('native_clip') for rect in layer['occlusions']):
                 self.update()
 
     def scene_contains(self, point, body):
@@ -218,7 +250,8 @@ class CloudyRigView(QOpenGLWidget):
     def _framebuffer_layers(self, dpr):
         if not self._scene_layers:
             return ()
-        origin = QPointF(self.mapToGlobal(QPoint()))
+        # Keep the native window's fractional logical position until pixel rounding.
+        origin = self.mapToGlobal(QPointF())
         viewport = QRectF(self.rect()).translated(origin)
         screen_origin = QPointF(self.screen().geometry().topLeft()) if dpr != 1.0 else QPointF()
 
@@ -230,6 +263,8 @@ class CloudyRigView(QOpenGLWidget):
         origin_y = pixel(origin.y() - screen_origin.y())
         layers = []
         for layer in self._scene_layers.values():
+            if layer.get('native_clip'):
+                continue
             occlusions = []
             for rect in layer['occlusions']:
                 if rect.intersects(viewport):
@@ -361,6 +396,7 @@ class CloudyRigView(QOpenGLWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._sync_native_clip()
         if self.stage_padding != (0, 0):
             action = (self._fixed_state or {}).get('action', self._action)
             self._set_stage_padding(action in TRIP_ACTIONS)
@@ -720,6 +756,7 @@ class CloudyRigView(QOpenGLWidget):
             log_event('renderer.opengl.released', 'OpenGL 캐릭터 렌더 자원을 해제합니다.',
                       trace_id=getattr(self.planner, 'log_trace_id', None), **self._diagnostic_snapshot())
             self._released = True
+            self._native_window_clip.clear()
             self._debug_painter = None
             self._contact_painter = None
             self._timer.stop()

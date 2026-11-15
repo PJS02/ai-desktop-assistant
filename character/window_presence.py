@@ -194,7 +194,9 @@ class WindowPresence(QObject):
         h = self.host
         rects = (self.cover[1],) if self.cover else ()
         if h.rig_view is not None:
-            h.rig_view.set_scene_layer('foreground', occlusions=rects, reveal=reveal, animated=self.is_active)
+            cover_hwnd = self.cover[0] if self.cover and not self.is_active and reveal is None else None
+            h.rig_view.set_scene_layer('foreground', occlusions=rects, reveal=reveal,
+                                       animated=self.is_active, cover_hwnd=cover_hwnd)
         else:
             self.refresh_sprite_clip()
 

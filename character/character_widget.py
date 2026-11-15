@@ -3447,7 +3447,12 @@ class CharacterWidget(QLabel):
         step = getattr(self, speed_key, DEFAULT_CHARACTER_OPTIONS[speed_key]) * speed_scale * elapsed
         reached = abs(distance) <= step
         self._movement_x = float(target_x) if reached else current + math.copysign(step, distance)
-        self.move(round(self._movement_x), self.y())
+        x = round(self._movement_x)
+        if x != self.x():
+            prepare = getattr(getattr(self, 'rig_view', None), 'prepare_host_move', None)
+            if prepare is not None:
+                prepare(QPoint(x, self.y()))
+        self.move(x, self.y())
         return reached
 
     def _smooth_moving(self):

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import math
 import os
 from types import SimpleNamespace
 
 from app_logging import log_throttled
 
 from PyQt6.QtCore import QRect, QRectF
-from PyQt6.QtGui import QPainterPath, QRegion
+from PyQt6.QtGui import QGuiApplication, QPainterPath, QRegion
 from PyQt6.QtWidgets import QApplication
 
 try:
@@ -60,6 +61,89 @@ def _visible_frame(hwnd):
     except (AttributeError, OSError):
         pass
     return None
+
+
+class NativeWindowClip:
+    """Apply a desktop rectangle as an HWND region, in physical pixels."""
+
+    def __init__(self):
+        self._applied = None
+
+    @staticmethod
+    def frame(hwnd):
+        if win32gui is not None and QGuiApplication.platformName() == "windows":
+            try:
+                if (frame := _visible_frame(hwnd)) is not None:
+                    return frame
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                return QRect(left, top, right - left, bottom - top)
+            except win32gui.error:
+                pass
+        return None
+
+    def apply(self, host, frame):
+        if host.windowHandle() is None or not host.mask().isEmpty():
+            return False
+        hwnd = int(host.winId())
+        try:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            bounds = QRect(0, 0, right - left, bottom - top)
+            cut = frame.translated(-left, -top).intersected(bounds)
+            return self._set_region(hwnd, bounds, cut)
+        except win32gui.error:
+            return False
+
+    def prepare_move(self, host, frame, position):
+        if self._applied is None:
+            return
+        hwnd, bounds, old_cut = self._applied
+        screen = host.screen()
+        origin = screen.geometry().topLeft()
+        scale = screen.devicePixelRatio()
+        x = origin.x() + math.floor((position.x() - origin.x()) * scale + .5)
+        y = origin.y() + math.floor((position.y() - origin.y()) * scale + .5)
+        cut = frame.translated(-x, -y).intersected(bounds)
+        # Open newly exposed pixels before moving the HWND off the window.
+        if cut.isEmpty() or (cut != old_cut and old_cut.contains(cut)):
+            self._set_region(hwnd, bounds, cut)
+
+    def _set_region(self, hwnd, bounds, cut):
+        try:
+            if cut.isEmpty():
+                self.clear()
+                return True
+            key = (hwnd, bounds, cut)
+            if key == self._applied:
+                return True
+            if self._applied is not None and self._applied[0] != hwnd:
+                self.clear()
+            visible = win32gui.CreateRectRgnIndirect((0, 0, bounds.width(), bounds.height()))
+            try:
+                occluded = win32gui.CreateRectRgnIndirect(
+                    (cut.x(), cut.y(), cut.right() + 1, cut.bottom() + 1))
+                try:
+                    win32gui.CombineRgn(visible, visible, occluded, win32con.RGN_DIFF)
+                    win32gui.SetWindowRgn(hwnd, visible, False)
+                    # Windows owns the region after SetWindowRgn succeeds.
+                    visible = None
+                    self._applied = key
+                    return True
+                finally:
+                    win32gui.DeleteObject(occluded)
+            finally:
+                if visible is not None:
+                    win32gui.DeleteObject(visible)
+        except win32gui.error:
+            return False
+
+    def clear(self):
+        if self._applied is not None:
+            hwnd = self._applied[0]
+            self._applied = None
+            try:
+                win32gui.SetWindowRgn(hwnd, 0, False)
+            except win32gui.error:
+                pass
 
 
 def logical_window(window):
