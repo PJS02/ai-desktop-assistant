@@ -77,6 +77,72 @@
     return gradient;
   }
 
+  const spectate = {
+    label: '팝콘 먹기',
+    duration: 9,
+    sample: t => M.pose('spectate', t),
+    frame(_cfg, pose) {
+      return {
+        bounds: [-92, -78, 184, 226],
+        point: (x, y) => bodyPoint({x: 180 + x, y: 250 + y}, pose),
+        foreground(ctx) {
+          // Match the desktop game's spectator props around the same rig pivots.
+          ctx.save();
+          ctx.rotate(pose.headAngle * radians);
+          const lens = shade(ctx, -64, -30, '#182132', '#39475b');
+          for (const x of [-62, 6]) {
+            box(ctx, x, -59, 56, 31, 10, lens, '#202638', 4);
+          }
+          shape(ctx, c => {
+            c.moveTo(-6, -48);
+            c.lineTo(6, -48);
+            c.moveTo(-62, -51);
+            c.lineTo(-75, -56);
+            c.moveTo(62, -51);
+            c.lineTo(75, -56);
+          }, null, '#202638', 4);
+          shape(ctx, c => {
+            for (const x of [-50, 18]) {
+              c.moveTo(x, -51);
+              c.lineTo(x + 13, -47);
+            }
+          }, null, '#a7e9ef', 3);
+          ctx.restore();
+
+          ctx.save();
+          ctx.translate(-5, 96);
+          shape(ctx, c => {
+            c.moveTo(-38, -16);
+            c.lineTo(38, -16);
+            c.lineTo(28, 48);
+            c.lineTo(-28, 48);
+            c.closePath();
+          }, '#fff6e9', '#b14c52', 2);
+          for (const x of [-27, -6, 15]) {
+            shape(ctx, c => {
+              c.moveTo(x, -13);
+              c.lineTo(x + 12, -13);
+              c.lineTo((x + 12) * .73, 46);
+              c.lineTo(x * .73, 46);
+              c.closePath();
+            }, '#e8797c');
+          }
+          for (let i = 0; i < 18; i++) {
+            const x = (i * 19) % 65 - 32;
+            const y = -19 - (i * 11) % 21;
+            oval(ctx, x, y, 7 + i % 3, 6 + i % 2, '#ffefbc', '#d7b875', 1.3);
+          }
+          ctx.restore();
+
+          const eat = pose.snackGesture;
+          if (eat > .05) {
+            oval(ctx, mix(8, 4, eat), mix(69, -4, eat), 5, 4, '#fff0ba', '#d7b875');
+          }
+        }
+      };
+    }
+  };
+
   function band(ctx, front) {
     const arc = c => {
       if (front) {
@@ -499,7 +565,7 @@
 
   const games = root.CloudyActivityGames.createClips({heldLayout, bodyPoint, shape, box, oval, shade});
   const clips = {
-    music, ...games, writing, reading, documents,
+    music, ...games, spectate, writing, reading, documents,
     'high-five': highFiveClip('하이파이브', highFiveMotion, 0),
     'high-five-jump': highFiveClip('점프 하이파이브', highFiveMotion.jump, 1),
     ...trip.clips
@@ -539,6 +605,8 @@
       const frame = this.activity?.frame(cfg, pose, this.activityTime);
       this.activityFrame = frame;
       this.handOverlays = [];
+      const behind = frame?.behindArms;
+      if (behind) this.paintLayer(behind, behind.paint, 'behind-arms');
       const posed = this.activity?.held ? {...pose} : pose;
       if (this.activity?.held) {
         // Solve against the pose being painted so the moving props and fingers
@@ -583,9 +651,6 @@
       if (frame?.back) this.paintLayer(frame, frame.back);
       super.face(cfg, pose, opacity, time);
       if (frame?.paint) this.paintLayer(frame, frame.paint);
-      if (frame?.farArmInFront && cfg.prefix !== 'front') {
-        this.paintArm(cfg, 1, pose, opacity, frame.hands[1]);
-      }
     }
 
     limb(cfg, index, type, pose, opacity, surface) {
@@ -594,8 +659,7 @@
         super.limb(cfg, index, type, pose, opacity, surface);
         return;
       }
-      if (index === 1 && (this.activityFrame.farArmBehindBody ||
-        (cfg.prefix !== 'front' && this.activityFrame.farArmInFront))) return;
+      if (index === 1 && this.activityFrame.farArmBehindBody) return;
       this.paintArm(cfg, index, pose, opacity, grip, surface);
     }
 

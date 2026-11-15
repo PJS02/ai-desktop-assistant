@@ -303,20 +303,33 @@
         const side = faceSide(cfg);
         const mirror = side === 1 ? -1 : 1;
         const xScale = mirror * (side ? .82 : 1);
-        const point = (x, y) => ({x: 180 + side * 29 + xScale * x, y: 333 + y});
+        const point = (x, y) => ({x: 180 + side * 53 + xScale * x, y: 333 + y});
         const right = tapAt(t, .22);
         const left = tapAt(t, .62);
         const farMirror = side ? mirror : -mirror;
+        const paint = ctx => rhythmCabinet(ctx, left, right);
+        const bounds = [-63, -22, 126, 226];
+        // The far hand passes above this part of the button deck when tapping.
+        // The cabinet's lower face and stand still sit in front of the body.
+        const farPanel = [-63, -22, 63, 29];
         return {
           point,
-          bounds: [-63, -22, 126, 226],
-          farArmInFront: true,
+          bounds,
           hands: [
             hand('tap', mirror, .97, point(mix(44, 27, right), mix(-23, 1, right)), mirror * mix(70, 44, right)),
             hand('tap', farMirror, side ? .84 : .97,
               point(mix(-44, -27, left), mix(-23, 1, left)), farMirror * mix(66, 44, left))
           ],
-          paint: ctx => rhythmCabinet(ctx, left, right)
+          behindArms: side ? {bounds: farPanel, point, paint} : null,
+          paint: side ? ctx => {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(...bounds);
+            ctx.rect(...farPanel);
+            ctx.clip('evenodd');
+            paint(ctx);
+            ctx.restore();
+          } : paint
         };
       }
     };
