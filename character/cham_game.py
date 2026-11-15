@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QWidget
 
 from app_logging import log_event
 from .dialogue_widget import UserDialogueBubble
+from .overlay_geometry import place_beside_character
 from .rps_game import RpsGameOverlay
 
 
@@ -76,7 +77,8 @@ class ChamGameOverlay(RpsGameOverlay):
         self.player_score = self.character_score = 0
         self._yaw = self._turn_from = self._turn_to = 0.0
         self._turn_at = 0.0
-        self.direction_bubble = UserDialogueBubble(DIRECTION_PENDING, duration=0, parent=self)
+        self.direction_bubble = UserDialogueBubble(
+            DIRECTION_PENDING, duration=0, parent=self, placement=place_beside_character)
         self.direction_bubble.setWindowFlag(Qt.WindowType.WindowTransparentForInput)
         self._direction_last_seen = None
         self._direction_anchor = None

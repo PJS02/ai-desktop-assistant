@@ -5,7 +5,7 @@ from PyQt6.QtCore import QEvent, QLocale, QSettings, QTimer, Qt, QSize, QRect, Q
 from math import ceil
 from pathlib import Path
 from .dialogue_styles import normalize_dialogue_style
-from .overlay_geometry import place_above_character, place_beside_character
+from .overlay_geometry import place_above_character, place_near_ankles
 
 
 class DialogueBubble(QWidget):
@@ -165,6 +165,10 @@ class DialogueBubble(QWidget):
 class UserDialogueBubble(DialogueBubble):
     """Independent user speech with a rounded body and no speaker tail."""
 
+    def __init__(self, *args, placement=place_near_ankles, **kwargs):
+        self._placement = placement
+        super().__init__(*args, **kwargs)
+
     def set_style(self, style):
         super().set_style('rounded')
         self.bubble_color = QColor('#f4f7fb')
@@ -192,7 +196,7 @@ class UserDialogueBubble(DialogueBubble):
         screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
         bounds = screen.geometry() if screen else QRect(0, 0, 1280, 720)
         self._calculate_size(bounds)
-        self.move(place_beside_character(anchor, self.size(), bounds, avoid))
+        self.move(self._placement(anchor, self.size(), bounds, avoid))
         self.text_view.move(5 + self.padding_x, 5 + self.padding_y)
         self.update()
 
