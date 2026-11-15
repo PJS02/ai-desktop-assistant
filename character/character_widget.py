@@ -11,7 +11,8 @@ from collections import deque
 from app_logging import log_event, log_throttled, new_trace_id
 from pathlib import Path
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
-from PyQt6.QtGui import QPixmap, QTransform, QPainter, QPen, QColor, QBrush, QIcon, QFont, QCursor, QShortcut, QKeySequence, QContextMenuEvent, QRegion
+from PyQt6.QtGui import (QBrush, QColor, QContextMenuEvent, QCursor, QFont, QIcon, QKeySequence,
+                         QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut, QTransform)
 from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
@@ -49,6 +50,8 @@ from .motion_options import DEFAULT_CHARACTER_OPTIONS, normalize_character_optio
 from .dialogue_options import normalize_dialogue_options
 from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
+from .desktop_geometry import (WINDOW_SCAN_AVAILABLE, desktop_windows, exposed_top_spans,
+                               exposed_windows, support_span, surface_rect)
 
 CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
 
@@ -67,12 +70,6 @@ try:
 except ImportError:
     print("[경고] context 모듈 import 실패 - 자동 대사 생성 비활성화")
     HAS_CONTEXT = False
-
-try:
-    import pygetwindow as gw
-    HAS_PYGETWINDOW = True
-except ImportError:
-    HAS_PYGETWINDOW = False
 
 # Windows API를 사용한 창 상태 확인
 try:
@@ -104,6 +101,9 @@ class Surface:
         self.height = height       # 표면 높이 (창 테두리 표시용)
         self.source_key = source_key  # 창 추적용 고유 키
         self.window_title = window_title
+        self.clip_rect = None
+        self.visible_region = None
+        self.top_spans = None
     
     def __repr__(self):
         return f"Surface({self.name}, y={self.y_level}, x=[{self.x_min},{self.x_max}], h={self.height})"
@@ -331,7 +331,6 @@ class CharacterWidget(QLabel):
         # ====== Surface 시스템 (바닥, 팝업창 등) ======
         self.surfaces = []  # 캐릭터가 올라갈 수 있는 모든 표면
         self.current_surface = None  # 현재 캐릭터가 위에 있는 표면
-        self._self_window_handle = None  # 자기 창 제외용 핸들
         
         # 캐릭터는 작업표시줄 영역을 포함한 화면 전체를 사용한다.
         screen = QApplication.primaryScreen()
@@ -377,14 +376,13 @@ class CharacterWidget(QLabel):
         print(f"  캐릭터 높이: {self.height()}px")
         print(f"  기본 표면(ground): y={ground_y}px, x=[0, {screen_width}]px")
         
-        # 윈도우 감지 타이머 (500ms마다 창 스캔)
-        if HAS_PYGETWINDOW:
+        # Share one visibility snapshot across movement, animation and reactions.
+        if WINDOW_SCAN_AVAILABLE:
             self._window_scan_timer = QTimer()
             self._window_scan_timer.timeout.connect(self._scan_windows)
-            self._window_scan_timer.start(500)  # 500ms
-            self._last_window_keys = set()  # 이전 스캔의 창 키 추적
+            self._window_scan_timer.start(150)
         else:
-            print("[경고] pygetwindow 미설치 - 창 감지 비활성화")
+            print("[경고] Windows 창 감지 기능을 사용할 수 없습니다.")
         
         # 중력 및 이동 시스템
         self.velocity_x = 0  # 수평 속도 (드래그에서 나옴)
@@ -707,8 +705,13 @@ class CharacterWidget(QLabel):
 
     def _resize_rig_stage(self, dx, dy):
         """Add transparent room for the rotating rig around its current anchor."""
-        self.setFixedSize(self.width() + 2 * dx, self.height() + 2 * dy)
-        self.move(self.x() - dx, self.y() - dy)
+        before = self.geometry()
+        after = before.adjusted(-dx, -dy, dx, dy)
+        # Move and resize together so Windows cannot move a frame with the old clip.
+        self.setMinimumSize(min(before.width(), after.width()), min(before.height(), after.height()))
+        self.setMaximumSize(max(before.width(), after.width()), max(before.height(), after.height()))
+        self.setGeometry(after)
+        self.setFixedSize(after.size())
         for axis, delta in (('_physics_position_x', dx), ('_physics_position_y', dy)):
             if (position := getattr(self, axis, None)) is not None:
                 setattr(self, axis, position - delta)
@@ -726,6 +729,11 @@ class CharacterWidget(QLabel):
 
     def moveEvent(self, event):
         super().moveEvent(event)
+        rig_view = getattr(self, 'rig_view', None)
+        if rig_view is not None:
+            rig_view.host_moved(event.pos() - event.oldPos())
+        elif (presence := getattr(self, 'window_presence', None)) is not None:
+            presence.refresh_sprite_clip()
         dialogue = getattr(self, 'dialogue_system', None)
         if dialogue is not None:
             dialogue.update_dialogue_position()
@@ -1024,57 +1032,17 @@ class CharacterWidget(QLabel):
         self.surfaces.sort(key=lambda s: s.y_level)  # Y값으로 정렬
         print(f"[Surface 추가] {surface.name}: y={surface.y_level}px")
     
-    def remove_surface(self, surface_name: str):
-        """표면 제거 (팝업창 닫힐 때)"""
-        self.surfaces = [s for s in self.surfaces if s.name != surface_name]
-        print(f"[Surface 제거] {surface_name}")
-
-    def _get_self_window_handle(self):
-        if self._self_window_handle is None:
-            try:
-                self._self_window_handle = int(self.winId())
-            except Exception:
-                self._self_window_handle = None
-        return self._self_window_handle
-
-    def _is_interactive_window(self, window, screen_geometry, debug=False):
+    def _is_interactive_window(self, window, screen_geometry):
         """사용자가 직접 상호작용하는 창만 감지 (VS Code, Chrome 같은 앱)"""
-        if not window.title:
+        title = window.title.strip()
+        if not title or window.width < 300 or window.height < 200:
             return False
 
-        # 최소화되었으면 제외
-        if getattr(window, "isMinimized", False):
-            if debug:
-                print(f"  ✗ {window.title}: 최소화됨")
-            return False
-
-        # 창 크기 검증
-        if window.width <= 0 or window.height <= 0:
-            if debug:
-                print(f"  ✗ {window.title}: 잘못된 크기 ({window.width}x{window.height})")
-            return False
-
-        # 너무 작은 창 제외 (1x1, 160x28 등)
-        if window.width < 300 or window.height < 200:
-            if debug:
-                print(f"  ✗ {window.title}: 너무 작음 ({window.width}x{window.height})")
-            return False
-
-        # 최소화된 창 좌표 제외 (-32000)
-        if window.left <= -30000 or window.top <= -30000:
-            if debug:
-                print(f"  ✗ {window.title}: 최소화된 좌표 ({window.left}, {window.top})")
-            return False
-
-        # ====== 명백한 시스템 창들만 제외 ======
         # 화면 전체를 차지하는 창 제외 (배경/시스템)
-        if (window.width >= screen_geometry.width() - 10 and 
-            window.height >= screen_geometry.height() - 10):
-            if debug:
-                print(f"  ✗ {window.title}: 전체 화면 크기 ({window.width}x{window.height})")
+        if (window.width >= screen_geometry.width() - 10
+                and window.height >= screen_geometry.height() - 10):
             return False
 
-        # 명시적 시스템 창 제외 (정확한 창 이름으로만)
         system_exact_names = [
             "Program Manager",
             "Magnifier", "OnScreen Keyboard",
@@ -1082,53 +1050,15 @@ class CharacterWidget(QLabel):
             "Windows 입력 환경",
             "XBOX"
         ]
-        for exact_name in system_exact_names:
-            if window.title.strip() == exact_name or exact_name in window.title and len(window.title) < 50:
-                if debug:
-                    print(f"  ✗ {window.title}: 시스템 창 ('{exact_name}')")
-                return False
+        if any(title == name or (name in title and len(title) < 50) for name in system_exact_names):
+            return False
 
-        # 유해한 서브스트링만 필터링
         harmful_substrings = [
             "Program Manager", "Magnifier", "OnScreen Keyboard", "NVIDIA",
             "Windows 입력", "Narrator", "Peek", "Widgets", "Cortana", "Action Center",
             "Xbox Game Bar", "Game Bar"
         ]
-        for substring in harmful_substrings:
-            if substring.lower() in window.title.lower():
-                if debug:
-                    print(f"  ✗ {window.title}: 시스템 관련 ('{substring}')")
-                return False
-
-        # "설정"은 명시적으로 제외 (설정 앱)
-        if window.title.strip() == "설정":
-            if debug:
-                print(f"  ✗ {window.title}: 설정 앱 정확히")
-            return False
-
-        # 화면과 교집합 확인
-        window_rect = QRect(window.left, window.top, window.width, window.height)
-        if not window_rect.intersects(screen_geometry):
-            if debug:
-                print(f"  ✗ {window.title}: 화면 범위 밖 ({window.left}, {window.top})")
-            return False
-
-        # 작업표시줄 패턴 제외 (높이 매우 낮고 너비가 전체)
-        if window.height < 100 and window.width > 2000:
-            if debug:
-                print(f"  ✗ {window.title}: 작업표시줄 같은 패턴 ({window.width}x{window.height})")
-            return False
-
-        if debug:
-            print(f"  ✓ 수락: {window.title} ({window.width}x{window.height}) @ ({window.left}, {window.top})")
-        return True
-
-    def _window_key(self, window):
-        handle = getattr(window, "_hWnd", None)
-        if handle is not None:
-            return f"hWnd:{handle}"
-
-        return f"{window.title}|{window.left}|{window.top}|{window.width}|{window.height}"
+        return title != "설정" and not any(part.lower() in title.lower() for part in harmful_substrings)
 
     def _surface_name_for_window(self, window, window_key):
         safe_title = "".join(ch if ch.isalnum() or ch in (" ", "-", "_") else "_" for ch in window.title).strip()
@@ -1190,8 +1120,8 @@ class CharacterWidget(QLabel):
                 or abs(self.y() + previous_bottom - standing.y_level) > 1):
             return
         body = self._physics_body_rect()
-        if (self.x() + body.x() + body.width() <= standing.x_min
-                or self.x() + body.x() >= standing.x_max):
+        left = self.x() + body.x()
+        if support_span(standing, left, left + body.width()) is None:
             return
         body_bottom = body.y() + body.height()
         aligned_y = standing.y_level - body_bottom
@@ -1221,8 +1151,7 @@ class CharacterWidget(QLabel):
         valid_surfaces = [
             surface for surface in self.surfaces
             if (surface.y_level >= foot_y or surface.name == 'ground')
-            and (not hasattr(self, "window_presence") or self.window_presence.surface_visible(surface, left, right))
-            and right > surface.x_min and left < surface.x_max
+            and support_span(surface, left, right) is not None
         ]
         return min(valid_surfaces, key=lambda surface: surface.y_level, default=None)
 
@@ -2769,8 +2698,10 @@ class CharacterWidget(QLabel):
         self.move(round(center_x - self.width() / 2), round(foot_y - body_bottom))
         self._clamp_position_to_screen()
         self.velocity_x = self.velocity_y = 0
-        self.on_ground = bool(was_grounded and standing_surface is not None
-                              and self.y() + body_bottom == standing_surface.y_level)
+        body_left = self.x() + body.x()
+        self.on_ground = bool(was_grounded and standing_surface in self.surfaces
+                              and self.y() + body_bottom == standing_surface.y_level
+                              and support_span(standing_surface, body_left, body_left + body.width()) is not None)
         self.is_jumping = False
         self._jump_physics_y = None
         self._physics_position_y = self._physics_position_x = None
@@ -3165,13 +3096,13 @@ class CharacterWidget(QLabel):
         for surface in self.surfaces:
             if not surface.name.startswith('window_') or surface.height is None:
                 continue
-            window_rect = QRect(int(surface.x_min), int(surface.y_level),
-                                int(surface.x_max - surface.x_min), int(surface.height))
+            region = getattr(surface, 'visible_region', None)
+            if region is None:
+                region = surface_rect(surface)
             feet_touch = (self.on_ground and self.current_surface is surface
                           and body.y() + body.height() == surface.y_level
-                          and body.x() + body.width() > surface.x_min
-                          and body.x() < surface.x_max)
-            if body.intersects(window_rect) or feet_touch:
+                          and support_span(surface, body.left(), body.right() + 1) is not None)
+            if region.intersects(body) or feet_touch:
                 overlapping.append(surface)
         return overlapping
 
@@ -3189,12 +3120,18 @@ class CharacterWidget(QLabel):
         painter.setPen(QPen(QColor(255, 220, 0), 2))
         painter.setBrush(QBrush(QColor(255, 230, 0, 35)))
         for surface in windows:
-            if surface.height is None:
-                continue
-            window_rect = QRect(int(surface.x_min), int(surface.y_level),
-                                int(surface.x_max - surface.x_min), int(surface.height))
             overlapping.append(surface.window_title or surface.name.removeprefix('window_'))
-            painter.drawRect(window_rect.translated(-origin))
+            region = getattr(surface, 'visible_region', None)
+            if region is None:
+                painter.drawRect(surface_rect(surface).translated(-origin))
+            else:
+                region = region.translated(-origin)
+                path = QPainterPath()
+                path.addRegion(region)
+                painter.save()
+                painter.setClipRegion(region, Qt.ClipOperation.IntersectClip)
+                painter.drawPath(path)
+                painter.restore()
         painter.restore()
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(255, 90, 90), 2))
@@ -3212,7 +3149,7 @@ class CharacterWidget(QLabel):
                  f'표면: {surface_name}', f'감지한 창: {len(windows)}개']
         if overlapping:
             lines.append('겹치는 창: ' + ', '.join(dict.fromkeys(overlapping)))
-        if not HAS_PYGETWINDOW:
+        if not WINDOW_SCAN_AVAILABLE:
             lines.append('창 감지 기능을 사용할 수 없습니다.')
         painter.setFont(QFont('Malgun Gothic', 7))
         flags = Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap
@@ -3337,6 +3274,7 @@ class CharacterWidget(QLabel):
         self.sprite_animator.play(walk_animation, fps=24, loop=True)
         
         self._target_x = target_x
+        self._walk_surface = None
         self._movement_x = float(self.x())
         self._walk_last_time = time.monotonic()
         
@@ -3527,10 +3465,20 @@ class CharacterWidget(QLabel):
         target = getattr(self, '_target_x', self.x())
         left, right = CharacterWidget._horizontal_limits(self)
         target = max(left, min(target, right))
+        surface = getattr(self, '_walk_surface', None)
+        if surface is not None:
+            body = self._physics_body_rect()
+            body_left = self.x() + body.x()
+            span = support_span(surface, body_left, body_left + body.width())
+            target_feet = target + body.x() + body.width() / 2
+            if (surface is not self.current_surface or surface not in self.surfaces
+                    or span is None or not span[0] <= target_feet < span[1]):
+                target = self.x()
         if self._advance_horizontal(target, elapsed):
             log_event('character.movement_arrived', '이동 목표 도착', category='캐릭터 상태', target_x=target, position=(self.x(), self.y()))
             self._move_timer.stop()
             self.is_moving = False
+            self._walk_surface = None
             
             # walk 애니메이션 중지 후 현재 감정 상태로 복귀 (idle 깜빡임 방지)
             if self.rig_view is None or self.sprite_animator.current_action == "walk":
@@ -3621,15 +3569,13 @@ class CharacterWidget(QLabel):
         previous_bottom = getattr(self, '_grounded_body_bottom', body_bottom)
         previous_level = getattr(self, '_grounded_surface_level',
                                  standing.y_level if standing is not None else None)
+        left = current_x + body.x()
         if (self.on_ground and not self.is_jumping and self.velocity_y >= 0
                 and standing is not None
                 and standing in getattr(self, 'surfaces', [standing])
-                and (not hasattr(self, 'window_presence') or self.window_presence.surface_visible(
-                    standing, current_x+body.x(), current_x+body.x()+body.width()))
                 and standing.y_level == previous_level
                 and abs(current_y + previous_bottom - standing.y_level) <= 1
-                and current_x + body.x() + body.width() > standing.x_min
-                and current_x + body.x() < standing.x_max):
+                and support_span(standing, left, left + body.width()) is not None):
             self.velocity_y = 0
             self.velocity_x *= (.8 if recovering else .95) ** frames
             support_bottom = (previous_bottom if CharacterWidget._uses_fixed_support_anchor(self)
@@ -3733,141 +3679,57 @@ class CharacterWidget(QLabel):
     
     # ====== 윈도우 감지 시스템 ======
     def _scan_windows(self):
-        """활성 창들을 스캔해서 Surface 자동 추가/제거 및 좌표 업데이트"""
-        if not HAS_PYGETWINDOW:
+        """Refresh all window surfaces from the same front-to-back snapshot."""
+        if not WINDOW_SCAN_AVAILABLE:
             return
-        
+
+        screen = CharacterWidget._get_screen_geometry(self)
         try:
-            # 현재 활성 창 목록
-            from .desktop_geometry import logical_window
-            windows = [logical_window(window) for window in gw.getAllWindows()]
-            current_window_keys = set()
-            screen_width, screen_height = self._get_screen_dimensions()
-            # QRect 객체 생성 (0,0부터 screen_width, screen_height까지)
-            from PyQt6.QtCore import QRect
-            screen_geometry = CharacterWidget._get_screen_geometry(self)
-            self_hwnd = self._get_self_window_handle()
-            hand_overlay = getattr(self, 'hand_overlay', None)
-            hand_handles = hand_overlay.window_handles if hand_overlay is not None else set()
-            auxiliary_windows = (getattr(self, name, None) for name in
-                                 ('action_menu', '_emotion_status', '_memory_status'))
-            auxiliary_handles = {int(window.winId()) for window in auxiliary_windows
-                                 if window is not None and window.isVisible()}
+            windows = [
+                (window, frame, region)
+                for window, frame, region in exposed_windows(desktop_windows(), screen)
+                if self._is_interactive_window(window, screen)
+            ]
+        except OSError as exc:
+            log_throttled('desktop.windows.scan_failed', '창 스캔에 실패했습니다.',
+                          interval=10, level='WARNING', error=str(exc))
+            return
 
-            # 첫 스캔 여부 확인
-            first_scan = not hasattr(self, '_first_scan_done')
-            
-            # 디버그: 첫 스캔만 요약 출력
-            if first_scan:
-                print("[윈도우 감지] 화면에 보이는 창만 Surface로 등록 (실시간 좌표 업데이트)")
-                print(f"  화면 범위: (0, 0) ~ ({screen_width}, {screen_height})")
-                print(f"  ===== 감지된 모든 창 목록 (첫 스캔) =====")
-                for i, w in enumerate(windows):
-                    print(f"    [{i}] {w.title} | {w.width}x{w.height} @ ({w.left}, {w.top})")
-                print(f"  =====================================")
-                self._first_scan_done = True
-            
-            # Window 객체를 key로 빠르게 찾을 수 있도록 맵 생성
-            window_map = {}  # window_key -> window 객체
-            
-            for window in windows:
-                window_handle = getattr(window, "_hWnd", None)
+        # Keep surviving objects so a rescan alone does not break a standing
+        # pose or an active hide. Equal-height surfaces keep native Z order.
+        previous = {s.source_key: s for s in self.surfaces if s.name.startswith('window_')}
+        surfaces = [s for s in self.surfaces if not s.name.startswith('window_')]
+        for window, frame, region in windows:
+            key = f'hWnd:{window._hWnd}'
+            surface = previous.get(key)
+            if surface is None:
+                surface = Surface(self._surface_name_for_window(window, key), frame.y(),
+                                  source_key=key)
+            surface.y_level = frame.y()
+            surface.x_min = frame.x()
+            surface.x_max = frame.x() + frame.width()
+            surface.height = min(frame.height(), screen.bottom() + 1 - frame.y())
+            surface.window_title = window.title
+            surface.clip_rect = getattr(window, 'clip_rect', None)
+            surface.visible_region = region
+            surface.top_spans = exposed_top_spans(frame, region)
+            surfaces.append(surface)
+        self.surfaces = sorted(surfaces, key=lambda surface: surface.y_level)
 
-                # 자기 창은 제외
-                if self_hwnd is not None and window_handle == self_hwnd:
-                    continue
-                if window_handle in hand_handles:
-                    continue
-                if window_handle in auxiliary_handles:
-                    continue
+        active_windows = len(windows)
+        # An unchanged snapshot should not keep triggering the mood reaction.
+        if active_windows == self.last_window_count:
+            return
+        if (not getattr(getattr(self, 'entrance', None), 'active', False)
+                and abs(active_windows - self.last_window_count) > 1):
+            self.mood_system.on_sudden_move()
+            self.window_change_count += 1
+        if active_windows > 2 and self.window_change_count > 2:
+            self.mood_system.on_task_complex()
+        self.last_window_count = active_windows
+        if self.window_change_count > 5:
+            self.window_change_count = 0
 
-                # 화면에 실제로 보이는 창만 사용 (첫 스캔에만 debug 로그 출력)
-                if not self._is_interactive_window(window, screen_geometry, debug=first_scan):
-                    continue
-                
-                window_key = self._window_key(window)
-                current_window_keys.add(window_key)
-                window_map[window_key] = window
-                
-                # 새로운 창이면 Surface 추가
-                if window_key not in self._last_window_keys:
-                    surface_name = self._surface_name_for_window(window, window_key)
-                    surface_y = window.top
-                    surface_x_min = window.left
-                    surface_x_max = window.left + window.width
-                    visible_height = min(window.height, screen_geometry.bottom() - window.top + 1)
-                    
-                    new_surface = Surface(
-                        surface_name, 
-                        surface_y, 
-                        x_min=surface_x_min, 
-                        x_max=surface_x_max,
-                        height=visible_height,
-                        source_key=window_key,
-                        window_title=window.title,
-                    )
-                    self.add_surface(new_surface)
-                    print(f"[창 감지] {surface_name}")
-                    print(f"  위치: ({window.left}, {window.top}) ~ ({window.left + window.width}, {window.top})")
-            
-            # 기존 window surface의 좌표 업데이트 (창을 움직이거나 크기 변경했을 때)
-            for surface in self.surfaces[:]:
-                if not surface.name.startswith("window_"):
-                    continue
-                
-                if surface.source_key in window_map:
-                    window = window_map[surface.source_key]
-                    # 좌표 업데이트
-                    surface.y_level = window.top
-                    surface.x_min = window.left
-                    surface.x_max = window.left + window.width
-                    surface.height = min(window.height, screen_geometry.bottom() - window.top + 1)
-                    surface.window_title = window.title
-                else:
-                    # 창이 없어졌으면 Surface 제거
-                    self.remove_surface(surface.name)
-                    print(f"[창 제거] {surface.name}")
-            
-            # 닫힌 창 제거 (ground는 제외)
-            removed = self._last_window_keys - current_window_keys
-            for window_key in removed:
-                for surface in self.surfaces[:]:
-                    if surface.name.startswith("window_") and surface.source_key == window_key:
-                        self.remove_surface(surface.name)
-                        print(f"[창 제거] {surface.name}")
-                        break
-            
-            self._last_window_keys = current_window_keys
-            
-            # 여러 창이 열려있으면 on_high_activity 트리거
-            # ground를 제외한 창 개수
-            active_windows = len([s for s in self.surfaces if s.name.startswith("window_")])
-            
-            # 창 개수가 급격히 변했으면 on_sudden_move 트리거
-            if (not getattr(getattr(self, 'entrance', None), 'active', False)
-                    and abs(active_windows - self.last_window_count) > 1):
-                self.mood_system.on_sudden_move()
-                print(f"[on_sudden_move 트리거] 창 개수 변화: {self.last_window_count} -> {active_windows}")
-                self.window_change_count += 1
-            
-            # 복잡한 작업 감지 (창이 많고 자주 변함)
-            if active_windows > 2 and self.window_change_count > 2:
-                self.mood_system.on_task_complex()
-                print(f"[on_task_complex 트리거] 활성 창={active_windows}개, 변화 횟수={self.window_change_count}")
-            
-            # # 고활동 감지 - 굳이 필요없을 듯?
-            # if active_windows > 2:
-            #     self.mood_system.on_high_activity()
-            #     print(f"[on_high_activity 트리거] 활성 창={active_windows}개")
-            
-            # 창 변화 카운트 리셋 (매 스캔마다 리셋하지 말고 누적)
-            self.last_window_count = active_windows
-            if self.window_change_count > 5:
-                self.window_change_count = 0
-            
-        except Exception as e:
-            print(f"[윈도우 감지 오류] {e}")
-    
     # ====== 대화 시스템 테스트 메서드 ======
     def test_dialogue_bubble(self, text: str = "안녕하세요!"):
         """말풍선 대화 테스트"""

@@ -4,31 +4,18 @@ import os
 import time
 from types import SimpleNamespace
 
-from PyQt6.QtCore import QObject, QPointF, QRect, QRectF, QTimer, Qt
+from PyQt6.QtCore import QObject, QPointF, QRectF, QTimer, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
+from .desktop_geometry import logical_window, support_span, window_is_cloaked as _window_is_cloaked
 from .hide_and_seek import smooth
 
 
 def covered_fraction(body, window):
     area = body.width() * body.height()
-    overlap = body.intersected(window)
+    overlap = QRectF(body).intersected(QRectF(window))
     return overlap.width() * overlap.height() / area if area > 0 and not overlap.isEmpty() else 0.
-
-
-def _window_is_cloaked(hwnd):
-    """IsWindowVisible also reports windows hidden on other virtual desktops."""
-    import ctypes
-    from ctypes import wintypes
-    try:
-        query = ctypes.windll.dwmapi.DwmGetWindowAttribute
-        query.argtypes = [wintypes.HWND, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
-        query.restype = ctypes.c_long
-        value = wintypes.DWORD()
-        return query(hwnd, 14, ctypes.byref(value), ctypes.sizeof(value)) == 0 and bool(value.value)
-    except (AttributeError, OSError):
-        return False
 
 
 def foreground_window():
@@ -37,7 +24,6 @@ def foreground_window():
         return None
     import win32gui
     import win32process
-    from .desktop_geometry import logical_window
     try:
         hwnd = win32gui.GetForegroundWindow()
         if not hwnd or not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
@@ -52,7 +38,7 @@ def foreground_window():
             return None
         x, y, right, bottom = win32gui.GetWindowRect(hwnd)
         window = logical_window(SimpleNamespace(_hWnd=hwnd, left=x, top=y, width=right-x, height=bottom-y))
-        return hwnd, QRect(window.left, window.top, window.width, window.height)
+        return hwnd, getattr(window, 'clip_rect', QRectF(window.left, window.top, window.width, window.height))
     except (OSError, win32gui.error):
         return None
 
@@ -70,10 +56,7 @@ def occluding_window(host):
     observed = foreground_window()
     if observed is None:
         return None
-    hwnd, rectangle = observed
-    body = host._physics_body_rect().translated(host.pos())
-    if not body.intersects(rectangle):
-        return None
+    hwnd, _ = observed
     key = str(getattr(getattr(host, 'current_surface', None), 'source_key', ''))
     support = int(key.split(':', 1)[1]) if key.startswith('hWnd:') else None
     if hwnd == support:
@@ -104,7 +87,8 @@ class TearOverlay(QWidget):
         self._center = QRectF(full_bounds).center()
         self._radii = full_bounds.width() * .38, full_bounds.height() * .40
         # Crop the overlay after laying out the full tear, including strokes and flaps.
-        self.setGeometry(full_bounds.adjusted(-7, -7, 7, 7).intersected(window))
+        self._window_clip = QRectF(window)
+        self.setGeometry(full_bounds.adjusted(-7, -7, 7, 7).intersected(self._window_clip.toAlignedRect()))
         self.amount = 0.
         self.opacity = 1.
 
@@ -117,6 +101,7 @@ class TearOverlay(QWidget):
         if self.amount <= 0:
             return
         p = QPainter(self)
+        p.setClipRect(self._window_clip.translated(-self.x(), -self.y()))
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setOpacity(self.opacity)
         cx, cy, rx, ry = self.reveal_ellipse()
@@ -155,7 +140,7 @@ class WindowPresence(QObject):
         self.occluded = False
         self.is_active = False
         self.hidden_since = None
-        self._candidate = None
+        self._candidate_hwnd = None
         self._candidate_since = 0.
         self.front_of = None
         self.walk_after_landing = False
@@ -183,8 +168,7 @@ class WindowPresence(QObject):
             return None
         body = h._physics_body_rect().translated(h.pos())
         if (abs(body.y()+body.height()-surface.y_level) > 2
-                or body.right()+1 <= surface.x_min or body.left() >= surface.x_max
-                or not self.surface_visible(surface, body.left(), body.right()+1)):
+                or support_span(surface, body.left(), body.right()+1) is None):
             return None
         return surface
 
@@ -193,10 +177,9 @@ class WindowPresence(QObject):
         h = self.host
         surface = self._escape_surface
         body = h._physics_body_rect()
+        left = h.x() + body.x()
         if (surface not in getattr(h, 'surfaces', ()) or surface.y_level != self._escape_level
-                or h.x()+body.x()+body.width() <= surface.x_min
-                or h.x()+body.x() >= surface.x_max
-                or not self.surface_visible(surface, h.x()+body.x(), h.x()+body.x()+body.width())):
+                or support_span(surface, left, left + body.width()) is None):
             return False
         bottom = body.y()+body.height()
         h.move(h.x(), round(surface.y_level-bottom))
@@ -207,38 +190,40 @@ class WindowPresence(QObject):
         h._physics_position_x = float(h.x())
         return True
 
-    def surface_visible(self, surface, left, right):
-        if not self.cover or not surface.name.startswith('window_'):
-            return True
-        _, r = self.cover
-        # A foreground window's own upper edge remains a valid platform.
-        return not (r.top()+3 < surface.y_level < r.bottom()
-                    and min(right, surface.x_max, r.right()) > max(left, surface.x_min, r.left()))
-
     def _apply_clip(self, reveal=None):
         h = self.host
-        rects = (self.cover[1].translated(-h.pos()),) if self.cover else ()
+        rects = (self.cover[1],) if self.cover else ()
         if h.rig_view is not None:
             h.rig_view.set_scene_layer('foreground', occlusions=rects, reveal=reveal, animated=self.is_active)
-        elif rects:
-            from PyQt6.QtGui import QRegion
-            if not self._sprite_masked:
-                self._sprite_original_mask = h.mask()
-                self._sprite_opacity = h.windowOpacity()
-            mask = QRegion(h.rect()).subtracted(QRegion(rects[0]))
-            if not self._sprite_original_mask.isEmpty():
-                mask &= self._sprite_original_mask
-            # Qt treats an empty mask as "no mask", so use opacity for a fully
-            # hidden fallback sprite while keeping its event loop alive.
-            h.setWindowOpacity(0 if mask.isEmpty() else self._sprite_opacity)
-            self._sprite_hidden = mask.isEmpty()
-            h.setMask(mask)
-            self._sprite_masked = True
-        elif self._sprite_masked:
-            h.setMask(self._sprite_original_mask) if not self._sprite_original_mask.isEmpty() else h.clearMask()
-            h.setWindowOpacity(self._sprite_opacity)
-            self._sprite_masked = False
+        else:
+            self.refresh_sprite_clip()
+
+    def refresh_sprite_clip(self):
+        if self.cover is None or self.cover[0] != self._candidate_hwnd:
+            return
+        from PyQt6.QtGui import QRegion
+        h = self.host
+        clipped = QRectF(self.cover[1]).toRect().translated(-h.pos()).intersected(h.rect())
+        if clipped.isEmpty():
+            self._clear_clip()
+            return
+        if not self._sprite_masked:
+            self._sprite_original_mask = h.mask()
+            self._sprite_opacity = h.windowOpacity()
             self._sprite_hidden = False
+        mask = QRegion(h.rect()).subtracted(QRegion(clipped))
+        if not self._sprite_original_mask.isEmpty():
+            mask &= self._sprite_original_mask
+        # Qt treats an empty mask as "no mask", so hide a fully covered sprite by opacity.
+        hidden = mask.isEmpty()
+        if hidden and not self._sprite_hidden:
+            h.setWindowOpacity(0)
+        if h.mask() != mask:
+            h.setMask(mask)
+        if not hidden and self._sprite_hidden:
+            h.setWindowOpacity(self._sprite_opacity)
+        self._sprite_hidden = hidden
+        self._sprite_masked = True
 
     def _clear_clip(self):
         if self.host.rig_view is not None:
@@ -246,10 +231,18 @@ class WindowPresence(QObject):
         if self._sprite_masked:
             h = self.host
             h.setMask(self._sprite_original_mask) if not self._sprite_original_mask.isEmpty() else h.clearMask()
-            h.setWindowOpacity(self._sprite_opacity)
+            if self._sprite_hidden:
+                h.setWindowOpacity(self._sprite_opacity)
             self._sprite_masked = self._sprite_hidden = False
 
-    def poll(self):
+    def clear_cover(self):
+        self.cover = None
+        self.occluded = False
+        self.hidden_since = None
+        self._candidate_hwnd = None
+        self._clear_clip()
+
+    def poll(self, *, resume_from_peek=False):
         if getattr(getattr(self.host, 'game_spectator', None), 'is_game_mode', False):
             self.cancel()
             self.walk_after_landing = False
@@ -265,44 +258,43 @@ class WindowPresence(QObject):
             return
         observed = self.observer() if h.window_occlusion else None
         hwnd = observed[0] if observed else None
-        previous = self.cover
+        window = QRectF(observed[1]) if observed else QRectF()
         # No overlap while walking away must not revoke an escape's immunity.
-        if self.front_of is not None and hwnd is not None and hwnd != self.front_of:
+        body = QRectF(h._physics_body_rect().translated(h.pos()))
+        if self.front_of is not None and observed and hwnd != self.front_of and body.intersects(window):
             self.front_of = None
         if self.is_active:
-            if (not observed or previous is None or observed != previous
+            if (not observed or observed != self.cover or not body.intersects(window)
                     or h.is_dragging or h._manual_control_active() or h._dialogue_is_busy()
                     or h.rig_view is not self._frame_view):
                 self.cancel()
             elif self._frame_view is None:
                 self.animate()
             return
-        body = h._physics_body_rect().translated(h.pos())
-        hide_playing = getattr(getattr(h, 'hide_and_seek', None), 'is_active', False)
-        if self.walk_after_landing and h.on_ground and not h.is_dragging and not hide_playing:
+        hide_playing = not resume_from_peek and getattr(getattr(h, 'hide_and_seek', None), 'is_active', False)
+        if (self.walk_after_landing and not h.is_dragging and not hide_playing
+                and self._standing_support() is not None):
             self.walk_after_landing = False
             self.walk_on_support()
         if hide_playing or h.is_dragging or h._manual_control_active() or self.front_of == hwnd or not observed:
-            self.cover = observed
-            self._candidate = None
-            self.occluded = False
-            self.hidden_since = None
-            self._clear_clip()
+            self.clear_cover()
+            # A visible pet can still stand in front of a window that covers a platform.
+            if observed and body.intersects(window):
+                self.cover = observed
             return
+        fraction = covered_fraction(body, window)
         now = time.monotonic()
-        if self._candidate != observed:
-            self._candidate = (hwnd, QRect(observed[1]))
+        if self._candidate_hwnd != hwnd:
+            self._candidate_hwnd = hwnd
             self._candidate_since = now
-        if now-self._candidate_since < self.COVER_CONFIRM_SECONDS:
-            self.cover = None
-            self.occluded = False
             self.hidden_since = None
-            self._clear_clip()
-            return
-        self.cover = observed
-        fraction = covered_fraction(body, observed[1])
-        self.occluded = fraction >= .6
-        if fraction > 0:
+        if resume_from_peek:
+            self._candidate_since = now - self.COVER_CONFIRM_SECONDS
+        # Debounce the foreground window identity independently of character movement.
+        confirmed = resume_from_peek or now >= self._candidate_since + self.COVER_CONFIRM_SECONDS
+        self.cover = observed if confirmed else None
+        self.occluded = confirmed and fraction >= .6
+        if confirmed:
             self._apply_clip()
         else:
             self._clear_clip()
@@ -312,7 +304,7 @@ class WindowPresence(QObject):
             h._move_timer.stop()
             h.is_moving = False
             h.animation_controller.idle.stop()
-            if self.hidden_since is None or not previous or previous[0] != hwnd:
+            if self.hidden_since is None:
                 self.hidden_since = now
             if (now-self.hidden_since >= self.HIDDEN_SECONDS and not h._manual_control_active()
                     and not h._dialogue_is_busy() and h.rig_view is not None
@@ -323,9 +315,6 @@ class WindowPresence(QObject):
                 self.begin_escape()
         else:
             self.hidden_since = None
-            if self.walk_after_landing and h.on_ground and not h.is_dragging:
-                self.walk_after_landing = False
-                self.walk_on_support()
 
     def begin_escape(self):
         h = self.host
@@ -334,7 +323,7 @@ class WindowPresence(QObject):
             return
         window = self.cover[1]
         body = h._physics_body_rect().translated(h.pos())
-        if not body.intersects(window):
+        if not QRectF(body).intersects(QRectF(window)):
             return
         self._escape_surface, self._escape_level = support, support.y_level
         h._cancel_autonomous_behavior()
@@ -369,7 +358,7 @@ class WindowPresence(QObject):
         cx, cy, rx, ry = self.overlay.reveal_ellipse()
         # Finish revealing the corners before removing the foreground mask.
         spread = 1 + .6 * fade**3
-        self._apply_clip((cx - h.x(), cy - h.y(), rx * spread, ry * spread))
+        self._apply_clip((cx, cy, rx * spread, ry * spread))
         self.overlay.opacity = 1 - fade
         self.overlay.update()
         if elapsed >= 2.1:
@@ -409,21 +398,21 @@ class WindowPresence(QObject):
 
     def cancel(self):
         self.finish()
-        self.occluded = False
-        self.hidden_since = None
-        self._candidate = None
-        self._clear_clip()
+        self.clear_cover()
 
     def walk_on_support(self):
         h = self.host
         if getattr(getattr(h, 'game_spectator', None), 'is_game_mode', False):
             return
         surface = h.current_surface
-        if surface is None or h._manual_control_active() or h._dialogue_is_busy():
+        if surface is None or surface not in h.surfaces or h._manual_control_active() or h._dialogue_is_busy():
             return
         body = h._physics_body_rect()
-        left = surface.x_min-body.left()+8
-        right = surface.x_max-body.right()-8
+        span = support_span(surface, h.x()+body.left(), h.x()+body.right()+1)
+        if span is None:
+            return
+        left = span[0]-body.left()+8
+        right = span[1]-body.right()-1-8
         if right <= left:
             return
         direction = 1 if right-h.x() >= h.x()-left else -1
@@ -435,6 +424,7 @@ class WindowPresence(QObject):
         h.sprite_animator.set_direction(h.is_flipped)
         h.sprite_animator.play('walk')
         h._target_x = target
+        h._walk_surface = surface
         h._movement_x = float(h.x())
         h._walk_last_time = time.monotonic()
         h.is_moving = True

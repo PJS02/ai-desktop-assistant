@@ -1,23 +1,36 @@
-"""Convert Win32 window pixels to Qt's device independent desktop coordinates."""
+"""Win32 window geometry and visibility in Qt's desktop coordinates."""
 from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
 import os
+from types import SimpleNamespace
+
 from app_logging import log_throttled
 
-from PyQt6.QtCore import QRect
+from PyQt6.QtCore import QRect, QRectF
+from PyQt6.QtGui import QPainterPath, QRegion
 from PyQt6.QtWidgets import QApplication
 
+try:
+    import win32con
+    import win32gui
+    import win32process
+except ImportError:
+    win32gui = None
 
+
+WINDOW_SCAN_AVAILABLE = win32gui is not None
 _DWMWA_EXTENDED_FRAME_BOUNDS = 9
+_DWMWA_CLOAKED = 14
 
 
 class LogicalWindow:
-    def __init__(self, window, rectangle):
+    def __init__(self, window, rectangle, clip_rect=None):
         self._window = window
         self.left, self.top = rectangle.x(), rectangle.y()
         self.width, self.height = rectangle.width(), rectangle.height()
+        self.clip_rect = QRectF(rectangle) if clip_rect is None else clip_rect
 
     def __getattr__(self, name):
         return getattr(self._window, name)
@@ -91,12 +104,111 @@ def logical_window(window):
                           reason='screen_not_matched')
             return window
         # DWM gives physical pixels and excludes the invisible resize border.
-        rectangle = _visible_frame(window._hWnd)
-        if rectangle is None:
-            rectangle = QRect(window.left, window.top, window.width, window.height)
-        return LogicalWindow(window, map_window_rectangle(rectangle, physical, screen.geometry()))
+        frame = _visible_frame(window._hWnd)
+        rectangle = frame if frame is not None else QRect(window.left, window.top, window.width, window.height)
+        geometry = screen.geometry()
+        logical = map_window_rectangle(rectangle, physical, geometry)
+        clip = None
+        if frame is not None:
+            # Keep fractional edges until the shader maps them back to desktop pixels.
+            scale = screen.devicePixelRatio()
+            clip = QRectF(geometry.x() + (frame.x() - physical.x()) / scale,
+                          geometry.y() + (frame.y() - physical.y()) / scale,
+                          frame.width() / scale, frame.height() / scale)
+        return LogicalWindow(window, logical, clip)
     except (AttributeError, OSError, ValueError, ZeroDivisionError) as exc:
         log_throttled('desktop.dpi.fallback', '창의 DPI 좌표 변환에 실패해 원래 좌표를 사용합니다.',
                       key=f'conversion:{window._hWnd}', interval=30, level='WARNING',
                       window_handle=window._hWnd, reason='conversion_failed', error=str(exc))
         return window
+
+
+def window_is_cloaked(hwnd):
+    """Detect windows hidden by DWM, including on other virtual desktops."""
+    try:
+        query = ctypes.windll.dwmapi.DwmGetWindowAttribute
+        query.argtypes = [wintypes.HWND, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
+        query.restype = ctypes.c_long
+        value = wintypes.DWORD()
+        return query(hwnd, _DWMWA_CLOAKED, ctypes.byref(value), ctypes.sizeof(value)) == 0 and bool(value.value)
+    except (AttributeError, OSError):
+        return False
+
+
+def desktop_windows():
+    """Yield (window, opaque) from the top of the native window stack down."""
+    handles = []
+    seen = set()
+    try:
+        # Follow the native order explicitly; focus can sit below topmost windows.
+        hwnd = win32gui.GetTopWindow(0)
+        while hwnd:
+            if hwnd in seen:
+                raise OSError('Window order changed during the scan')
+            seen.add(hwnd)
+            handles.append(hwnd)
+            hwnd = win32gui.GetWindow(hwnd, win32con.GW_HWNDNEXT)
+    except win32gui.error as exc:
+        raise OSError('Could not read window order') from exc
+
+    pid = os.getpid()
+    for hwnd in handles:
+        try:
+            if (not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd)
+                    or win32process.GetWindowThreadProcessId(hwnd)[1] == pid
+                    or win32gui.GetClassName(hwnd) in {'Progman', 'WorkerW'}
+                    or window_is_cloaked(hwnd)):
+                continue
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            if style & win32con.WS_EX_TRANSPARENT:
+                continue
+            opacity = 255
+            if style & win32con.WS_EX_LAYERED:
+                # Per-pixel transparency cannot be represented by the frame rect.
+                _, opacity, flags = win32gui.GetLayeredWindowAttributes(hwnd)
+                if flags != win32con.LWA_ALPHA or not opacity:
+                    continue
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            window = SimpleNamespace(_hWnd=hwnd, left=left, top=top, width=right-left,
+                                     height=bottom-top, title=win32gui.GetWindowText(hwnd))
+            yield logical_window(window), opacity == 255
+        except (OSError, win32gui.error):
+            # A window may disappear mid-scan or use per-pixel alpha.
+            continue
+
+
+def exposed_windows(windows, screen):
+    """Subtract higher opaque windows, including ones ineligible for interaction."""
+    covered = QRegion()
+    for window, opaque in windows:
+        frame = QRect(window.left, window.top, window.width, window.height)
+        region = QRegion(frame.intersected(screen))
+        exposed = region.subtracted(covered)
+        if not exposed.isEmpty():
+            if opaque:
+                covered = covered.united(region)
+            yield window, frame, exposed
+
+
+def exposed_top_spans(frame, region):
+    """Return the visible runs along the original top edge as half-open intervals."""
+    path = QPainterPath()
+    path.addRegion(region.intersected(QRect(frame.x(), frame.y(), frame.width(), 1)))
+    runs = [polygon.boundingRect() for polygon in path.toSubpathPolygons()]
+    return tuple(sorted((int(run.left()), int(run.right())) for run in runs))
+
+
+def support_span(surface, left, right):
+    """Find the continuous ledge under the center of the character's feet."""
+    spans = getattr(surface, 'top_spans', None)
+    if spans is None:
+        if left < surface.x_max and right > surface.x_min:
+            return surface.x_min, surface.x_max
+        return None
+    center = (left + right) / 2
+    return next((span for span in spans if span[0] <= center < span[1]), None)
+
+
+def surface_rect(surface):
+    return QRect(round(surface.x_min), round(surface.y_level),
+                 round(surface.x_max - surface.x_min), round(surface.height))

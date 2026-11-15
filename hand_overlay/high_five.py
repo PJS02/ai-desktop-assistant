@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import math
 
 from app_logging import log_event
+from character.desktop_geometry import support_span
 from character.rig_state import LANDING_ACTIONS
 from .renderer import closest_hand_point
 
@@ -93,13 +94,22 @@ class DesktopHighFive:
         # Leave room for the rear arm to emerge past the torso at contact.
         distance = max(min(48., reach), min(outward, reach))
         target = c.x() + side * (outward - distance) * scale
+        surface = c.current_surface
+        if surface is not None:
+            if surface not in getattr(c, 'surfaces', (surface,)):
+                return None
+            body = c._physics_body_rect()
+            body_left = c.x() + body.left()
+            span = support_span(surface, body_left, body_left + body.width())
+            if span is None:
+                return None
         if abs(target - c.x()) <= 2:
             return side, c.x(), contact
         left, right = c._horizontal_limits()
-        if c.current_surface is not None:
-            feet = c._physics_body_rect().center().x()
-            left = max(left, c.current_surface.x_min - feet + 5)
-            right = min(right, c.current_surface.x_max - feet - 5)
+        if surface is not None:
+            feet = body.x() + body.width() / 2
+            left = max(left, span[0] - feet + 5)
+            right = min(right, span[1] - feet - 5)
         return (side, round(target), contact) if left <= target <= right else None
 
     def _available(self, rig):

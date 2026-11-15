@@ -6,6 +6,7 @@ import time
 from PyQt6.QtCore import QObject, QTimer
 
 from .config_manager import CONFIG_FILE
+from .desktop_geometry import support_span
 
 
 class Entrance(QObject):
@@ -50,17 +51,18 @@ class Entrance(QObject):
         body = h._physics_body_rect()
         self.bottom = body.y() + body.height()
         x = self.saved[0] if self.saved else screen.x() + screen.width() * .78 - body.center().x()
-        x = max(screen.x() - body.x(), min(x, screen.x() + screen.width() - body.x() - body.width()))
+        x = round(max(screen.x() - body.x(), min(x, screen.x() + screen.width() - body.x() - body.width())))
         ground = next(s for s in h.surfaces if s.name == 'ground')
         self.surface = ground
         if self.saved and not self.use_peek:
             feet = self.saved[1] + self.bottom
+            left = x + body.x()
             candidates = [s for s in h.surfaces
-                          if s.x_min <= x + body.center().x() <= s.x_max
-                          and abs(s.y_level - feet) <= 24]
+                          if abs(s.y_level - feet) <= 24
+                          and support_span(s, left, left + body.width()) is not None]
             if candidates:
                 self.surface = min(candidates, key=lambda s: abs(s.y_level - feet))
-        self.x, self.y = round(x), self.surface.y_level - self.bottom
+        self.x, self.y = x, self.surface.y_level - self.bottom
         self.peek_y = screen.y() + screen.height() - body.y() - body.height() * .55
         h.move(self.x, round(self.peek_y if self.use_peek else self.y))
         if h.rig_view is not None:
@@ -95,6 +97,9 @@ class Entrance(QObject):
         if h.is_dragging:
             self.finish(interrupted=True)
             return
+        if not self.use_peek and self.surface.name != 'ground' and not self._has_support(h._physics_body_rect()):
+            self.finish()
+            return
         if self.use_peek:
             y = self.peek_y + (self.y - self.peek_y) * self.ease(
                 (t - self.PEEK_SECONDS) / self.RISE_SECONDS)
@@ -106,14 +111,19 @@ class Entrance(QObject):
         if t >= duration:
             self.finish()
 
+    def _has_support(self, body):
+        left = self.x + body.x()
+        return (self.surface in self.host.surfaces
+                and support_span(self.surface, left, left + body.width()) is not None)
+
     def finish(self, interrupted=False):
         h = self.host
         self.timer.stop()
         self.pose('idle')
         body = h._physics_body_rect()
         self.bottom = body.y() + body.height()
-        # A support may disappear while the entrance is playing.
-        if self.surface not in h.surfaces:
+        # The ledge under the saved spot may be covered during the entrance.
+        if not self._has_support(body):
             self.surface = next(s for s in h.surfaces if s.name == 'ground')
         self.y = self.surface.y_level - self.bottom
         if not interrupted:
