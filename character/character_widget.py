@@ -33,6 +33,7 @@ from .russell_emotion_dialog import RussellEmotionDialog
 from .status_windows import EmotionStatusWindow, MemoryStatusWindow
 from .personality_system import PersonalitySystem
 from ai.gemini_client import automatic_dialogue_config, is_screen_privacy_enabled, load_gemini_config, request_gemini
+from context.igdb import IGDBLookup, load_igdb_config
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
@@ -42,7 +43,7 @@ from .drag_shake import DragShakeDetector
 from .dialogue_persona import character_voice
 from .window_presence import WindowPresence
 from .game_spectator import GameSpectator
-from .game_detection import GameActivity, activity_category, game_context_instruction
+from .game_detection import activity_category, game_context_instruction, resolve_game_activity
 from .game_reactions import (decode_game_response, game_response_schema, game_response_instruction,
                              prepare_game_image, GAME_RESPONSE_MAX_AGE)
 from .action_menu import CharacterActionMenu
@@ -467,6 +468,7 @@ class CharacterWidget(QLabel):
         self.automatic_actions = AutomaticActions(self, self)
         self.hide_and_seek = HideAndSeek(self)
         self.window_presence = WindowPresence(self)
+        self.igdb_lookup = IGDBLookup(load_igdb_config())
         self.game_spectator = GameSpectator(self)
         self.dialogue_system.ai_motion_changed.connect(self.automatic_actions.set_ai_state)
         # 모델 종류와 무관하게 공통 perception 이벤트만 캐릭터 반응으로 전달한다.
@@ -959,6 +961,8 @@ class CharacterWidget(QLabel):
                 log_event('dialogue.automatic_cancelled', '앱 종료로 자동 응답 무효화', category='대화·AI', trace_id=context.get('trace_id'))
             getattr(self, '_automatic_log_contexts', {}).clear()
         self._character_closing = True
+        if (lookup := getattr(self, 'igdb_lookup', None)) is not None:
+            lookup.close()
         if hasattr(self, "game_spectator"):
             self.game_spectator.shutdown()
         if hasattr(self, "window_presence"):
@@ -1281,13 +1285,20 @@ class CharacterWidget(QLabel):
             process = info.get('process', '').lower()
             title = info.get('title', '')
             
-            # 활동 카테고리 결정
             category = activity_category(process)
-            game_visual = category == 'game' and config.get('game_spectator', True)
-            game_instruction = (game_context_instruction(GameActivity(process, title), visual=game_visual)
-                                if category == 'game' else '')
+            lookup = getattr(self, 'igdb_lookup', None)
+            checking_igdb = category == 'work' and lookup is not None and lookup.enabled
+            game = resolve_game_activity(process, title, category, lookup, wait=True)
+            if checking_igdb:
+                # Lookup time can span a foreground change or a credential edit.
+                if (getattr(self, '_character_closing', False) or lookup is not self.igdb_lookup
+                        or get_active_window_info() != info):
+                    return
+            if game is not None:
+                category = 'game'
+            game_visual = game is not None and config.get('game_spectator', True)
+            game_instruction = game_context_instruction(game, visual=game_visual) if game is not None else ''
 
-            # Game context is explicit about the limits of process-only detection.
             prompt = (
                 f"{game_instruction}\n"
                 f"입력 정보:\n"

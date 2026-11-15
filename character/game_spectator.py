@@ -14,9 +14,10 @@ from .rig_state import LANDING_ACTIONS
 class GameSpectator(QObject):
     MAX_RESPONSE_AGE = GAME_RESPONSE_MAX_AGE
 
-    def __init__(self, host, observer=active_game_activity):
+    def __init__(self, host, observer=None):
         super().__init__(host)
-        self.host, self.observer = host, observer
+        self.host = host
+        self.observer = observer if observer is not None else self._observe
         self.activity = None
         self.is_game_mode = False
         self.is_active = False
@@ -26,6 +27,9 @@ class GameSpectator(QObject):
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.poll)
         self.timer.start()
+
+    def _observe(self):
+        return active_game_activity(getattr(self.host, 'igdb_lookup', None))
 
     def poll(self):
         h = self.host

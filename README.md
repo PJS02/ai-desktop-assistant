@@ -12,7 +12,9 @@ pip install -r requirements.txt
 
 3. API 키 설정
 
-템플릿을 복사해 실제 설정 파일을 만드세요.
+IGDB는 앱 실행 후 **설정 → 게임 목록**에서 Twitch Client ID와 Client Secret을 입력하고 적용하면 사용할 수 있습니다. 로컬 규칙에서 분류되지 않은 활성 창의 제목과 실행 파일 이름으로 IGDB를 조회합니다.
+
+파일에서 직접 설정할 때는 템플릿을 복사해 실제 설정 파일을 만드세요.
 
 ai/config/gemini_config.template.json -> ai/config/gemini_config.json
 context/config/igdb_config.template.json -> context/config/igdb_config.json

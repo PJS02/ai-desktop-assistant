@@ -1,15 +1,14 @@
 import json
 import os
-import re
 import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from ai.gemini_client import automatic_dialogue_config, load_gemini_config, request_gemini
+from .igdb import (extract_title_query, load_igdb_config, normalize_game_query,
+                   request_igdb_token, search_igdb_games)
 from .rules_config import get_rules
 
 
@@ -260,10 +259,7 @@ def generate_dialogue_json(start_server=False):
             pass
 
     gemini_config = load_gemini_config()
-    igdb_config_path = config_dir / "igdb_config.json"
-    igdb_config = load_json_file(igdb_config_path, {})
-    if not igdb_config.get("client_id") or not igdb_config.get("client_secret"):
-        igdb_config = None
+    igdb_config = load_igdb_config()
 
     rules = get_rules()
 
@@ -307,27 +303,14 @@ def generate_dialogue_json(start_server=False):
 def get_igdb_token(config, token_cache_path):
     cached = load_json_file(token_cache_path, {})
     now_ts = time.time()
-    if cached.get("access_token") and cached.get("expires_at", 0) > now_ts + 30:
+    if (cached.get("client_id") == config["client_id"]
+            and cached.get("access_token") and cached.get("expires_at", 0) > now_ts + 30):
         return cached["access_token"]
 
-    # IGDB 호출용 Twitch 앱 토큰을 발급받습니다.
-    token_url = "https://id.twitch.tv/oauth2/token"
-    body = urlencode(
-        {
-            "client_id": config["client_id"],
-            "client_secret": config["client_secret"],
-            "grant_type": "client_credentials",
-        }
-    ).encode("utf-8")
-    req = Request(token_url, data=body, method="POST")
-    with urlopen(req, timeout=10) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-
-    access_token = payload["access_token"]
-    expires_in = payload.get("expires_in", 0)
+    access_token, expires_in = request_igdb_token(config)
     save_json_file(
         token_cache_path,
-        {"access_token": access_token, "expires_at": now_ts + expires_in},
+        {"client_id": config["client_id"], "access_token": access_token, "expires_at": now_ts + expires_in},
     )
     return access_token
 
@@ -337,53 +320,8 @@ def igdb_search_game(title_query, config, token_cache_path):
         return None
 
     token = get_igdb_token(config, token_cache_path)
-    # 첫 검색 결과를 매칭으로 취급합니다.
-    endpoint = "https://api.igdb.com/v4/games"
-    body = f'search "{title_query}"; fields id,name; limit 1;'
-    req = Request(endpoint, data=body.encode("utf-8"), method="POST")
-    req.add_header("Client-ID", config["client_id"])
-    req.add_header("Authorization", f"Bearer {token}")
-
-    with urlopen(req, timeout=10) as resp:
-        results = json.loads(resp.read().decode("utf-8"))
-
-    if results:
-        return results[0]
-    return None
-
-
-def extract_title_query(title, patterns):
-    if not title:
-        return ""
-
-    # 제목에서 불필요한 부분을 제거합니다.
-    for pattern in patterns:
-        match = re.match(pattern, title, flags=re.IGNORECASE)
-        if match:
-            candidate = match.group("title").strip()
-            if candidate:
-                return candidate
-
-    cleaned = re.sub(r"\s*[-|:]\s*.*$", "", title)
-    cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
-    cleaned = re.sub(r"\([^\)]*\)", "", cleaned)
-    cleaned = re.sub(
-        r"\s+v?\d+\.\d+(?:\.\d+)*\b.*$",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    return cleaned.strip()
-
-
-def normalize_game_query(value):
-    # IGDB 검색용으로 프로세스/제목을 정규화합니다.
-    if not value:
-        return ""
-    value = value.replace(".exe", "").replace("_", " ").strip()
-    value = re.sub(r"([a-z])([A-Z])", r"\1 \2", value)
-    value = re.sub(r"\s+", " ", value).strip()
-    return value
+    results = search_igdb_games(title_query, config["client_id"], token)
+    return results[0] if results else None
 
 
 def classify_activity(info, rules, igdb_config, cache_dir):
@@ -411,7 +349,7 @@ def classify_activity(info, rules, igdb_config, cache_dir):
         return "WEB"
 
     # 로컬 규칙이 아니면 IGDB로 확인합니다.
-    if igdb_config:
+    if igdb_config and igdb_config.get("client_id") and igdb_config.get("client_secret"):
         proc_name = normalize_game_query(info["process"]) if info["process"] else ""
         title_query = normalize_game_query(
             extract_title_query(info["title"], rules["title_extract_patterns"])
@@ -447,10 +385,7 @@ def main():
     url_cache_path = cache_dir / "url_cache.json"
     start_url_server(8765, url_cache_path)
     gemini_config = load_gemini_config()
-    igdb_config_path = config_dir / "igdb_config.json"
-    igdb_config = load_json_file(igdb_config_path, {})
-    if not igdb_config.get("client_id") or not igdb_config.get("client_secret"):
-        igdb_config = None
+    igdb_config = load_igdb_config()
 
     # 분류 규칙과 제목 패턴입니다.
     rules = get_rules()

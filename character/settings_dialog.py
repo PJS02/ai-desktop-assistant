@@ -4,6 +4,7 @@ import base64
 import binascii
 from ai.gemini_client import is_screen_privacy_enabled
 from app_logging import log_event
+from context.igdb import normalize_igdb_config
 
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
@@ -97,6 +98,7 @@ class SettingsDialog(QDialog):
         local['ai'].setdefault('automatic_model', '')
         local['ai']['screen_privacy_enabled'] = is_screen_privacy_enabled(local['ai'])
         local['game_rules'] = normalize_game_rules(local.get('game_rules'))
+        local['igdb'] = normalize_igdb_config(local.get('igdb'))
         self.setWindowTitle('설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
         self.resize(700, 640)
@@ -1111,6 +1113,16 @@ class SettingsDialog(QDialog):
     def _game_rules_page(self, local):
         _, _, form = self._page('게임 목록', '게임으로 인식할 프로그램을 편집하세요. 한 줄에 하나씩 입력하고 적용을 눌러 저장합니다.')
         self.game_rules_tab = self.tabs.widget(self.tabs.count()-1)
+        self.igdb_client_id = QLineEdit(local['igdb']['client_id'])
+        self.igdb_client_id.setClearButtonEnabled(True)
+        self.igdb_client_secret = QLineEdit(local['igdb']['client_secret'])
+        self.igdb_client_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.igdb_client_secret.setClearButtonEnabled(True)
+        form.addRow('Twitch Client ID', self.igdb_client_id)
+        form.addRow('Twitch Client Secret', self.igdb_client_secret)
+        igdb_hint = QLabel('로컬 규칙으로 분류되지 않은 활성 창의 제목과 실행 파일 이름으로 IGDB를 조회합니다. 두 칸을 모두 비워 저장하면 조회를 끕니다.')
+        igdb_hint.setWordWrap(True)
+        form.addRow(igdb_hint)
         self.game_processes = QPlainTextEdit()
         self.game_processes.setPlaceholderText('MyGame.exe\n실행 파일 이름을 정확히 입력하세요.')
         self.game_processes.setPlainText('\n'.join(local['game_rules']['included_processes']))
@@ -1149,7 +1161,7 @@ class SettingsDialog(QDialog):
         self.game_excluded_processes.setMaximumHeight(110)
         self.game_excluded_processes.setAccessibleName('게임 분류에서 제외할 실행 파일 목록')
         form.addRow('제외할 앱', self.game_excluded_processes)
-        hint = QLabel('제외 목록이 등록 목록·키워드보다 우선합니다. 게임 관람 동작은 캐릭터 탭의 게임 활동 반응 설정을 따릅니다.')
+        hint = QLabel('제외 목록은 등록 목록, 키워드, IGDB 조회보다 우선합니다. 게임 관람 동작은 캐릭터 탭의 게임 활동 반응 설정을 따릅니다.')
         hint.setWordWrap(True)
         form.addRow('', hint)
         self._refresh_game_processes()
@@ -1187,7 +1199,9 @@ class SettingsDialog(QDialog):
                            'sync_bubble': self.sync_bubble.isChecked()},
                  'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.currentText().strip(),
                         'automatic_model': self.automatic_model.currentText().strip(),
-                        'screen_privacy_enabled': self.screen_privacy.isChecked()}}
+                         'screen_privacy_enabled': self.screen_privacy.isChecked()},
+                 'igdb': {'client_id': self.igdb_client_id.text().strip(),
+                          'client_secret': self.igdb_client_secret.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         local['character']['window_occlusion'] = self.window_occlusion.isChecked()
@@ -1233,6 +1247,16 @@ class SettingsDialog(QDialog):
             self.tabs.setCurrentWidget(self.game_rules_tab)
             self.game_processes.setFocus()
             return
+        igdb = changes['local'].get('igdb')
+        if igdb is not None:
+            try:
+                normalize_igdb_config(igdb, require_pair=True)
+            except ValueError as exc:
+                self.status.setText(str(exc))
+                self.tabs.setCurrentWidget(self.game_rules_tab)
+                missing = self.igdb_client_secret if igdb['client_id'] else self.igdb_client_id
+                missing.setFocus()
+                return
         ai = changes['local'].get('ai')
         if ai and ai['api_key'] and not ai['model'] and any(
                 ai[key] != self.local_baseline['ai'][key] for key in ('api_key', 'model')):

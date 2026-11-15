@@ -1,4 +1,5 @@
 from app_logging import log_event, new_trace_id
+from context.igdb import IGDBLookup, load_igdb_config, save_igdb_config
 from inspect import signature
 
 from PyQt6.QtCore import QObject, QTimer
@@ -76,6 +77,7 @@ class SettingsController(QObject):
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
         local['game_rules'] = load_game_rules()
+        local['igdb'] = load_igdb_config()
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
         self.dialog = SettingsDialog(local, self.character,
@@ -266,6 +268,12 @@ class SettingsController(QObject):
                     self.character.apply_dialogue_options(value)
                 elif section == 'game_rules':
                     value = save_game_rules(value, trace_id=self.operation_id)
+                    self.character.game_spectator.poll()
+                elif section == 'igdb':
+                    value = save_igdb_config(value)
+                    if (previous := getattr(self.character, 'igdb_lookup', None)) is not None:
+                        previous.close()
+                    self.character.igdb_lookup = IGDBLookup(value)
                     self.character.game_spectator.poll()
                 elif section == 'ai':
                     save_ai_settings(value['api_key'], value['model'],
