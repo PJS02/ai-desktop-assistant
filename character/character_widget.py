@@ -118,6 +118,7 @@ class CharacterWidget(QLabel):
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     MOUSE_THROW_MIN_SPEED = 400.  # Logical pixels per second.
+    MOUSE_THROW_MAX_SPEED = 10_800.
     TRIP_HORIZONTAL_SPEED = 780.  # Shared mouse/hand release threshold, in logical pixels per second.
     FLOOR_BOUNCE_SPEED = 20.  # Vertical logical pixels per 60 Hz physics frame.
     PET_MIN_SAMPLE_INTERVAL = 0.1
@@ -2287,7 +2288,7 @@ class CharacterWidget(QLabel):
         speed = math.hypot(vx, vy)
         if speed < CharacterWidget.MOUSE_THROW_MIN_SPEED:
             return 0., 0.
-        scale = min(1., 3600. / speed)
+        scale = min(1., CharacterWidget.MOUSE_THROW_MAX_SPEED / speed)
         return vx * scale, vy * scale
 
     def mouseReleaseEvent(self, event, *, hand_throw_velocity=None):
