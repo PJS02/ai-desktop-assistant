@@ -228,7 +228,6 @@ class HideAndSeek(QObject):
         self.found_at = None
         self.peek_offset = (0., 0.)
         self.wave_started = False
-        self.wave_ended_at = None
         self.started = time.monotonic()
         h._move_timer.stop()
         h.animation_controller.idle.stop()
@@ -302,13 +301,6 @@ class HideAndSeek(QObject):
         animator.play('wave', loop=False)
 
     def _tick_left_discovery(self, now):
-        if self.wave_ended_at is not None:
-            progress = smooth((now - self.wave_ended_at) / .4)
-            if progress == 1.:
-                self.finish(found=True)
-                return
-            self._set_offset((self.wave_offset * (1 - progress), 0.))
-            return
         if self.wave_started:
             return
         progress = smooth((now - self.found_at) / _REVEAL_SECONDS)
@@ -321,17 +313,16 @@ class HideAndSeek(QObject):
             self._play_found_wave()
 
     def _end_left_wave(self):
-        if self.is_active and self.wave_started and self.wave_ended_at is None:
-            self.wave_ended_at = time.monotonic()
-            self.host._rig_manual_action = 'peek_' + self.mode
-            self.host.sprite_animator.play('idle')
+        if self.is_active and self.wave_started:
+            self.finish(found=True)
 
     def _set_offset(self, offset):
         h = self.host
         clip_rect = getattr(self.surface, 'clip_rect', None)
-        h.rig_view.set_scene_layer('hide_and_seek', offset=offset,
-                                   occlusions=(clip_rect if clip_rect is not None else self.window_rect,), animated=True,
-                                   input_margin=h._physics_body_rect().width()*.25 if self.mode != 'top' else 0.)
+        self._frame_view.set_scene_layer('hide_and_seek', offset=offset,
+                                        occlusions=(clip_rect if clip_rect is not None else self.window_rect,),
+                                        animated=True,
+                                        input_margin=h._physics_body_rect().width()*.25 if self.mode != 'top' else 0.)
 
     def tick(self):
         if not self.is_active:
@@ -389,6 +380,8 @@ class HideAndSeek(QObject):
             return
         self.timer.stop()
         h = self.host
+        shift_x = self.wave_offset if found and self.left_wave_x is not None else 0
+        final_position = self.original_position + QPoint(shift_x, 0)
         h._physics_position_y = h._physics_position_x = None
         h._gravity_last_time = time.monotonic()
         h.velocity_x = h.velocity_y = 0
@@ -401,6 +394,12 @@ class HideAndSeek(QObject):
                     view.animation_finished.disconnect(self._end_left_wave)
             except (TypeError, RuntimeError):
                 pass
+            if self.wave_offset:
+                self._set_offset((0., 0.))
+                view.set_peek_padding(0, shift_x=shift_x)
+        if h.pos() != final_position:
+            h.move(final_position)
+        if view is not None:
             # Restore the foreground clip before the peek layer is removed.
             if not h._character_closing and (presence := getattr(h, 'window_presence', None)) is not None:
                 presence.poll(resume_from_peek=True)
@@ -410,10 +409,6 @@ class HideAndSeek(QObject):
             h.sprite_animator.set_yaw(self.original_yaw)
             h.sprite_animator.set_emotion_override(self.original_override)
             h.sprite_animator.play('idle')
-        if view is not None and self.wave_offset:
-            view.set_peek_padding(0)
-        if h.pos() != self.original_position:
-            h.move(self.original_position)
         self.is_active = False
         h._autonomous_behavior_active = False
         h._autonomous_behavior_generation += 1

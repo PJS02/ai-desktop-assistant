@@ -704,16 +704,16 @@ class CharacterWidget(QLabel):
         else:
             self.update_action(self.mood_system.decide_emotion())
 
-    def _resize_rig_stage(self, dx, dy):
-        """Add transparent room for the rotating rig around its current anchor."""
+    def _resize_rig_stage(self, dx, dy, shift_x=0):
+        """Resize the padded rig and apply any horizontal offset in the same move."""
         before = self.geometry()
-        after = before.adjusted(-dx, -dy, dx, dy)
+        after = before.adjusted(-dx, -dy, dx, dy).translated(shift_x, 0)
         # Move and resize together so Windows cannot move a frame with the old clip.
         self.setMinimumSize(min(before.width(), after.width()), min(before.height(), after.height()))
         self.setMaximumSize(max(before.width(), after.width()), max(before.height(), after.height()))
         self.setGeometry(after)
         self.setFixedSize(after.size())
-        for axis, delta in (('_physics_position_x', dx), ('_physics_position_y', dy)):
+        for axis, delta in (('_physics_position_x', dx - shift_x), ('_physics_position_y', dy)):
             if (position := getattr(self, axis, None)) is not None:
                 setattr(self, axis, position - delta)
         if hasattr(self, '_grounded_body_bottom'):

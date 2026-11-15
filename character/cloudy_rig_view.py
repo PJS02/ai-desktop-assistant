@@ -97,7 +97,7 @@ def _texture_storage_bytes(part):
 class CloudyRigView(QOpenGLWidget):
     frame_requested = pyqtSignal()
     animation_finished = pyqtSignal()
-    stage_padding_changed = pyqtSignal(int, int)
+    stage_padding_changed = pyqtSignal(int, int, int)
     pose_bounds_changed = pyqtSignal()
     failed = pyqtSignal(str)
 
@@ -374,11 +374,11 @@ class CloudyRigView(QOpenGLWidget):
                       (round(pad_y*dpr) + (height - vh) // 2) / dpr,
                       vw / dpr, vh / dpr)
 
-    def set_peek_padding(self, pixels):
+    def set_peek_padding(self, pixels, *, shift_x=0):
         self._peek_padding = pixels
-        self._set_stage_padding(self._action in TRIP_ACTIONS)
+        self._set_stage_padding(self._action in TRIP_ACTIONS, shift_x=shift_x)
 
-    def _set_stage_padding(self, needs_room):
+    def _set_stage_padding(self, needs_room, *, shift_x=0):
         # The falling silhouette can extend about 140 rig units past either side.
         height = self.height() - 2 * self.stage_padding[1]
         fall_pad_x = math.ceil(height * 160 / 540) if needs_room else 0
@@ -392,7 +392,7 @@ class CloudyRigView(QOpenGLWidget):
             if self.parentWidget() is None:
                 self.resize(self.width() + 2 * dx, self.height() + 2 * dy)
             else:
-                self.stage_padding_changed.emit(dx, dy)
+                self.stage_padding_changed.emit(dx, dy, shift_x)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
