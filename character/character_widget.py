@@ -16,7 +16,7 @@ from PIL import Image
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
 from PyQt6.QtGui import (QBrush, QColor, QContextMenuEvent, QCursor, QFont, QIcon, QKeySequence,
                          QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut, QTransform)
-from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QTimer, Qt, QPoint, QRect, QMimeData, QUrl, QFileInfo, QStandardPaths, pyqtSignal, pyqtSlot
 from perception.controller import PerceptionController
 from perception.receiver import QtPerceptionReceiver
 from hand_overlay.interaction_host import ContactFeedback
@@ -58,6 +58,7 @@ from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 from .desktop_geometry import (WINDOW_SCAN_AVAILABLE, desktop_windows, exposed_top_spans,
                                exposed_windows, support_span, surface_rect)
+from .desktop_icons import notify_item_moved, queue_returned_icon, refresh_desktop_after_drop
 
 CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
 
@@ -2920,13 +2921,14 @@ class CharacterWidget(QLabel):
         
         if mime_data.hasUrls():
             urls = mime_data.urls()
-            acquired = 0
+            acquired = []
             for url in urls:
                 file_path = url.toLocalFile()
-                if file_path:
-                    acquired += int(self.acquire_item(file_path, appraise=False))
+                if file_path and self.acquire_item(file_path, appraise=False):
+                    acquired.append(Path(file_path))
             if acquired:
-                experience(self, "file_received", count=acquired,
+                refresh_desktop_after_drop(acquired)
+                experience(self, "file_received", count=len(acquired),
                            event_id=new_trace_id('file-received'))
             event.acceptProposedAction()
 
@@ -2970,6 +2972,7 @@ class CharacterWidget(QLabel):
             
             # 리스트에 추가
             self.held_items.append(str(dest_path))
+            notify_item_moved(file_path, dest_path)
             
             if appraise:
                 experience(self, 'file_received', count=1, event_id=new_trace_id('file-received'))
@@ -3047,13 +3050,10 @@ class CharacterWidget(QLabel):
             return
         
         try:
-            desktop_path = Path.home() / "Desktop"
-            if not desktop_path.exists():
-                desktop_path = Path.home() / "바탕화면"  # 한글 시스템
-            
-            if not desktop_path.exists():
-                print("[오류] 바탕화면 경로를 찾을 수 없습니다")
-                return
+            desktop_location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
+            if not desktop_location or not Path(desktop_location).is_dir():
+                raise FileNotFoundError("바탕화면 경로를 찾을 수 없습니다")
+            desktop_path = Path(desktop_location)
             
             # 반환할 아이템 선택
             item_path = self._remaining_items_to_release[0]
@@ -3081,6 +3081,8 @@ class CharacterWidget(QLabel):
             self.held_items.remove(item_path)
             if item_path in self.held_items_icons:
                 del self.held_items_icons[item_path]
+            notify_item_moved(held_item_path, dest_path)
+            queue_returned_icon(self, dest_path)
             
             print(f"[아이템 반환] {item_name}")
             print(f"   -> {dest_path}")
