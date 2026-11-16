@@ -113,6 +113,7 @@ class EmotionStatusWindow(CharacterStatusWindow):
     def __init__(self, character):
         super().__init__(character, '감정 표시', layout_width=760, layout_height=500)
         self.mood = character.mood_system
+        self.overlay = character.emotion_delta_overlay
         self.resize(974, 626)
         columns = QHBoxLayout()
         columns.setSpacing(16)
@@ -161,8 +162,8 @@ class EmotionStatusWindow(CharacterStatusWindow):
         left.addWidget(occ_panel)
 
         right.addWidget(QLabel('감정 변화 로그', objectName='statusHeading'))
-        log_header = QLabel('감정 성분과 러셀 목표 좌표의 변화량', objectName='statusMeta', wordWrap=True)
-        log_header.setToolTip('‘현재’는 사건 반영 직후의 러셀 좌표 변화량입니다.')
+        log_header = QLabel('캐릭터 위 감정 팝업과 러셀 목표 좌표 변화량',
+                            objectName='statusMeta', wordWrap=True)
         right.addWidget(log_header)
         self.log = QTextBrowser(accessibleName='감정 변화 로그')
         self.log.document().setDocumentMargin(10)
@@ -181,7 +182,7 @@ class EmotionStatusWindow(CharacterStatusWindow):
         super().hideEvent(event)
 
     def refresh(self):
-        state = self.mood.get_emotion_explanation(limit=self.HISTORY_LIMIT)
+        state = self.mood.get_emotion_explanation(limit=12)
         valence, arousal, emotion = state['valence'], state['arousal'], state['emotion']
         self.canvas.set_state(valence, arousal, emotion, immediate=True)
         self.canvas.set_history(state['coordinate_history'])
@@ -190,54 +191,42 @@ class EmotionStatusWindow(CharacterStatusWindow):
             label.setText(value)
         for component in state['occ_components']:
             self.occ_values[component['name']].setText(f"{component['value']:.2%}")
-        events = [
-            event for event in state['recent_events']
-            if any(event['occ_changes'].values()) or any(event['target_changes'].values())
-            or any(event['coordinate_changes'].values())
-        ]
-        if events == self._displayed:
+        popups = tuple(self.overlay.history)[:self.HISTORY_LIMIT]
+        if popups == self._displayed:
             return
-        self._displayed = events
+        self._displayed = popups
         scroll = self.log.verticalScrollBar()
         position, maximum = scroll.value(), scroll.maximum()
-        self.log.setHtml(self._log_html(events))
+        self.log.setHtml(self._log_html(popups))
         if position > 0:
             scroll.setValue(position + scroll.maximum() - maximum)
 
     @staticmethod
-    def _log_html(events):
-        if not events:
-            return '<p style="color: #516278;">아직 기록된 감정 변화가 없어요.</p>'
+    def _log_html(popups):
+        if not popups:
+            return '<p style="color: #516278;">아직 표시된 감정 팝업이 없어요.</p>'
 
-        def signed_change(delta, decimals):
-            if not delta:
-                return '0'
-            sign = '+' if delta > 0 else '-'
-            minimum = 10 ** -decimals
-            if abs(delta) < minimum:
-                return f'{sign}&lt;{minimum:.{decimals}f}'
-            return f'{sign}{abs(delta):.{decimals}f}'
+        def delta_cell(delta):
+            if delta is None:
+                text, color = '—', '#516278'
+            elif delta:
+                sign = '+' if delta > 0 else '-'
+                magnitude = f'{abs(delta):.4f}' if abs(delta) >= 0.0001 else '&lt;0.0001'
+                text, color = sign + magnitude, '#185182' if delta > 0 else '#9a433c'
+            else:
+                text, color = '0', '#516278'
+            return f'<td align="right"><span style="color: {color};">{text}</span></td>'
 
-        def delta_cell(target, current):
-            color = '#185182' if target > 0 else '#9a433c' if target < 0 else '#516278'
-            text = f'<span style="color: {color};">{signed_change(target, 4)}</span>'
-            if current:
-                text += f'<br><small>현재 {signed_change(current, 4)}</small>'
-            return f'<td align="right">{text}</td>'
-
-        rows = ['<tr bgcolor="#f2f6fb"><td width="52%"><b>감정 변화</b></td>'
+        rows = ['<tr bgcolor="#f2f6fb"><td width="52%"><b>팝업 기록</b></td>'
                 '<td width="23%" align="right">각성도</td><td width="25%" align="right">쾌·불쾌</td></tr>']
-        for event in events:
-            timestamp = datetime.fromtimestamp(event['timestamp'])
-            changes = ' · '.join(f'{OCC_EMOTION_NAMES[name]} {signed_change(delta * 100, 2)}%p'
-                                 for name, delta in event['occ_changes'].items() if delta)
-            target = event['target_changes']
-            current = event['coordinate_changes']
-            rows.append(f'<tr><td><b>{escape(event["source"])}</b><br>'
-                        f'<span style="color: #516278; font-size: 11px;">{timestamp:%H:%M:%S}</span>'
-                        f'{"<br>" + changes if changes else ""}</td>'
-                        f'{delta_cell(target["arousal"], current["arousal"])}'
-                        f'{delta_cell(target["valence"], current["valence"])}</tr>')
+        popup_text_colors = {'#a6f284': '#2f6e27', '#ff797d': '#a83a3f', '#8fc8ff': '#255c8d'}
+        for popup in popups:
+            timestamp = datetime.fromtimestamp(popup.timestamp)
+            color = popup_text_colors.get(popup.color, '#263645')
+            label = escape(f'{popup.cause} · {popup.change}')
+            rows.append(f'<tr><td><b style="color: {color};">{label}</b><br>'
+                        f'<span style="color: #516278; font-size: 11px;">{timestamp:%H:%M:%S}</span></td>'
+                        f'{delta_cell(popup.arousal)}{delta_cell(popup.valence)}</tr>')
         return f'<table width="100%" cellspacing="0" cellpadding="5">{"".join(rows)}</table>'
 
 
