@@ -4,9 +4,6 @@ The numbers are application tuning, not calibrated probabilities or OCC constant
 """
 import math
 
-from .russell_sectors import SECTORS, SECTOR_ANGLE
-
-
 POSITIVE_SIGNALS = {'heart': 1., 'thumbs_up': .8, 'greeting': .7,
                     'ok': .45, 'head_agree': .35}
 PROFILE_NAMES = {'normal': '호의 수용', 'fear': '안정과 위로',
@@ -29,28 +26,6 @@ NEGATIVE_FACES = {
     'contempt': {'distress': .006},
     'fear': {'fear': .004, 'distress': .004},
 }
-PALETTES = {
-    'positive': {
-        'normal': ('pleasant', 'happy', 'excited', 'serene'),
-        'fear': ('calm', 'relieved', 'serene'),
-        'guard': ('quiet', 'displeased', 'calm'),
-        'down': ('quiet', 'calm', 'serene'),
-    },
-    'concern': {
-        'normal': ('quiet', 'hurt', 'calm'), 'fear': ('anxious', 'fear', 'quiet'),
-        'guard': ('displeased', 'quiet'), 'down': ('quiet', 'sad', 'calm'),
-    },
-}
-TARGETS = {'normal': (.55, .20), 'fear': (.25, -.35),
-           'guard': (-.15, -.10), 'down': (.20, -.30)}
-FACE_COORDINATES = {
-    name: (math.cos(math.radians(index * SECTOR_ANGLE)),
-           math.sin(math.radians(index * SECTOR_ANGLE)))
-    for index, (name, _) in enumerate(SECTORS)
-}
-FACE_COORDINATES['fear'] = (-.6, .75)
-
-
 def unit(value):
     value = float(value)
     if not math.isfinite(value):
@@ -112,8 +87,7 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
     result = {'signal': signal, 'label': label, 'weights': weights, 'before': before,
               'actor': actor, 'requested_occ': {}, 'arousal': 0., 'multiplier': 1.,
               'accepted': False, 'reason': None, 'reset_idle': False, 'wake': False,
-              'style': 'positive', 'priority': 1 if signal == 'face' else 2,
-              'seconds': .6 if signal == 'face' else .9, 'strength': 1.,
+              'priority': 1 if signal == 'face' else 2,
               'reaction_allowed': not actor.get('manual_face', False)}
     if actor.get('closing') or actor.get('physical') or actor.get('manual_emotion'):
         result['reason'] = ('closing' if actor.get('closing') else 'physical_owner'
@@ -137,7 +111,6 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
 
     if signal in POSITIVE_SIGNALS or signal == 'face' and label == 'happy':
         strength = POSITIVE_SIGNALS.get(signal, .25)
-        result['strength'] = strength
         raw = mix_profiles(POSITIVE_PROFILES, weights)
         if signal in ('ok', 'head_agree'):
             raw['satisfaction'] = raw.get('satisfaction', 0.) + raw.pop('joy', 0.)
@@ -145,10 +118,8 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
             raw.pop('gratitude', None)
         raw = {key: amount * strength for key, amount in raw.items()}
     elif signal == 'head_negative':
-        result['style'] = 'concern'
         raw = mix_profiles(DECLINE_PROFILES, weights)
     elif signal == 'face' and label in NEGATIVE_FACES:
-        result['style'] = 'concern'
         base = NEGATIVE_FACES[label]
         profiles = {'normal': base,
                     'fear': {**base, 'fear': base.get('fear', 0.) + .25 * sum(base.values())},
@@ -156,7 +127,6 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
                     'down': {key: value * .5 for key, value in base.items()}}
         raw = mix_profiles(profiles, weights)
     elif signal == 'face' and label == 'surprise':
-        result['style'] = 'concern'
         result['arousal'] = .01 * (1. + .3 * weights['fear'] - .3 * weights['down'])
         raw = {}
     else:
@@ -169,23 +139,3 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
     result['interpretation'] = {PROFILE_NAMES[name]: round(weight, 4)
                                 for name, weight in weights.items() if weight > 1e-6}
     return result
-
-
-def choose_perception_face(appraisal, before=None):
-    weights = appraisal['weights']
-    palettes = PALETTES[appraisal['style']]
-    highest = max(weights.values())
-    profiles = [name for name, value in weights.items() if highest - value <= .15]
-    candidates = sorted({face for name in profiles for face in palettes[name]})
-    direction = tuple(sum(weights[name] * TARGETS[name][axis] for name in weights)
-                      for axis in (0, 1))
-    before = before if before is not None else appraisal['before']
-    blend = .1 + .3 * unit(appraisal.get('expression_strength', appraisal['strength']))
-    target = tuple((1 - blend) * old + blend * new for old, new in zip(before, direction))
-    radius = math.hypot(*target)
-    if radius:
-        target = tuple(value / radius for value in target)
-    def score(face):
-        support = sum(weights[name] for name in profiles if face in palettes[name])
-        return math.dist(target, FACE_COORDINATES[face]) - .2 * support
-    return min(candidates, key=score)

@@ -5,9 +5,10 @@ import time
 
 from PyQt6.QtCore import QObject, QPoint, QRect, QRectF, QTimer, Qt
 from PyQt6.QtGui import QRegion
-from app_logging import log_event
+from app_logging import log_event, new_trace_id
 
 from .desktop_geometry import support_span, surface_rect
+from .reactions import experience, react
 
 
 _FIRST_HIDE_END = .85
@@ -215,7 +216,6 @@ class HideAndSeek(QObject):
         self.original_position = QPoint(h.pos())
         self.wave_offset = None if self.left_wave_x is None else self.left_wave_x - h.x()
         self.original_yaw = h.sprite_animator.yaw
-        self.original_override = h.sprite_animator._emotion_override
         self.original_manual_action = h._rig_manual_action
         self.original_body = body
         self.standing = standing
@@ -240,7 +240,8 @@ class HideAndSeek(QObject):
         h._autonomous_behavior_generation += 1
         action = 'peek' if self.mode == 'top' else 'peek_'+self.mode
         h._rig_manual_action = h.current_action = action
-        h.sprite_animator.set_emotion_override('neutral')
+        self._affect_session = new_trace_id('hide-and-seek')
+        experience(h, 'hide_ready', session=self._affect_session, reaction=False)
         self._frame_view = h.rig_view
         if self.wave_offset:
             self._frame_view.set_peek_padding(abs(self.wave_offset))
@@ -286,7 +287,12 @@ class HideAndSeek(QObject):
         if not self.is_active:
             return False
         if self.found_at is None:
+            if not self._target_unchanged():
+                self.cancel()
+                return False
             self.found_at = time.monotonic()
+            h = self.host
+            react(h, 'hide_found', h.mood_system.on_self_play(session=self._affect_session))
             if self.left_wave_x is not None:
                 self.exit_yaw = self.host.sprite_animator.yaw
             else:
@@ -297,7 +303,6 @@ class HideAndSeek(QObject):
     def _play_found_wave(self):
         animator = self.host.sprite_animator
         animator.set_yaw(0)
-        animator.set_emotion_override('excited')
         animator.play('wave', loop=False)
 
     def _tick_left_discovery(self, now):
@@ -407,7 +412,6 @@ class HideAndSeek(QObject):
             self._frame_view = None
         if h.rig_view is not None:
             h.sprite_animator.set_yaw(self.original_yaw)
-            h.sprite_animator.set_emotion_override(self.original_override)
             h.sprite_animator.play('idle')
         self.is_active = False
         h._autonomous_behavior_active = False
@@ -419,7 +423,8 @@ class HideAndSeek(QObject):
             h.update_action(h.mood_system.decide_emotion())
             if not h._manual_control_active() and not h.is_dragging:
                 h.animation_controller.start_idle()
+        if self.found_at is None:
+            experience(h, 'hide_cancel', session=self._affect_session)
         if found:
             h._mark_character_interaction()
-            h.mood_system.on_self_play()
             h.autonomous_needs.satisfy('self_play')

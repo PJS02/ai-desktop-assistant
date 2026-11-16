@@ -18,6 +18,7 @@ class AutomaticActions(QObject):
         self.waiting_since = None
         self.error_until = 0.0
         self.sleep_after = 0.0
+        self._rest_started = None
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.tick)
@@ -35,9 +36,21 @@ class AutomaticActions(QObject):
         if self.host._automatic_pose == 'sleep':
             self._release(appraise=appraise)
 
+    def start_rest(self):
+        self._rest_started = time.monotonic()
+
+    def finish_rest(self, source="스스로 쉬기"):
+        started, self._rest_started = self._rest_started, None
+        if started is not None and not self.host._character_closing:
+            elapsed = min(3., time.monotonic() - started)
+            if elapsed > 0.:
+                self.host.mood_system.on_self_rest(elapsed, source=source)
+
     def _release(self, *, appraise=True):
         host = self.host
         previous, host._automatic_pose = host._automatic_pose, None
+        if previous == 'sleep':
+            self.finish_rest('자동 수면으로 휴식')
         if (previous and host.current_action == previous
                 and not host._manual_control_active() and host._rig_manual_action is None
                 and not host.is_dragging and host.on_ground and not host.is_jumping):
@@ -45,7 +58,7 @@ class AutomaticActions(QObject):
             if host.current_action == 'idle':
                 host.animation_controller.start_idle()
         if previous == 'sleep' and appraise:
-            experience(host, 'wake', follow='wake_settle')
+            experience(host, 'wake')
 
     def tick(self):
         host = self.host
@@ -83,6 +96,8 @@ class AutomaticActions(QObject):
               and not getattr(host.dialogue_system, 'current_dialogue', None)):
             action = 'sleep'
         if host._automatic_pose == action and (action is None or host.current_action == action):
+            if action == 'sleep' and self._rest_started is not None and now - self._rest_started >= 3.:
+                self.finish_rest('자동 수면으로 휴식')
             return
         self._release()
         if action:
@@ -92,10 +107,13 @@ class AutomaticActions(QObject):
             host.animation_controller.idle.stop()
             host.animation_controller.update_base_pos(host.pos())
             host._automatic_pose = host.current_action = action
+            if action == 'sleep':
+                self.start_rest()
             host.sprite_animator.set_yaw(host._idle_rig_yaw())
             host.sprite_animator.set_mood_emotion(host.mood_system.decide_emotion()['emotion'])
             host.update_render(action)
 
     def shutdown(self):
         self.timer.stop()
+        self._rest_started = None
         self.host._automatic_pose = None

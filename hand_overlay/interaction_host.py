@@ -173,6 +173,12 @@ class CharacterHandActions:
             reactions = getattr(c, 'reactions', None)
             if reactions is None or not reactions.safe(rescued=True):
                 experience(c, "palm")
+        elif mode == 'grab':
+            self._grab_origin = point
+            self._grab_started = time.monotonic()
+            c._start_drag_shake(*point)
+            if (reactions := getattr(c, 'reactions', None)) is not None:
+                reactions.safe(rescued=True)
         log_event('hand_interaction.hold.started', '손으로 대상 잡기 시작',
                   category='캐릭터 상태', mode=mode)
         self.move_hold(mode, point)
@@ -195,6 +201,15 @@ class CharacterHandActions:
             y = c.y() + point[1] - body.bottom
         else:
             x, y = point[0] - self.offset[0], point[1] - self.offset[1]
+            if self._grab_origin is not None:
+                elapsed = time.monotonic() - self._grab_started
+                distance = math.dist(point, self._grab_origin)
+                if elapsed > .30:
+                    self._grab_origin = None
+                elif distance >= .05 * self.body_rect().height:
+                    self._grab_origin = None
+                    c._appraise_drag_start(distance, elapsed)
+            c._check_drag_shake(*point)
         c.move(round(x), round(y))
         c._clamp_position_to_screen()
         c.animation_controller.update_base_pos(c.pos())
@@ -223,16 +238,17 @@ class CharacterHandActions:
 
     def pet(self, speed, elapsed, point):
         c = self.character
-        before = reaction_mood(c)
-        c._mark_pet_interaction(speed)
-        if c.mood_system.should_refuse_pet():
-            experience(c, 'pet_refused', elapsed=elapsed, source='손 접촉 거절')
-            return
         sample = getattr(self, 'sample_id', None)
-        reward = c.mood_system.on_pet(speed, elapsed, source='손으로 쓰다듬기',
-                                      event_id=None if sample is None else str(sample))
-        if reward > 0:
-            react(c, "pet", before=before, sustain=True)
+        event_id = None if sample is None else str(sample)
+        if c.mood_system.should_refuse_pet():
+            experience(c, 'pet_refused', elapsed=elapsed, source='손 접촉 거절', event_id=event_id)
+            return
+        result = c.mood_system.on_pet(speed, elapsed, source='손으로 쓰다듬기',
+                                      event_id=event_id, return_result=True)
+        if isinstance(result, dict) and result.get('applied'):
+            c._last_pet_time = time.monotonic()
+        react(c, "pet", result, sustain=True)
+        c._mark_pet_interaction(speed)
         if self.feedback.pulse('pet'):
             log_throttled('hand_interaction.head.petted', '손으로 머리 쓰다듬기 인식', interval=2,
                           category='캐릭터 상태')
@@ -261,7 +277,7 @@ class CharacterHandActions:
         if repeated:
             experience(c, "poke_discomfort" if before[0] < -.24 else "poke_play")
         else:
-            experience(c, "poke_start", follow="poke_play" if before[0] >= 0 else None)
+            experience(c, "poke_start", familiar=now - getattr(c, '_last_pet_time', -math.inf) < 2.)
         log_event('hand_interaction.cheek.poked', '손끝으로 볼 콕 찌르기', category='캐릭터 상태')
 
 

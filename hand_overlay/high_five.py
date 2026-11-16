@@ -2,9 +2,10 @@
 from dataclasses import dataclass
 import math
 
-from app_logging import log_event
+from app_logging import log_event, new_trace_id
 from character.desktop_geometry import support_span
 from character.rig_state import LANDING_ACTIONS
+from character.reactions import experience
 from .renderer import closest_hand_point
 
 
@@ -47,10 +48,12 @@ class _Attempt:
     last_tick: float
     target: tuple
     last_seen: float
+    session: str
     clip: float | None = None
     impact_wait: float | None = None
     recovering: bool = False
     withdrawing: bool = False
+    resolved: bool = False
 
 
 class DesktopHighFive:
@@ -133,6 +136,7 @@ class DesktopHighFive:
         if attempt is None:
             return
         c = self.character
+        self._resolve(attempt)
         if c.rig_view is attempt.rig:
             attempt.rig.set_walk_rate(1.)
             attempt.rig.set_high_five()
@@ -195,7 +199,8 @@ class DesktopHighFive:
 
     def _start(self, rig, track, side, contact, now):
         c = self.character
-        self._attempt = _Attempt(rig, track, side, now, now, contact, now)
+        session = new_trace_id('high-five')
+        self._attempt = _Attempt(rig, track, side, now, now, contact, now, session)
         self._latched[track] = None
         self._candidate = None
         c._mark_character_interaction(wake=False)
@@ -208,6 +213,14 @@ class DesktopHighFive:
         c._rig_manual_action = 'high_five'
         c.is_flipped = side > 0
         c.sprite_animator.set_yaw(65 * side)
+        experience(c, 'high_five_ready', session=session, event_id=f'{session}:ready')
+
+    def _resolve(self, attempt, *, contact=False):
+        if attempt.resolved:
+            return
+        attempt.resolved = True
+        experience(self.character, 'high_five' if contact else 'high_five_cancel',
+                   session=attempt.session, event_id=f'{attempt.session}:outcome')
 
     def _advance(self, attempt, hand, stage, now):
         c = self.character
@@ -243,6 +256,7 @@ class DesktopHighFive:
         elif attempt.recovering:
             attempt.clip += dt
         elif attempt.withdrawing or now - attempt.last_seen > .20:
+            self._resolve(attempt)
             if attempt.clip >= TAKEOFF_TIME:
                 attempt.recovering = True
                 attempt.clip += dt
@@ -267,8 +281,10 @@ class DesktopHighFive:
             contact = drawn.x() + origin_x, drawn.y() + origin_y
             if math.dist(contact, attempt.target) <= max(5., 10 * scale):
                 attempt.recovering = True
+                self._resolve(attempt, contact=True)
                 self.actions.feedback.pulse('high_five', attempt.target)
                 log_event('hand_interaction.high_five', '바탕화면 손과 하이파이브',
                           category='캐릭터 상태')
         if now - attempt.impact_wait >= .20:
+            self._resolve(attempt)
             attempt.recovering = True

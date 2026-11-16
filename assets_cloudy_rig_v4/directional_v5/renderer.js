@@ -710,7 +710,9 @@ class Renderer{
    pose=Object.assign({},pose,{idleGesture:0,airArms:1,thinkGesture:0,snackGesture:0,
     waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
    // The desktop viewport needs a shorter hop to leave room for the full-size head.
+   const excited = pose.exprExcited;
    art.jump.body(pose,clipTime,side,20);
+   pose.exprExcited = excited;
    pose.framingZoom=1;
    const frame=art.jump.layout(cfg,pose,clipTime,this.bodyPoint),reach=frame.reach;
    const [x,y]=target;

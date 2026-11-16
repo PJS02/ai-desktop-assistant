@@ -4,12 +4,14 @@ import os
 import time
 from types import SimpleNamespace
 
-from PyQt6.QtCore import QObject, QPointF, QRectF, QTimer, Qt
+from PyQt6.QtCore import QObject, QPointF, QRectF, QTimer, Qt, pyqtSlot
 from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
+from app_logging import new_trace_id
 
 from .desktop_geometry import logical_window, support_span, window_is_cloaked as _window_is_cloaked
 from .hide_and_seek import smooth
+from .reactions import experience
 
 
 def covered_fraction(body, window):
@@ -132,6 +134,7 @@ class TearOverlay(QWidget):
 class WindowPresence(QObject):
     HIDDEN_SECONDS = 8.
     COVER_CONFIRM_SECONDS = .3
+    COVER_APPRAISAL_SECONDS = 1.
 
     def __init__(self, host, observer=None):
         super().__init__(host)
@@ -140,6 +143,7 @@ class WindowPresence(QObject):
         self.occluded = False
         self.is_active = False
         self.hidden_since = None
+        self._cover_session = None
         self._candidate_hwnd = None
         self._candidate_since = 0.
         self.front_of = None
@@ -237,7 +241,18 @@ class WindowPresence(QObject):
                 h.setWindowOpacity(self._sprite_opacity)
             self._sprite_masked = self._sprite_hidden = False
 
+    def _appraise_cover(self, fraction):
+        if self._cover_session is None:
+            self._cover_session = new_trace_id('window-cover')
+            experience(self.host, 'window_covered', session=self._cover_session, strength=fraction)
+
+    def _resolve_cover(self, event):
+        if self._cover_session is not None:
+            session, self._cover_session = self._cover_session, None
+            experience(self.host, event, session=session)
+
     def clear_cover(self):
+        self._resolve_cover('window_cancel')
         self.cover = None
         self.occluded = False
         self.hidden_since = None
@@ -263,28 +278,35 @@ class WindowPresence(QObject):
         window = QRectF(observed[1]) if observed else QRectF()
         # No overlap while walking away must not revoke an escape's immunity.
         body = QRectF(h._physics_body_rect().translated(h.pos()))
+        fraction = covered_fraction(body, window)
+        hide_playing = not resume_from_peek and getattr(getattr(h, 'hide_and_seek', None), 'is_active', False)
+        interrupted = not h.window_occlusion or hide_playing or h.is_dragging or h._manual_control_active()
         if self.front_of is not None and observed and hwnd != self.front_of and body.intersects(window):
             self.front_of = None
         if self.is_active:
-            if (not observed or observed != self.cover or not body.intersects(window)
-                    or h.is_dragging or h._manual_control_active() or h._dialogue_is_busy()
-                    or h.rig_view is not self._frame_view):
+            if interrupted:
                 self.cancel()
+            elif fraction <= .2:
+                self.finish()
+                self._resolve_cover('window_revealed')
+                self.clear_cover()
+            elif observed != self.cover or h._dialogue_is_busy() or h.rig_view is not self._frame_view:
+                self.finish()
             elif self._frame_view is None:
                 self.animate()
             return
-        hide_playing = not resume_from_peek and getattr(getattr(h, 'hide_and_seek', None), 'is_active', False)
         if (self.walk_after_landing and not h.is_dragging and not hide_playing
                 and self._standing_support() is not None):
             self.walk_after_landing = False
             self.walk_on_support()
-        if hide_playing or h.is_dragging or h._manual_control_active() or self.front_of == hwnd or not observed:
+        if not interrupted and fraction <= .2:
+            self._resolve_cover('window_revealed')
+        if interrupted or self.front_of == hwnd or not observed:
             self.clear_cover()
             # A visible pet can still stand in front of a window that covers a platform.
             if observed and body.intersects(window):
                 self.cover = observed
             return
-        fraction = covered_fraction(body, window)
         now = time.monotonic()
         if self._candidate_hwnd != hwnd:
             self._candidate_hwnd = hwnd
@@ -308,8 +330,10 @@ class WindowPresence(QObject):
             h.animation_controller.idle.stop()
             if self.hidden_since is None:
                 self.hidden_since = now
-            if (now-self.hidden_since >= self.HIDDEN_SECONDS and not h._manual_control_active()
-                    and not h._dialogue_is_busy() and h.rig_view is not None
+            duration = now - self.hidden_since
+            if duration >= self.COVER_APPRAISAL_SECONDS:
+                self._appraise_cover(fraction)
+            if (duration >= self.HIDDEN_SECONDS and not h._dialogue_is_busy() and h.rig_view is not None
                     and not getattr(h, '_ball_session_active', False)
                     and not any(getattr(getattr(h, n, None), 'is_active', False)
                                 or (getattr(h, n, None) is not None and getattr(h, n).isVisible())
@@ -321,7 +345,7 @@ class WindowPresence(QObject):
     def begin_escape(self):
         h = self.host
         support = self._standing_support()
-        if support is None or not self.cover:
+        if self.is_active or support is None or not self.cover or h.rig_view is None:
             return
         window = self.cover[1]
         body = h._physics_body_rect().translated(h.pos())
@@ -330,7 +354,6 @@ class WindowPresence(QObject):
         self._escape_surface, self._escape_level = support, support.y_level
         h._cancel_autonomous_behavior()
         h.automatic_actions._release()
-        self.saved_override = h.sprite_animator._emotion_override
         self.saved_yaw = h.sprite_animator.yaw
         self.started = time.monotonic()
         self.is_active = True
@@ -338,13 +361,13 @@ class WindowPresence(QObject):
         h._rig_manual_action = h.current_action = 'break_out'
         h.velocity_x = h.velocity_y = 0
         h.sprite_animator.set_yaw(0)
-        h.sprite_animator.set_emotion_override('excited')
         h.sprite_animator.play('break_out')
+        self._appraise_cover(covered_fraction(body, window))
         self.overlay = TearOverlay(h, body, window)
         self.overlay.show()
         self._frame_view = h.rig_view
         self._frame_view.frame_requested.connect(self.animate)
-        self._frame_view.failed.connect(self.cancel)
+        self._frame_view.failed.connect(self.finish)
         self.animate()
 
     def animate(self):
@@ -352,7 +375,7 @@ class WindowPresence(QObject):
             return
         h = self.host
         if not self._anchor_escape():
-            self.cancel()
+            self.finish()
             return
         elapsed = time.monotonic() - self.started
         fade = smooth((elapsed - 1.6) / .5)
@@ -366,7 +389,8 @@ class WindowPresence(QObject):
         if elapsed >= 2.1:
             self.finish(escaped=True)
 
-    def finish(self, escaped=False):
+    @pyqtSlot()
+    def finish(self, *, escaped=False):
         if not self.is_active:
             return
         h = self.host
@@ -374,7 +398,7 @@ class WindowPresence(QObject):
         if self._frame_view is not None:
             try:
                 self._frame_view.frame_requested.disconnect(self.animate)
-                self._frame_view.failed.disconnect(self.cancel)
+                self._frame_view.failed.disconnect(self.finish)
             except (TypeError, RuntimeError):
                 pass
             self._frame_view = None
@@ -387,11 +411,11 @@ class WindowPresence(QObject):
         self._clear_clip()
         h._autonomous_behavior_active = False
         h._rig_manual_action = None
-        h.sprite_animator.set_emotion_override(self.saved_override)
         h.sprite_animator.set_yaw(self.saved_yaw)
         if escaped:
             self.front_of = self.cover[0] if self.cover else None
             self.walk_after_landing = True
+            self._resolve_cover('window_escaped')
         h._gravity_last_time = time.monotonic()
         if not h._character_closing:
             h.update_action(h.mood_system.decide_emotion())
