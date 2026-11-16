@@ -5,13 +5,13 @@ import re
 GAME_RESPONSE_MAX_AGE = 30
 
 
-def prepare_game_image(image):
-    """Bound the frame before the normal privacy check; never send the original."""
+def prepare_game_image(image, *, maximum_size=(960, 540)):
+    """Resize a copy so the caller keeps its original frame."""
     from PIL import Image
     if not isinstance(image, Image.Image):
         return image
     frame = image.copy()
-    frame.thumbnail((960, 540), Image.Resampling.LANCZOS)
+    frame.thumbnail(maximum_size, Image.Resampling.LANCZOS)
     return frame
 
 

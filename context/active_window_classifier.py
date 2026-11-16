@@ -163,7 +163,7 @@ def start_url_server(port, cache_path=None, *, on_activity=None):
     return server
 
 
-def capture_active_window_image():
+def capture_active_window_image(*, window_id=None):
     # 활성 창을 캡처해 이미지로 반환합니다.
     try:
         import win32gui
@@ -181,7 +181,7 @@ def capture_active_window_image():
         ) from exc
 
     hwnd = win32gui.GetForegroundWindow()
-    if not hwnd:
+    if not hwnd or (window_id is not None and hwnd != window_id):
         return None
 
     import psutil
@@ -192,11 +192,20 @@ def capture_active_window_image():
     except psutil.Error:
         return None
 
-    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    if window_id is None:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    else:
+        if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+            return None
+        x0, y0, x1, y1 = win32gui.GetClientRect(hwnd)
+        left, top = win32gui.ClientToScreen(hwnd, (x0, y0))
+        right, bottom = win32gui.ClientToScreen(hwnd, (x1, y1))
     if right <= left or bottom <= top:
         return None
 
-    return ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+    image = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+    if window_id is None or win32gui.GetForegroundWindow() == window_id:
+        return image
 
 
 def start_input_listener(trigger):

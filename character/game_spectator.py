@@ -2,13 +2,16 @@
 import random
 import time
 from app_logging import log_event
+from ai.gemini_client import is_screen_privacy_enabled
 
 from PyQt6.QtCore import QObject, QPoint, QRectF, QTimer
 
 from .desktop_activity import DesktopActivityObserver
 from .game_detection import GameActivity
+from .game_outcomes import GameOutcomeMonitor
 from .spectator_props import draw_spectator_props
 from .game_reactions import GAME_REACTIONS, GAME_RESPONSE_MAX_AGE
+from .reactions import experience
 from .rig_state import LANDING_ACTIONS
 
 
@@ -53,6 +56,7 @@ class GameSpectator(QObject):
         self._settle_seconds = settle_seconds
         self._game_entered = False
         self._game_motions = {}
+        self._outcomes = GameOutcomeMonitor()
         self._last_side = -65
         self.is_game_mode = False
         self.is_active = False
@@ -79,6 +83,14 @@ class GameSpectator(QObject):
             self._desktop.clear()
         now = time.monotonic()
         accepted = self._accept_activity(activity, now)
+        screen_game = (activity if accepted and self.is_game_mode and h.game_spectator_enabled
+                       and activity.window_id and activity.process_instance
+                       and getattr(h, 'auto_program_detection', False)
+                       and is_screen_privacy_enabled(getattr(h, 'gemini_config', {})) else None)
+        result = self._outcomes.poll(screen_game, now)
+        if result is not None:
+            outcome, quality = result
+            experience(h, 'game_external_result', outcome=outcome, quality=quality)
         if not accepted:
             return
         if self.is_active and h.rig_view is not self._view:
@@ -332,6 +344,7 @@ class GameSpectator(QObject):
 
     def shutdown(self):
         self.timer.stop()
+        self._outcomes.poll(None, time.monotonic())
         if self._desktop is not None:
             self._desktop.close()
         self.activity = None

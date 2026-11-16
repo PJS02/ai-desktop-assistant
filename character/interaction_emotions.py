@@ -30,6 +30,8 @@ SOURCES = {
     'window_revealed': '가리던 창에서 다시 드러남',
     'tap': '캐릭터 클릭',
 }
+EXTERNAL_GAME_SOURCES = {'win': '외부 게임 승리', 'loss': '외부 게임 패배',
+                         'draw': '외부 게임 무승부', 'score': '외부 게임 득점'}
 FACE_SOURCES = {
     'happy': '사용자 웃음 감지', 'anger': '사용자 분노 표정 감지',
     'contempt': '사용자 경멸 표정 감지', 'disgust': '사용자 불쾌 표정 감지',
@@ -326,6 +328,24 @@ class InteractionEmotions:
                 result['reaction'] = None
                 meaning = '종료한 공의 기대만 정리'
             self.claims.pop(session, None)
+        elif event == 'game_external_result':
+            outcome = context.get('outcome')
+            if outcome not in EXTERNAL_GAME_SOURCES:
+                raise ValueError('Unknown external game outcome')
+            quality = _number(context.get('quality'), default=1.)
+            engagement = _number(.7 + before[0] * .18 + before[1] * .12)
+            family = 'external_game_score' if outcome == 'score' else 'external_game_result'
+            dose = self._dose(family, quality * engagement, now)
+            source = source or EXTERNAL_GAME_SOURCES[outcome]
+            if outcome == 'win':
+                raw, valence, arousal = {'joy': .05}, .02, .024
+            elif outcome == 'loss':
+                raw, valence, arousal = {'distress': .044}, -.018, .012 * before[1]
+            elif outcome == 'score':
+                raw, valence, arousal = {'joy': .026}, .01, .018
+            else:
+                raw, arousal = {'joy': .007}, -.008
+            meaning = '사용자의 게임 화면에 확인된 결과를 관전 중인 캐릭터의 관점으로 평가'
         elif event.startswith('game_'):
             if event == 'game_start':
                 engagement = _number(.7 + before[0] * .3 + before[1] * .18)

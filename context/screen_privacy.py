@@ -125,6 +125,32 @@ def prepare(*, cancelled=lambda: False) -> bool:
         return True
 
 
+def try_read_screen_text(capture):
+    """Use the warm local OCR worker when idle. Raw results stay with the caller."""
+    if not _lock.acquire(blocking=False):
+        return None
+    try:
+        if _ocr is None:
+            return None
+        import cv2
+        import numpy as np
+
+        if not _ocr.running:
+            if _models_prepared:
+                # A failed read closes the worker. Restart with synthetic input.
+                _ocr.predict(np.full((64, 256, 3), 255, dtype=np.uint8), return_word_box=False)
+            return None
+        image = capture()
+        if image is None:
+            return None
+        pixels = cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+        pages = _ocr.predict(pixels, return_word_box=False, timeout=8.)
+        if len(pages) == 1:
+            return pages[0], image.size
+    finally:
+        _lock.release()
+
+
 def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None):
     """Return a masked RGB image and scrubbed request text, or raise safely.
 

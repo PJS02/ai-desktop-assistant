@@ -53,7 +53,11 @@ class OCRWorker:
         self._connection = None
         atexit.register(self.close)
 
-    def predict(self, image, *, return_word_box):
+    @property
+    def running(self):
+        return self._process is not None and self._process.is_alive()
+
+    def predict(self, image, *, return_word_box, timeout=OCR_TIMEOUT_SECONDS):
         try:
             if self._process is None:
                 context = multiprocessing.get_context("spawn")
@@ -65,7 +69,7 @@ class OCRWorker:
                 finally:
                     child.close()
             self._connection.send((image, return_word_box))
-            if not self._connection.poll(OCR_TIMEOUT_SECONDS):
+            if not self._connection.poll(timeout):
                 raise TimeoutError
             results = self._connection.recv()
             if results is None:
