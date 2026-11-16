@@ -258,8 +258,8 @@ def build_system_instruction(voice=None):
     from character.dialogue_persona import BASE_VOICE
     return (str(voice or BASE_VOICE) + '\n\n' +
         "당신은 사용자의 PC 활동을 관찰하는 캐릭터입니다. "
-        "반드시 아래 JSON 스키마 형식으로만 응답하세요. 다른 설명은 금지합니다.\n\n"
-        "스키마: {\"dialogue\": \"문자열\"}\n"
+        "반드시 요청의 응답 스키마와 일치하는 JSON 객체만 출력하세요.\n\n"
+        "dialogue에는 캐릭터 대사를 문자열로 넣으세요.\n"
         "규칙:\n"
         "1. 한국어 1~2문장으로 작성.\n"
         "2. 입력된 활동에만 반응하고, 개발 중이라는 설정이나 보이지 않는 상황을 지어내지 마세요.\n"

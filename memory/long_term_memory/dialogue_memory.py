@@ -30,6 +30,7 @@ emotional_intensity는 캐릭터의 감정 강도 0~10 정수입니다.
 relevant_memory_ids에는 답변용 후보 중 실제로 관련 있는 ID만 넣고, 무관하거나 불확실하면 제외하세요.
 답변에는 relevant_memory_ids에 포함한 기억만 사용하세요. 없으면 []이며 기억을 억지로 끼워 넣지 마세요.
 used_memory_ids는 relevant_memory_ids 중 답변에서 실제로 참고한 ID만 포함합니다.
+출처가 화면 관찰인 기억은 당시 관찰된 활동과 결과로만 사용하세요. 사용자가 말한 사실이나 취향으로 해석하지 마세요.
 '추가 대조 전용 후보'는 중복·정정 판정에만 사용하고 답변 내용의 근거로 사용하지 마세요.
 코사인 유사도와 중복·정정 검토 힌트는 확률이나 최종 판정이 아닙니다. 낮은 점수도 무조건 제외하지 마세요.
 used_memory_ids에는 답변을 만드는 데 실제로 참고한 장기기억 ID만 넣으세요.
@@ -71,6 +72,7 @@ def build_memory_context(candidates: list[MemorySearchResult], settings: MemoryS
     def format_items(items):
         return "\n".join(
             f"- [ID={item.memory_id}, 발화자={item.speaker}, 유형={item.memory_type}, 보존정책={item.retention_policy}, 중요도={item.importance}, "
+            f"{'출처=화면 관찰, 관찰시각=' + str(item.screen_observed_at) + ', ' if item.screen_topic is not None else ''}"
             f"저장시각={item.created_at}, 유사도={item.score:.3f}, 회상점수={item.recall_score:.3f}, "
             f"중복검토힌트={item.score >= settings.duplicate_similarity_hint}, "
             f"정정검토힌트={item.score >= settings.similarity_hint}] {item.text}"

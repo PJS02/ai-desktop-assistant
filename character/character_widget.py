@@ -8,8 +8,11 @@ import time
 import math
 import inspect
 from collections import deque
+from datetime import datetime, timezone
+from hashlib import sha256
 from app_logging import log_event, log_throttled, new_trace_id
 from pathlib import Path
+from PIL import Image
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
 from PyQt6.QtGui import (QBrush, QColor, QContextMenuEvent, QCursor, QFont, QIcon, QKeySequence,
                          QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut, QTransform)
@@ -34,6 +37,8 @@ from .status_windows import EmotionStatusWindow, MemoryStatusWindow
 from .personality_system import PersonalitySystem
 from ai.gemini_client import automatic_dialogue_config, is_screen_privacy_enabled, load_gemini_config, request_gemini
 from context.igdb import IGDBLookup, load_igdb_config
+from memory.long_term_memory import LongTermMemory
+from memory.long_term_memory.screen_memory import parse_screen_observation, with_screen_observation
 from .sandbox_manager import SandboxManager
 from .rps_game import RpsGameOverlay
 from .cham_game import ChamGameOverlay
@@ -1277,7 +1282,10 @@ class CharacterWidget(QLabel):
         dialogue_text = None
         request_time = None
         failed = False
+        observation = None
         context = log_context or {'trace_id': new_trace_id('ambient'), 'source': 'activity'}
+        memory = (getattr(getattr(self, 'dialogue_system', None), 'long_term_memory', None)
+                  if context.get('source') == 'activity' else None)
         try:
             # 활성 창 정보 수집
             info = get_active_window_info()
@@ -1290,6 +1298,11 @@ class CharacterWidget(QLabel):
                     info = get_active_window_info()
             if getattr(self, '_character_closing', False):
                 return
+            screen_session = None
+            if isinstance(memory, LongTermMemory):
+                window_key = ((info['process'], info.get('process_instance'), info['window_id'])
+                              if info and info.get('window_id') and not info.get('desktop') else None)
+                screen_session = memory.screen_session_for(window_key)
             if not info:
                 log_event('dialogue.automatic_no_window', '활성 창 정보 없음', category='대화·AI', trace_id=context['trace_id'])
                 if context.get('source') == 'manual_generation':
@@ -1327,6 +1340,7 @@ class CharacterWidget(QLabel):
             voice = config.get('character_voice') or character_voice(automatic=True)
             voice = f"{voice}\n\n【 현재 캐릭터 감정과 말투 】\n{emotion_description}\n{tone_instruction}"
             captured_at = time.monotonic()
+            observed_at = datetime.now(timezone.utc).isoformat()
             image = capture_active_window_image()
             if image is None:
                 log_event('dialogue.automatic_no_window', '활성 창 캡처 불가: 요청 차단', category='대화·AI', trace_id=context['trace_id'])
@@ -1345,6 +1359,12 @@ class CharacterWidget(QLabel):
                 image = prepare_game_image(image)
                 log_event('game.frame_prepared', '게임 분석 이미지 준비', category='대화·AI',
                           trace_id=context['trace_id'], process=process, width=image.width, height=image.height)
+            schema = game_response_schema() if game_visual else build_response_schema()
+            instruction = game_response_instruction(voice) if game_visual else build_system_instruction(voice)
+            screen_frame = None
+            if screen_session and isinstance(image, Image.Image) and get_active_window_info() == info:
+                screen_frame = sha256(image.tobytes()).hexdigest()
+                schema, instruction = with_screen_observation(schema, instruction)
             log_event('dialogue.automatic_prompt', '활동 기반 화면 요청 준비', category='대화·AI', trace_id=context['trace_id'], activity_category=category, generation=generation, input_epoch=input_epoch)
             
             request_time = time.time()
@@ -1352,8 +1372,8 @@ class CharacterWidget(QLabel):
                 prompt,
                 automatic_dialogue_config(config),
                 image=image,
-                response_schema=game_response_schema() if game_visual else build_response_schema(),
-                system_instruction=game_response_instruction(voice) if game_visual else build_system_instruction(voice),
+                response_schema=schema,
+                system_instruction=instruction,
                 log_context=context,
                 **({'timeout_seconds': 8, 'max_attempts': 1,
                     'deadline': captured_at + GAME_RESPONSE_MAX_AGE} if game_visual else {}),
@@ -1365,13 +1385,16 @@ class CharacterWidget(QLabel):
             failed = DialogueSystem._is_error_response(response)
             log_event('dialogue.automatic_response', '활동 기반 응답 수신', category='대화·AI', trace_id=context['trace_id'], response=response,
                       outcome='failed' if failed else 'received')
+            if screen_frame is not None and not failed:
+                observation = parse_screen_observation(response)
             
             if response:
-                if game_visual and not failed:
-                    game_text, reaction = decode_game_response(response)
-                    context['game_reaction'] = reaction
-                    if game_text is not None:
-                        dialogue_text = game_text
+                if (game_visual or screen_frame is not None) and not failed:
+                    screen_text, reaction = decode_game_response(response)
+                    if game_visual:
+                        context['game_reaction'] = reaction
+                    if screen_text is not None:
+                        dialogue_text = screen_text
                         return
                 # The same decoder handles plain, JSON and fenced JSON output.
                 dialogue_text = _with_log_context(self.dialogue_system._process_gemini_response, response, log_context=context)
@@ -1387,6 +1410,27 @@ class CharacterWidget(QLabel):
             if not getattr(self, '_character_closing', False):
                 self.automatic_response_ready.emit(
                     (generation, input_epoch, dialogue_text, info, request_time, failed))
+                # Deliver the response before starting any embedding or disk work.
+                if observation is not None:
+                    try:
+                        def cancelled():
+                            return (getattr(self, '_character_closing', False)
+                                    or not getattr(self, 'auto_program_detection', True)
+                                    or generation != getattr(self, '_automatic_request_generation', generation)
+                                    or input_epoch != self.dialogue_system.user_input_epoch)
+
+                        if not cancelled() and get_active_window_info() == info:
+                            view = sha256(f'{process}\n{title}'.encode('utf-8', errors='replace')).hexdigest()
+                            saved = memory.record_screen_observation(
+                                observation, session=screen_session, view=view, frame=screen_frame,
+                                observed_at=observed_at, cancelled=cancelled,
+                            )
+                            if saved:
+                                log_event('dialogue.screen_memory_saved', '화면 관찰 장기기억 반영',
+                                          category='대화·AI', trace_id=context['trace_id'])
+                    except Exception as exc:
+                        log_event('dialogue.memory_failed', '화면 관찰 장기기억 반영 실패', category='오류',
+                                  level='ERROR', trace_id=context['trace_id'], error=type(exc).__name__)
             else:
                 log_event('dialogue.automatic_discarded', '종료 후 자동 응답 폐기', category='대화·AI', trace_id=context['trace_id'], reason='closing')
 

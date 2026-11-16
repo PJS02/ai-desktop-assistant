@@ -5,6 +5,7 @@ from __future__ import annotations
 from array import array
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import json
 from math import log1p, sqrt
 from pathlib import Path
 import sqlite3
@@ -12,6 +13,8 @@ from threading import RLock
 from typing import Any, Iterable
 from uuid import uuid4
 
+from .importance import MIN_NEW_FACT_IMPORTANCE
+from .screen_memory import evaluate_screen_observation, screen_key
 from .settings import MEMORY_TYPES, RETENTION_POLICIES, MemorySettings, load_memory_settings
 
 
@@ -28,6 +31,8 @@ RECALL_WEIGHTS = {
 FORGETTING_HALF_LIFE_DAYS = 30
 REINFORCEMENT_BOOST = 0.20
 FORGETTING_THRESHOLD = 0.15
+SCREEN_HISTORY_LIMIT = 12
+SCREEN_PENDING_TOPIC_LIMIT = 64
 # 이전 상수 이름은 호환용으로 유지한다. 실행 설정은 config.json의 후보 검토 힌트로 관리한다.
 MIN_RECALL_SIMILARITY = 0.75
 MIN_DUPLICATE_SIMILARITY = 0.90
@@ -47,6 +52,8 @@ METADATA_COLUMNS = {
     "memory_type": "TEXT NOT NULL DEFAULT 'unknown' CHECK (memory_type IN ('profile', 'temporary', 'schedule', 'event', 'unknown'))",
     "retention_policy": "TEXT NOT NULL DEFAULT 'standard' CHECK (retention_policy IN ('standard', 'persistent'))",
     "decay_half_life_days": "REAL CHECK (decay_half_life_days IS NULL OR decay_half_life_days > 0)",
+    "screen_topic": "TEXT",
+    "screen_observed_at": "TEXT",
 }
 
 # 기존 DB에서만 제거한다. 원문·벡터·나머지 메타데이터는 그대로 보존한다.
@@ -73,6 +80,8 @@ class MemorySearchResult:
     retention_policy: str = "standard"
     decay_half_life_days: float | None = None
     search_strength: float | None = None
+    screen_topic: str | None = None
+    screen_observed_at: str | None = None
 
 
 class LongTermMemory:
@@ -95,6 +104,8 @@ class LongTermMemory:
         # 대화 응답은 별도 스레드에서 처리하므로 SQLite의 스레드 검사를 해제하고 잠근다.
         self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
         self._lock = RLock()
+        self._screen_window = None
+        self._screen_session = None
         self._connection.execute(
             """CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY,
@@ -107,6 +118,17 @@ class LongTermMemory:
         self._connection.commit()
         try:
             self._upgrade_schema()
+            with self._connection:
+                self._connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS memories_screen_topic ON memories(screen_topic)"
+                )
+                self._connection.execute(
+                    """CREATE TABLE IF NOT EXISTS screen_observations (
+                        topic TEXT PRIMARY KEY,
+                        last_observed_at TEXT NOT NULL,
+                        evidence TEXT NOT NULL
+                    )"""
+                )
         except Exception:
             self._connection.close()
             raise
@@ -245,7 +267,7 @@ class LongTermMemory:
                     )
                     self._supersede_memories(superseded_ids, matched_id, now)
                 return matched_id
-            if importance < 7 and not superseded_ids:
+            if importance < MIN_NEW_FACT_IMPORTANCE and not superseded_ids:
                 return None
             return self._save_messages(
                 [("user", text)], importance, uuid4().hex, emotional_intensity, original_text=original_text,
@@ -307,6 +329,91 @@ class LongTermMemory:
                     self._supersede_memories(superseded_ids, saved_ids[0], datetime.now(timezone.utc))
                 return saved_ids
 
+    def screen_session_for(self, window_key: tuple | None) -> str | None:
+        """Mark contiguous observations of the same foreground window as one session."""
+        with self._lock:
+            if window_key != self._screen_window:
+                self._screen_window = window_key
+                self._screen_session = uuid4().hex if window_key is not None else None
+            return self._screen_session
+
+    def record_screen_observation(self, observation: dict, *, session: str, view: str, frame: str,
+                                  observed_at: str, cancelled=None) -> bool:
+        """Keep recent evidence and at most one searchable summary per screen topic."""
+        topic = screen_key(observation["topic"])
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT last_observed_at, evidence FROM screen_observations WHERE topic = ?", (topic,),
+            ).fetchone()
+            if row and row[0] >= observed_at:
+                return False
+            evidence = json.loads(row[1]) if row else {"topic": observation["topic"], "history": []}
+            history = evidence["history"]
+            current, result, pattern = evaluate_screen_observation(
+                history, observation, session=session, view=view, frame=frame,
+            )
+            if current is None:
+                return False
+            history.append(current)
+            evidence["history"] = history[-SCREEN_HISTORY_LIMIT:]
+            if result is not None:
+                evidence["result"] = result
+            if pattern is not None:
+                evidence["pattern"] = pattern
+
+            stored = None
+            text = None
+            vector = None
+            if result is not None or pattern is not None:
+                stored = self._connection.execute(
+                    "SELECT text, strength, recall_count FROM memories WHERE screen_topic = ?", (topic,),
+                ).fetchone()
+                if stored is None or stored[1] > 0:
+                    details = (evidence.get("pattern"), evidence.get("result"))
+                    text = f'{evidence["topic"]} 화면 관찰. ' + " ".join(dict.fromkeys(filter(None, details)))
+                    if stored is None or stored[0] != text:
+                        vector = self._embed(f"passage: {text}")
+
+            if cancelled is not None and cancelled():
+                return False
+
+            if text is not None:
+                importance = 7
+                half_life = self._effective_half_life(importance, None, stored[2] if stored else 0)
+                if vector is None:
+                    self._connection.execute(
+                        """UPDATE memories SET screen_observed_at = ?, strength = 1, decay_half_life_days = ?
+                           WHERE screen_topic = ?""", (observed_at, half_life, topic),
+                    )
+                else:
+                    self._connection.execute(
+                        """INSERT INTO memories
+                           (text, embedding, dimension, created_at, importance, speaker, memory_type,
+                            decay_half_life_days, screen_topic, screen_observed_at)
+                           VALUES (?, ?, ?, ?, ?, 'unknown', 'event', ?, ?, ?)
+                           ON CONFLICT(screen_topic) DO UPDATE SET
+                             text = excluded.text, embedding = excluded.embedding, dimension = excluded.dimension,
+                             strength = 1, decay_half_life_days = excluded.decay_half_life_days,
+                             screen_observed_at = excluded.screen_observed_at""",
+                        (text, array("f", vector).tobytes(), len(vector), observed_at,
+                         importance, half_life, topic, observed_at),
+                    )
+            self._connection.execute(
+                """INSERT INTO screen_observations (topic, last_observed_at, evidence) VALUES (?, ?, ?)
+                   ON CONFLICT(topic) DO UPDATE SET
+                     last_observed_at = excluded.last_observed_at, evidence = excluded.evidence""",
+                (topic, observed_at, json.dumps(evidence, ensure_ascii=False)),
+            )
+            self._connection.execute(
+                """DELETE FROM screen_observations WHERE topic IN (
+                       SELECT topic FROM screen_observations
+                       WHERE topic NOT IN (SELECT screen_topic FROM memories WHERE screen_topic IS NOT NULL)
+                       ORDER BY last_observed_at DESC, topic LIMIT -1 OFFSET ?
+                   )""", (SCREEN_PENDING_TOPIC_LIMIT,),
+            )
+            return text is not None
+
     def count(self) -> int:
         """저장된 기억 수를 반환한다. 비어 있으면 모델을 불러오지 않는다."""
         with self._lock:
@@ -322,7 +429,7 @@ class LongTermMemory:
             cursor = self._connection.execute(
                 """SELECT id, text, original_text, created_at, speaker, importance,
                           emotional_intensity, recall_count, last_recalled_at,
-                          memory_type, retention_policy, strength, superseded_by
+                          memory_type, retention_policy, strength, superseded_by, screen_topic, screen_observed_at
                    FROM memories ORDER BY id DESC LIMIT ? OFFSET ?""", (limit, offset),
             )
             columns = [column[0] for column in cursor.description]
@@ -345,7 +452,7 @@ class LongTermMemory:
                 """SELECT text, embedding, dimension, created_at, id, importance, speaker,
                           conversation_id, emotional_intensity,
                           recall_count, last_recalled_at, strength, memory_type, retention_policy,
-                          decay_half_life_days FROM memories
+                          decay_half_life_days, screen_topic, screen_observed_at FROM memories
                    WHERE superseded_by IS NULL""",
             ).fetchall()
             now = datetime.now(timezone.utc)
@@ -395,7 +502,7 @@ class LongTermMemory:
         row = self._connection.execute(
             """SELECT text, 0.0, created_at, id, importance, speaker, conversation_id,
                       emotional_intensity, recall_count, last_recalled_at, strength,
-                      memory_type, retention_policy, decay_half_life_days
+                      memory_type, retention_policy, decay_half_life_days, screen_topic, screen_observed_at
                FROM memories WHERE id = ?""", (memory_id,),
         ).fetchone()
         if row is None:
@@ -407,7 +514,8 @@ class LongTermMemory:
         # 기존 DB의 미지원 유형은 원래 컬럼 값을 바꾸지 않고 unknown으로 취급한다.
         return MemorySearchResult(*row[:11],
                                   memory_type=row[11] if row[11] in MEMORY_TYPES else "unknown",
-                                  retention_policy=row[12], decay_half_life_days=row[13])
+                                  retention_policy=row[12], decay_half_life_days=row[13],
+                                  screen_topic=row[14], screen_observed_at=row[15])
 
     def _effective_half_life(self, importance, emotional_intensity, recall_count):
         base = FORGETTING_HALF_LIFE_DAYS * (1 + (importance or 0) / 10 + (emotional_intensity or 0) / 10)
@@ -431,9 +539,10 @@ class LongTermMemory:
 
     @staticmethod
     def _current_strength(memory: MemorySearchResult, now: datetime) -> float:
-        """저장 또는 마지막 회상 이후의 시간만 반영해 감쇠한다."""
+        """마지막 저장·화면 관찰·회상으로부터 지난 시간을 반영해 감쇠한다."""
         try:
-            anchor = datetime.fromisoformat(memory.last_recalled_at or memory.created_at)
+            anchor = datetime.fromisoformat(max(memory.last_recalled_at or memory.created_at,
+                                                memory.screen_observed_at or ""))
             if anchor.tzinfo is None:
                 anchor = anchor.replace(tzinfo=timezone.utc)
             days = max(0.0, (now - anchor).total_seconds() / 86400)
@@ -452,7 +561,7 @@ class LongTermMemory:
     def _recall_score(memory: MemorySearchResult, now: datetime, mode: str = "legacy") -> float:
         """저장 중요도를 바꾸지 않고 현재 질문에 대한 회상 점수를 계산한다."""
         try:
-            created_at = datetime.fromisoformat(memory.created_at)
+            created_at = datetime.fromisoformat(memory.screen_observed_at or memory.created_at)
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
             days = max(0.0, (now - created_at).total_seconds() / 86400)

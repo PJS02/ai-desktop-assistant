@@ -126,12 +126,14 @@ class MemoryView(QWidget):
             for memory in rows:
                 state = ('대체된 기억' if memory['superseded_by'] is not None
                          else '망각된 기억' if memory['strength'] == 0 else '')
+                source = '화면 관찰' if memory.get('screen_topic') is not None else ''
+                label = ' · '.join(filter(None, (source, state)))
                 text = escape(memory['text']).replace('\n', '<br>')
-                label = f'<br><span style="color: #516278; font-size: 11px;">{state}</span>' if state else ''
+                label_html = f'<br><span style="color: #516278; font-size: 11px;">{label}</span>' if label else ''
                 entries.append(
                     '<table width="100%" cellspacing="0" cellpadding="10" '
                     'style="border: 1px solid #d6e0ea; border-collapse: collapse;">'
-                    f'<tr><td bgcolor="#f4f7fb">{text}{label}</td></tr></table>')
+                    f'<tr><td bgcolor="#f4f7fb">{text}{label_html}</td></tr></table>')
             self.contents.setHtml('<p style="font-size: 6px;">&nbsp;</p>'.join(entries))
             return
 
@@ -157,6 +159,11 @@ class MemoryView(QWidget):
                 'event': '사건', 'unknown': '미분류'}.get(memory['memory_type'], memory['memory_type'])
         speaker = {'user': '사용자', 'assistant': '캐릭터', 'conversation': '혼합 대화',
                    'unknown': '미지정'}.get(memory['speaker'], memory['speaker'])
+        origin = (f"마지막 관찰 시각 (UTC)\n{memory.get('screen_observed_at') or '미지정'}"
+                  if memory.get('screen_topic') is not None
+                  else f"최초 원문\n{memory['original_text'] or '별도 원문이 없는 기록입니다.'}")
+        if memory.get('screen_topic') is not None:
+            speaker = '화면 관찰'
         state = (f"기억 #{memory['superseded_by']}로 대체됨" if memory['superseded_by'] is not None
                  else '수동 망각됨' if memory['strength'] == 0 else '저장됨')
         retention = '지속 보존' if memory['retention_policy'] == 'persistent' else '일반'
@@ -164,7 +171,7 @@ class MemoryView(QWidget):
         self.details.setPlainText(
             f"기억 #{memory['id']} · {kind} · {speaker}\n"
             f"\n기억 내용\n{memory['text']}\n\n"
-            f"최초 원문\n{memory['original_text'] or '별도 원문이 없는 기록입니다.'}\n\n"
+            f"{origin}\n\n"
             f"저장 시각 (UTC): {memory['created_at']}\n"
             f"감정 강도: {emotion if emotion is not None else '미평가'} · 회상 횟수: {memory['recall_count']}\n"
             f"마지막 회상 (UTC): {memory['last_recalled_at'] or '없음'}\n"

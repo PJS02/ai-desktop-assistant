@@ -25,6 +25,7 @@ from memory.long_term_memory.dialogue_memory import (
     DIALOGUE_RESPONSE_SCHEMA, DIALOGUE_SYSTEM_INSTRUCTION,
     parse_dialogue_response, apply_dialogue_memory, build_memory_context, validate_memory_references,
 )
+from memory.long_term_memory.importance import MIN_NEW_FACT_IMPORTANCE
 
 
 FLASH_LITE_FALLBACK = {
@@ -646,11 +647,20 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
 4. 약속이나 계획인가?
 5. 새롭게 알게 된 사실인가?
 6. 사용자가 명시적으로 기억해달라고 했는가?
+7. 평범한 취향이나 일상 습관이어도 이후 대화나 반응에 꾸준히 활용할 수 있는가?
+8. 사용자가 원하는 대화 방식, 캐릭터의 반응이나 도움 방식이 분명한가?
+9. 사용자가 선택할 때 중요하게 보는 이유나 조건이 드러났는가?
+10. 진행 상황, 막힌 부분, 남은 일이 다음 대화나 작업을 이어가는 데 필요한가?
+11. 취향·습관·목표 등이 최근에 바뀌었고 무엇이 언제 달라졌는지 알 수 있는가?
+12. 곧 실행하거나 결과를 확인할 구체적인 계획이나 단기 목표인가?
+13. 사용자가 여러 문답에서 같은 어려움이나 고민을 되풀이해서 언급했는가?
+14. 사용자가 그 경험이나 결과에 직접 의미를 부여했는가?
 
 기준의 충족 정도와 향후 대화에서의 가치를 종합해 importance를 0~10 정수로 평가하세요.
-7점 이상은 장기기억에 저장할 가치가 있는 정보에 부여하세요.
+{MIN_NEW_FACT_IMPORTANCE}점 이상은 장기기억에 저장할 가치가 있는 정보에 부여하세요.
+한 가지 근거라도 분명하고 이후 대화에 구체적으로 쓸 수 있으면 {MIN_NEW_FACT_IMPORTANCE}점 이상을 줄 수 있습니다.
 명시적인 기억 요청은 높은 중요도로 평가하세요.
-가벼운 인사, 일시적 잡담, 새로운 정보가 없는 반복은 낮게 평가하세요."""
+가벼운 인사, 일시적 잡담, 새 정보나 반복되는 고민의 근거가 없는 단순 반복은 낮게 평가하세요."""
 
     def _call_ai(self, prompt, config, *, log_context=None):
         if self._response_provider is not None:

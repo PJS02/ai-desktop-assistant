@@ -1,6 +1,9 @@
-"""LLM이 반환한 장기기억 중요도 점수를 읽는다."""
+"""장기기억 중요도 기준과 LLM 응답 처리."""
 
 import json
+
+
+MIN_NEW_FACT_IMPORTANCE = 6
 
 
 def get_importance_score(response: str) -> int:
