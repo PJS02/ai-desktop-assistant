@@ -59,6 +59,13 @@ METADATA_COLUMNS = {
 # 기존 DB에서만 제거한다. 원문·벡터·나머지 메타데이터는 그대로 보존한다.
 REMOVED_COLUMNS = ("source", "embedding_model")
 
+# SQLite can reuse the largest row ID after a hard delete. Keep IDs in existing
+# lists and in-flight dialogue references from ever pointing to a different row.
+_NEXT_MEMORY_ID = """(SELECT MAX(
+    COALESCE((SELECT MAX(id) FROM memories), 0),
+    COALESCE((SELECT highest_deleted_id FROM memory_id_state WHERE singleton = 1), 0)
+) + 1)"""
+
 
 @dataclass(frozen=True)
 class MemorySearchResult:
@@ -127,6 +134,12 @@ class LongTermMemory:
                         topic TEXT PRIMARY KEY,
                         last_observed_at TEXT NOT NULL,
                         evidence TEXT NOT NULL
+                    )"""
+                )
+                self._connection.execute(
+                    """CREATE TABLE IF NOT EXISTS memory_id_state (
+                        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                        highest_deleted_id INTEGER NOT NULL
                     )"""
                 )
         except Exception:
@@ -217,10 +230,11 @@ class LongTermMemory:
         with self._lock:
             for memory_id in superseded_ids:
                 old = self._read_memory(memory_id)
-                successor = self._connection.execute(
-                    "SELECT superseded_by FROM memories WHERE id = ?", (memory_id,),
+                superseded = self._connection.execute(
+                    "SELECT superseded_by IS NOT NULL OR superseded_at IS NOT NULL FROM memories WHERE id = ?",
+                    (memory_id,),
                 ).fetchone()[0]
-                if old.speaker != "user" or successor is not None:
+                if old.speaker != "user" or superseded:
                     raise ValueError("Only current user memories can be superseded")
                 # 정정 관계는 호출자가 LLM으로 확인한다. 유사도는 최종 판정 조건이 아니다.
                 # 새 정정의 평가가 낮아도 이미 중요한 정보의 현재 상태는 유지한다.
@@ -228,7 +242,8 @@ class LongTermMemory:
             # 같은 핵심 문장은 망각 여부와 무관하게 기존 행을 재사용한다.
             rows = self._connection.execute(
                 """SELECT id, text FROM memories
-                   WHERE speaker IN ('user', 'conversation') AND superseded_by IS NULL"""
+                   WHERE speaker IN ('user', 'conversation')
+                     AND superseded_by IS NULL AND superseded_at IS NULL"""
             ).fetchall()
             normalized = " ".join(text.split())
             matched_id = next((memory_id for memory_id, saved_text in rows
@@ -237,12 +252,13 @@ class LongTermMemory:
                 # shortcut: 의미 중복은 프롬프트 후보 안에서만 확인한다. 누락이 많아지면 후보 범위를 확장한다.
                 existing = self._read_memory(duplicate_memory_id)
                 if existing.speaker in ("user", "conversation"):
-                    successor = self._connection.execute(
-                        "SELECT superseded_by FROM memories WHERE id = ?", (duplicate_memory_id,),
+                    superseded = self._connection.execute(
+                        "SELECT superseded_by IS NOT NULL OR superseded_at IS NOT NULL FROM memories WHERE id = ?",
+                        (duplicate_memory_id,),
                     ).fetchone()[0]
                     # LLM이 같은 사실이라고 판정한 경우만 이 경로로 들어온다.
                     # 유사도만으로는 부정·반대 의미의 문장을 합치지 않는다.
-                    if successor is None:
+                    if not superseded:
                         matched_id = duplicate_memory_id
 
             if matched_id is not None:
@@ -282,7 +298,7 @@ class LongTermMemory:
                 continue
             changed = self._connection.execute(
                 """UPDATE memories SET superseded_by = ?, superseded_at = ?
-                   WHERE id = ? AND superseded_by IS NULL AND speaker = 'user'""",
+                   WHERE id = ? AND superseded_by IS NULL AND superseded_at IS NULL AND speaker = 'user'""",
                 (replacement_id, now.isoformat(), memory_id),
             )
             if changed.rowcount != 1:
@@ -320,10 +336,10 @@ class LongTermMemory:
             # 두 발화 중 임베딩·저장이 실패하면 일부만 남기지 않는다.
             with self._connection:
                 saved_ids = [self._connection.execute(
-                    """INSERT INTO memories
-                    (text, embedding, dimension, created_at, importance, speaker,
+                    f"""INSERT INTO memories
+                    (id, text, embedding, dimension, created_at, importance, speaker,
                      conversation_id, emotional_intensity, original_text, memory_type, retention_policy, decay_half_life_days)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", row,
+                    VALUES ({_NEXT_MEMORY_ID}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", row,
                 ).lastrowid for row in rows]
                 if superseded_ids:
                     self._supersede_memories(superseded_ids, saved_ids[0], datetime.now(timezone.utc))
@@ -388,10 +404,10 @@ class LongTermMemory:
                     )
                 else:
                     self._connection.execute(
-                        """INSERT INTO memories
-                           (text, embedding, dimension, created_at, importance, speaker, memory_type,
+                        f"""INSERT INTO memories
+                           (id, text, embedding, dimension, created_at, importance, speaker, memory_type,
                             decay_half_life_days, screen_topic, screen_observed_at)
-                           VALUES (?, ?, ?, ?, ?, 'unknown', 'event', ?, ?, ?)
+                           VALUES ({_NEXT_MEMORY_ID}, ?, ?, ?, ?, ?, 'unknown', 'event', ?, ?, ?)
                            ON CONFLICT(screen_topic) DO UPDATE SET
                              text = excluded.text, embedding = excluded.embedding, dimension = excluded.dimension,
                              strength = 1, decay_half_life_days = excluded.decay_half_life_days,
@@ -429,7 +445,8 @@ class LongTermMemory:
             cursor = self._connection.execute(
                 """SELECT id, text, original_text, created_at, speaker, importance,
                           emotional_intensity, recall_count, last_recalled_at,
-                          memory_type, retention_policy, strength, superseded_by, screen_topic, screen_observed_at
+                          memory_type, retention_policy, strength, superseded_by, superseded_at,
+                          screen_topic, screen_observed_at
                    FROM memories ORDER BY id DESC LIMIT ? OFFSET ?""", (limit, offset),
             )
             columns = [column[0] for column in cursor.description]
@@ -453,7 +470,7 @@ class LongTermMemory:
                           conversation_id, emotional_intensity,
                           recall_count, last_recalled_at, strength, memory_type, retention_policy,
                           decay_half_life_days, screen_topic, screen_observed_at FROM memories
-                   WHERE superseded_by IS NULL""",
+                   WHERE superseded_by IS NULL AND superseded_at IS NULL""",
             ).fetchall()
             now = datetime.now(timezone.utc)
             candidates = []
@@ -498,6 +515,33 @@ class LongTermMemory:
             self._read_memory(memory_id)
             self._connection.execute("UPDATE memories SET strength = 0 WHERE id = ?", (memory_id,))
 
+    def delete(self, memory_id: int) -> bool:
+        """Delete one stored memory and the observations used to build it."""
+        if type(memory_id) is not int or memory_id < 1:
+            raise ValueError("memory_id must be a positive integer")
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT screen_topic FROM memories WHERE id = ?", (memory_id,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            self._connection.execute(
+                """UPDATE memories SET superseded_by = NULL, superseded_at = COALESCE(superseded_at, ?)
+                   WHERE superseded_by = ?""", (datetime.now(timezone.utc).isoformat(), memory_id),
+            )
+            if row[0] is not None:
+                self._connection.execute("DELETE FROM screen_observations WHERE topic = ?", (row[0],))
+            self._connection.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            self._connection.execute(
+                """INSERT INTO memory_id_state (singleton, highest_deleted_id) VALUES (1, ?)
+                   ON CONFLICT(singleton) DO UPDATE SET
+                     highest_deleted_id = MAX(highest_deleted_id, excluded.highest_deleted_id)""",
+                (memory_id,),
+            )
+            return True
+
     def _read_memory(self, memory_id: int) -> MemorySearchResult:
         row = self._connection.execute(
             """SELECT text, 0.0, created_at, id, importance, speaker, conversation_id,
@@ -529,7 +573,7 @@ class LongTermMemory:
                                  memory.importance, memory.emotional_intensity, memory.recall_count + 1))
         changed = self._connection.execute(
             """UPDATE memories SET strength = ?, recall_count = ?, last_recalled_at = ?, decay_half_life_days = ?
-               WHERE id = ? AND superseded_by IS NULL""",
+               WHERE id = ? AND superseded_by IS NULL AND superseded_at IS NULL""",
             (reinforced.strength, reinforced.recall_count, reinforced.last_recalled_at,
              reinforced.decay_half_life_days, memory.memory_id),
         )

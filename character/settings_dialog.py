@@ -177,6 +177,10 @@ class SettingsDialog(QDialog):
             QPushButton:hover { background: #eef4fd; border-color: #2463b6; }
             QPushButton:pressed, QPushButton:checked { background: #e8f1fd; color: #174b91; border-color: #2463b6; }
             QPushButton:disabled { background: #edf0f5; color: #68778b; border-color: #dce2ea; }
+            QPushButton#deleteMemoryButton:enabled { color: #922e31; border-color: #d8a7a7; }
+            QPushButton#deleteMemoryButton:enabled:hover, QPushButton#deleteMemoryButton:enabled:focus {
+                background: #fff2f2; border-color: #ae4045;
+            }
             QPushButton#emotionButton { background: white; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
             QPushButton#emotionButton:checked { background: #e8f1fd; color: #2463b6; border: 2px solid #2463b6; font-weight: 600; }
             QLabel { color: #202936; }

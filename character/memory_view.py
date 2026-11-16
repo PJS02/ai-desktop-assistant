@@ -1,11 +1,11 @@
-"""Read-only, paged view of the running character's long-term memory store."""
+"""Paged views of the running character's long-term memory store."""
 from html import escape
 import sqlite3
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QHeaderView, QHBoxLayout, QLabel, QPlainTextEdit,
+    QAbstractItemView, QHeaderView, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -72,12 +72,23 @@ class MemoryView(QWidget):
         self.details.setReadOnly(True)
         self.details.setPlaceholderText('기억을 선택하면 상세 내용을 표시합니다.')
         layout.addWidget(self.details, 1)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.delete_button = QPushButton('선택 항목 삭제', objectName='deleteMemoryButton')
+        self.delete_button.setAutoDefault(False)
+        self.delete_button.setEnabled(False)
+        self.delete_button.clicked.connect(self._delete_selected)
+        actions.addWidget(self.delete_button)
+        layout.addLayout(actions)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.refresh()
 
     def refresh(self, offset=0):
+        self._request_page(offset)
+
+    def _request_page(self, offset, *, delete_id=None):
         if self._loading:
             return
         if self.memory is None:
@@ -85,14 +96,25 @@ class MemoryView(QWidget):
             self.refresh_button.setEnabled(False)
             return
         self._loading = True
-        self.status.setText('기억을 불러오는 중…')
+        self.status.setText('기억을 삭제하는 중…' if delete_id is not None else '기억을 불러오는 중…')
         for button in (self.refresh_button, self.previous_button, self.next_button):
             button.setEnabled(False)
-        threading.Thread(target=self._load_page, args=(offset,),
-                         daemon=True, name='memory-view-reader').start()
+        if not self._compact:
+            self.delete_button.setEnabled(False)
+        threading.Thread(target=self._load_page, args=(offset, delete_id),
+                         daemon=True, name='memory-view-loader').start()
 
-    def _load_page(self, offset):
+    def _load_page(self, offset, delete_id):
         rows, total, error = [], 0, None
+        feedback = None
+        if delete_id is not None:
+            try:
+                deleted = self.memory.delete(delete_id)
+                feedback = '선택한 기억을 삭제했습니다.' if deleted else '이미 삭제된 기억입니다.'
+            except (sqlite3.Error, OSError, ValueError) as exc:
+                feedback = '기억을 삭제하지 못했습니다. 다시 시도해 주세요.'
+                log_event('settings.memory.delete_failed', '장기기억 삭제에 실패했습니다.',
+                          category='오류', level='ERROR', memory_id=delete_id, error=str(exc))
         try:
             total = self.memory.count()
             if offset >= total:
@@ -103,13 +125,15 @@ class MemoryView(QWidget):
             log_event('settings.memory.load_failed', '장기기억 목록 조회에 실패했습니다.',
                       category='오류', level='ERROR', error=str(exc))
         try:
-            self.page_ready.emit((rows, total, offset, error))
+            self.page_ready.emit((rows, total, offset, error, feedback))
         except RuntimeError:
             pass  # The settings dialog may have been deleted while the read was pending.
 
     @pyqtSlot(object)
     def _display_page(self, result):
-        rows, total, offset, error = result
+        rows, total, offset, error, feedback = result
+        selected_row = (max(0, self.table.currentRow())
+                        if feedback and not self._compact and offset == self._offset else 0)
         self._loading = False
         self._offset = offset
         self._rows = rows
@@ -117,14 +141,14 @@ class MemoryView(QWidget):
         self.previous_button.setEnabled(not error and offset > 0)
         self.next_button.setEnabled(not error and offset + len(rows) < total)
         summary = f'총 {total}개 · {offset + 1}–{offset + len(rows)}번째' if rows else '저장된 장기기억이 없습니다.'
-        self.status.setText(error or summary)
+        self.status.setText(f'{feedback}\n{error or summary}' if feedback else error or summary)
         if self._compact:
             has_pages = total > self.PAGE_SIZE
             self.previous_button.setVisible(has_pages)
             self.next_button.setVisible(has_pages)
             entries = []
             for memory in rows:
-                state = ('대체된 기억' if memory['superseded_by'] is not None
+                state = ('대체된 기억' if memory['superseded_by'] is not None or memory.get('superseded_at')
                          else '망각된 기억' if memory['strength'] == 0 else '')
                 source = '화면 관찰' if memory.get('screen_topic') is not None else ''
                 label = ' · '.join(filter(None, (source, state)))
@@ -147,14 +171,43 @@ class MemoryView(QWidget):
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
         if rows:
-            self.table.setCurrentCell(0, 0)
+            self.table.setCurrentCell(min(selected_row, len(rows) - 1), 0)
+        self._show_details()
+
+    def _selected_memory(self):
+        rows = self.table.selectionModel().selectedRows(0)
+        if rows:
+            index = rows[0].row()
+            if 0 <= index < len(self._rows):
+                return self._rows[index]
+        return None
+
+    def _delete_selected(self):
+        memory = self._selected_memory()
+        if self._loading or memory is None:
+            return
+        preview = ' '.join(memory['text'].split())
+        if len(preview) > 88:
+            preview = preview[:87] + '…'
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle('장기기억 삭제')
+        confirm.setTextFormat(Qt.TextFormat.PlainText)
+        confirm.setText(f'“{preview}” 항목을 삭제할까요?')
+        confirm.setInformativeText('이 항목의 내용과 원문이 장기기억 저장소에서 삭제됩니다.')
+        cancel_button = confirm.addButton('취소', QMessageBox.ButtonRole.RejectRole)
+        delete_button = confirm.addButton('삭제', QMessageBox.ButtonRole.DestructiveRole)
+        confirm.setDefaultButton(cancel_button)
+        confirm.setEscapeButton(cancel_button)
+        confirm.exec()
+        if confirm.clickedButton() is delete_button:
+            self._request_page(self._offset, delete_id=memory['id'])
 
     def _show_details(self):
-        row = self.table.currentRow()
-        if not 0 <= row < len(self._rows):
+        memory = self._selected_memory()
+        self.delete_button.setEnabled(memory is not None and not self._loading)
+        if memory is None:
             self.details.clear()
             return
-        memory = self._rows[row]
         kind = {'profile': '프로필', 'temporary': '임시 정보', 'schedule': '일정',
                 'event': '사건', 'unknown': '미분류'}.get(memory['memory_type'], memory['memory_type'])
         speaker = {'user': '사용자', 'assistant': '캐릭터', 'conversation': '혼합 대화',
@@ -165,6 +218,7 @@ class MemoryView(QWidget):
         if memory.get('screen_topic') is not None:
             speaker = '화면 관찰'
         state = (f"기억 #{memory['superseded_by']}로 대체됨" if memory['superseded_by'] is not None
+                 else '대체된 기록' if memory.get('superseded_at')
                  else '수동 망각됨' if memory['strength'] == 0 else '저장됨')
         retention = '지속 보존' if memory['retention_policy'] == 'persistent' else '일반'
         emotion = memory['emotional_intensity']
