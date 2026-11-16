@@ -20,7 +20,7 @@ GAME_REACTIONS = {
     'cheer': ('game_cheer', 3.2),
     'oops': ('game_oops', 2.8),
     'tip': ('thinking', 3.6),
-    'watch': ('spectate', 4.5),
+    'watch': None,
 }
 
 
@@ -41,7 +41,7 @@ def game_response_instruction(voice):
             'JSON 객체 {"dialogue":"한국어 짧은 한 문장 또는 빈 문자열",'
             '"game_reaction":"none|cheer|oops|tip|watch"}만 출력하세요. '
             '현재 게임 화면과 감정에 맞춰 대사와 동작을 함께 선택하세요. '
-            'cheer는 칭찬·응원, oops는 아쉬움·움찔, tip은 짧은 조언, watch는 조용한 관람입니다. '
+            'cheer는 칭찬·응원, oops는 아쉬움·움찔, tip은 짧은 조언, watch는 현재 게임 동작을 이어가는 선택입니다. '
             '반응할 근거가 없으면 none과 빈 dialogue로 조용히 지켜보세요. '
             '모든 화면에 훈수를 만들지 말고 응원·가벼운 농담·조용한 관람을 섞으세요. '
             '마크다운이나 선택지 목록은 출력하지 마세요.')

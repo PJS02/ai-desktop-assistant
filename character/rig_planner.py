@@ -21,6 +21,7 @@ RIG_SOURCES = (
     "side-wave-skinning.js", "side-cuff.js", "side-cuff-roll.js",
     "side-cuff-attachment.js", "side-cuff-motion.js", "side-cuff-art.js",
     "side-cuff-fit.js", "high-five.js", "activity-trip.js", "renderer.js",
+    "activity-hands.js", "activity-games.js", "activity-preview.js",
 )
 
 

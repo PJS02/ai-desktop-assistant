@@ -1,4 +1,5 @@
-"""Shared IGDB credentials, API requests, and background game-name lookup."""
+"""Shared IGDB credentials, API requests, and background game lookup."""
+from dataclasses import dataclass
 from http.client import HTTPException
 import json
 import math
@@ -75,7 +76,7 @@ def request_igdb_token(config):
 
 
 def search_igdb_games(query, client_id, token, *, limit=1):
-    body = f"search {json.dumps(query, ensure_ascii=False)}; fields id,name; limit {limit};"
+    body = f"search {json.dumps(query, ensure_ascii=False)}; fields id,name,genres.name; limit {limit};"
     request = Request("https://api.igdb.com/v4/games", data=body.encode("utf-8"), method="POST")
     request.add_header("Client-ID", client_id)
     request.add_unredirected_header("Authorization", f"Bearer {token}")
@@ -111,6 +112,12 @@ def _name_key(name):
     return "".join(char for char in name.casefold() if char.isalnum())
 
 
+@dataclass(frozen=True)
+class IGDBGame:
+    name: str
+    genres: tuple[str, ...] = ()
+
+
 class IGDBLookup:
     """One background request at a time, shared by the spectator and dialogue worker."""
 
@@ -125,6 +132,10 @@ class IGDBLookup:
         self._expires_at = 0.
 
     def find(self, queries, *, wait=False):
+        match = self.find_game(queries, wait=wait)
+        return match.name if match is not None else None
+
+    def find_game(self, queries, *, wait=False):
         if not queries:
             return None
         with self._lock:
@@ -190,5 +201,9 @@ class IGDBLookup:
             for result in results:
                 if isinstance(result, dict) and isinstance(name := result.get("name"), str):
                     if _name_key(name) == key:
-                        return name
+                        genres = result.get('genres')
+                        if not isinstance(genres, list):
+                            genres = []
+                        return IGDBGame(name, tuple(genre['name'] for genre in genres
+                                                    if isinstance(genre, dict) and isinstance(genre.get('name'), str)))
         return None

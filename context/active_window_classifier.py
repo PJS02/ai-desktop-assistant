@@ -18,7 +18,7 @@ def _is_own_process(process):
     return process.pid == own_pid or any(parent.pid == own_pid for parent in process.parents())
 
 
-def get_active_window_info():
+def get_active_window_info(*, with_window=False):
     try:
         import win32gui
         import win32process
@@ -28,12 +28,16 @@ def get_active_window_info():
         ) from exc
 
     # 활성 창의 프로세스와 제목을 수집합니다.
-    hwnd = win32gui.GetForegroundWindow()
-    if not hwnd:
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return None
+        if with_window and (not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd)):
+            return None
+        title = win32gui.GetWindowText(hwnd).strip()
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+    except OSError:
         return None
-
-    title = win32gui.GetWindowText(hwnd).strip()
-    _, pid = win32process.GetWindowThreadProcessId(hwnd)
 
     try:
         import psutil
@@ -42,15 +46,33 @@ def get_active_window_info():
             "psutil is required. Install with: pip install psutil"
         ) from exc
 
+    started_at = 0
     try:
         process = psutil.Process(pid)
         if _is_own_process(process):
             return None
         exe = process.name()
+        if with_window:
+            try:
+                started_at = process.create_time()
+            except psutil.Error:
+                pass
     except psutil.Error:
         exe = "unknown"
 
-    return {"process": exe.lower(), "title": title}
+    info = {"process": exe.lower(), "title": title}
+    if with_window:
+        info["window_id"] = hwnd
+        info["process_instance"] = (pid, started_at)
+        try:
+            info["desktop"] = win32gui.GetClassName(hwnd) in {"Progman", "WorkerW"}
+        except win32gui.error:
+            return None
+    return info
+
+
+def get_foreground_window_info():
+    return get_active_window_info(with_window=True)
 
 
 def load_json_file(path, default):
@@ -79,7 +101,7 @@ def load_url_cache(cache_path):
         return ""
 
 
-def start_url_server(port, cache_path):
+def start_url_server(port, cache_path=None, *, on_activity=None):
     # 확장 프로그램의 URL 전송을 받는 서버입니다.
     class UrlHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self):
@@ -90,24 +112,43 @@ def start_url_server(port, cache_path):
             self.end_headers()
 
         def do_POST(self):
-            if self.path != "/url":
+            is_url = self.path == "/url" and cache_path is not None
+            is_activity = self.path == "/activity" and on_activity is not None
+            if not is_url and not is_activity:
                 self.send_response(404)
                 self.end_headers()
                 return
-
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = self.rfile.read(length).decode("utf-8") if length else "{}"
+            if is_activity:
+                origin = self.headers.get("Origin", "")
+                prefix = "chrome-extension://"
+                extension_id = origin[len(prefix):]
+                if (not origin.startswith(prefix) or len(extension_id) != 32
+                        or any(not "a" <= char <= "p" for char in extension_id)):
+                    self.send_error(403)
+                    return
             try:
-                data = json.loads(payload)
-            except json.JSONDecodeError:
-                data = {}
-
-            url = data.get("url", "")
-            if url:
-                cache_path.write_text(
-                    json.dumps({"url": url, "updated_at": time.time()}, indent=2),
-                    encoding="utf-8",
-                )
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 16384:
+                    self.send_error(413)
+                    return
+                self.connection.settimeout(2)
+                data = json.loads(self.rfile.read(length))
+                if not isinstance(data, dict):
+                    raise ValueError
+            except (ValueError, OSError):
+                self.send_error(400)
+                return
+            if is_activity:
+                if not on_activity(data):
+                    self.send_error(400)
+                    return
+            else:
+                url = data.get("url", "")
+                if isinstance(url, str) and url:
+                    cache_path.write_text(
+                        json.dumps({"url": url, "updated_at": time.time()}, indent=2),
+                        encoding="utf-8",
+                    )
 
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -117,7 +158,7 @@ def start_url_server(port, cache_path):
             return
 
     server = ThreadingHTTPServer(("127.0.0.1", port), UrlHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.1}, daemon=True)
     thread.start()
     return server
 

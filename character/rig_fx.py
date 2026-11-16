@@ -33,9 +33,9 @@ def _brush(style):
     return QBrush(gradient)
 
 
-def _path(commands):
+def _path(commands, even_odd=False):
     path = QPainterPath()
-    path.setFillRule(Qt.FillRule.WindingFill)
+    path.setFillRule(Qt.FillRule.OddEvenFill if even_odd else Qt.FillRule.WindingFill)
     for command in commands:
         op, a = command["op"], command["args"]
         if op == "moveTo":
@@ -50,6 +50,8 @@ def _path(commands):
             path.closeSubpath()
         elif op == "rect":
             path.addRect(*a)
+        elif op == "roundRect":
+            path.addRoundedRect(*a[:4], a[4], a[4])
         elif op in {"ellipse", "arc"}:
             if op == "ellipse":
                 cx, cy, rx, ry, rotation, start, end = a[:7]
@@ -193,8 +195,12 @@ def build_effect(name, recipe, headImage=None, skinImage=None):
     try:
         for command in recipe["commands"]:
             state, op = command.get("state", {}), command["op"]
-            sx, sy, tx, ty = state.get('transform', (1, 1, 0, 0))
-            painter.setWorldTransform(QTransform(sx, 0, 0, sy, tx, ty))
+            painter.setClipping(False)
+            for clip in state.get('clips', ()):
+                painter.setWorldTransform(QTransform(*clip.get('transform', (1, 0, 0, 1, 0, 0))))
+                painter.setClipPath(_path(clip['path'], clip.get('evenOdd', False)),
+                                    Qt.ClipOperation.IntersectClip)
+            painter.setWorldTransform(QTransform(*state.get('transform', (1, 0, 0, 1, 0, 0))))
             painter.setOpacity(state.get("globalAlpha", 1))
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn
                 if state.get("globalCompositeOperation") == "destination-in"
@@ -202,7 +208,11 @@ def build_effect(name, recipe, headImage=None, skinImage=None):
             if op == "drawImage":
                 if headImage is None:
                     raise ValueError("The original stress overlay needs its head mask")
-                painter.drawImage(QRectF(*command["args"]), headImage)
+                args = command["args"]
+                if len(args) == 2:
+                    painter.drawImage(QPointF(*args), headImage)
+                else:
+                    painter.drawImage(QRectF(*args), headImage)
                 continue
             if op in {"fillText", "strokeText"}:
                 text, x, y = command["args"]
@@ -214,7 +224,7 @@ def build_effect(name, recipe, headImage=None, skinImage=None):
                 path.addText(x - metrics.horizontalAdvance(text) / 2,
                              y + (metrics.ascent() - metrics.descent()) / 2, font, text)
             elif op in {"fill", "stroke"}:
-                path = _path(command["path"])
+                path = _path(command["path"], command.get('evenOdd', False))
             elif op in {"fillRect", "clearRect"}:
                 if op == "clearRect":
                     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)

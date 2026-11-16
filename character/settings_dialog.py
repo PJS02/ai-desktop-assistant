@@ -24,7 +24,8 @@ from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
 from .dialogue_options import DIALOGUE_OPTION_RANGES, normalize_dialogue_options
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
-from .game_rules import DEFAULT_GAME_RULES, normalize_game_rules, running_process_names
+from .game_rules import (DEFAULT_GAME_RULES, GAME_MOTION_LABELS, normalize_game_process,
+                         normalize_game_rules, running_process_names)
 from .gemini_usage_view import GeminiUsageView
 from .memory_view import MemoryView
 
@@ -313,10 +314,15 @@ class SettingsDialog(QDialog):
         self.window_occlusion.setChecked(local['character']['window_occlusion'])
         self.window_occlusion.setToolTip('앞쪽 창에 가려진 채 8초가 지나면 종이를 찢는 효과로 나온 뒤 창이나 작업 표시줄 위를 걷습니다.')
         movement.addRow(self.window_occlusion)
-        self.game_spectator_enabled = QCheckBox('게임 활동에 반응하기 (관람·응원)')
+        self.game_spectator_enabled = QCheckBox('게임 활동에 반응하기')
         self.game_spectator_enabled.setChecked(local['character']['game_spectator'])
-        self.game_spectator_enabled.setToolTip('기존 STEAM/GAME/UNITY 분류를 사용합니다. 평소 이동과 자율활동을 유지하면서 가끔 팝콘을 먹거나 응원합니다.')
+        self.game_spectator_enabled.setToolTip(
+            '활성 게임에 맞춰 게임 조작 모션을 재생합니다. 활성 창 감지와 OCR을 켜면 '
+            '한국어·영어 승패나 득점 안내를 기기에서 확인해 캐릭터 감정에 반영합니다.')
         movement.addRow(self.game_spectator_enabled)
+        self.desk_activity_enabled = QCheckBox('영상·음악·필기·읽기 활동에 반응하기')
+        self.desk_activity_enabled.setChecked(local['character']['desk_activity'])
+        movement.addRow(self.desk_activity_enabled)
         self.resolution_preset = self._combo([
             ('사용자 정의', None), ('720p · 1280 × 720', (1280, 720)),
             ('1080p · 1920 × 1080', (1920, 1080)), ('1440p · 2560 × 1440', (2560, 1440)),
@@ -1120,7 +1126,7 @@ class SettingsDialog(QDialog):
         self.igdb_client_secret.setClearButtonEnabled(True)
         form.addRow('Twitch Client ID', self.igdb_client_id)
         form.addRow('Twitch Client Secret', self.igdb_client_secret)
-        igdb_hint = QLabel('로컬 규칙으로 분류되지 않은 활성 창의 제목과 실행 파일 이름으로 IGDB를 조회합니다. 두 칸을 모두 비워 저장하면 조회를 끕니다.')
+        igdb_hint = QLabel('활성 게임의 이름과 장르를 IGDB에서 확인합니다. 두 칸을 비워 저장하면 조회를 끕니다.')
         igdb_hint.setWordWrap(True)
         form.addRow(igdb_hint)
         self.game_processes = QPlainTextEdit()
@@ -1145,6 +1151,29 @@ class SettingsDialog(QDialog):
         self.game_rules_hint = QLabel('게임 실행 파일 이름으로 정확히 일치시킵니다. 삭제하려면 해당 줄을 지우세요.')
         self.game_rules_hint.setWordWrap(True)
         form.addRow('', self.game_rules_hint)
+        self.game_motion_rules = local['game_rules']['motions'].copy()
+        motion_row = QWidget()
+        motion_controls = QHBoxLayout(motion_row)
+        motion_controls.setContentsMargins(0, 0, 0, 0)
+        self.game_motion_process = QLineEdit()
+        self.game_motion_process.setPlaceholderText('게임 실행 파일 이름.exe')
+        self.game_motion_process.setAccessibleName('모션을 지정할 게임 실행 파일')
+        motion_controls.addWidget(self.game_motion_process, 1)
+        self.game_motion_choice = _SettingsComboBox()
+        self.game_motion_choice.setAccessibleName('게임별 모션 선택')
+        self.game_motion_choice.addItem('자동', None)
+        for action, label in GAME_MOTION_LABELS.items():
+            self.game_motion_choice.addItem(label, action)
+        motion_controls.addWidget(self.game_motion_choice)
+        assign = QPushButton('지정')
+        assign.clicked.connect(self._assign_game_motion)
+        motion_controls.addWidget(assign)
+        form.addRow('게임별 모션', motion_row)
+        self.game_motion_list = _SettingsComboBox()
+        self.game_motion_list.setAccessibleName('모션을 지정한 게임')
+        self.game_motion_list.activated.connect(self._select_game_motion)
+        form.addRow('지정한 모션', self.game_motion_list)
+        self._refresh_game_motions()
         self.game_keywords = QPlainTextEdit()
         self.game_keywords.setPlainText('\n'.join(local['game_rules']['keywords']))
         self.game_keywords.setMinimumHeight(75)
@@ -1188,7 +1217,36 @@ class SettingsDialog(QDialog):
         if process not in {name.strip().lower() for name in values}:
             values.append(process)
             self.game_processes.setPlainText('\n'.join(values))
+        self.game_motion_process.setText(process)
         self.game_rules_hint.setText(f'{process}을(를) 추가했습니다. 적용을 눌러 저장하세요.')
+
+    def _refresh_game_motions(self):
+        self.game_motion_list.clear()
+        self.game_motion_list.addItem('지정한 게임 선택', None)
+        for process, action in sorted(self.game_motion_rules.items()):
+            self.game_motion_list.addItem(f'{process} · {GAME_MOTION_LABELS[action]}', process)
+
+    def _select_game_motion(self, index):
+        process = self.game_motion_list.itemData(index)
+        if process:
+            self.game_motion_process.setText(process)
+            self.game_motion_choice.setCurrentIndex(self.game_motion_choice.findData(self.game_motion_rules[process]))
+
+    def _assign_game_motion(self):
+        try:
+            process = normalize_game_process(self.game_motion_process.text())
+        except ValueError as error:
+            self.game_rules_hint.setText(str(error))
+            return
+        action = self.game_motion_choice.currentData()
+        if action is None:
+            self.game_motion_rules.pop(process, None)
+            status = '자동으로 바꿨습니다.'
+        else:
+            self.game_motion_rules[process] = action
+            status = f'{GAME_MOTION_LABELS[action]} 모션을 지정했습니다.'
+        self._refresh_game_motions()
+        self.game_rules_hint.setText(f'{process} · {status} 적용을 눌러 저장하세요.')
 
     def changes(self):
         local = {'character': {'width': self.width.value(), 'height': self.height.value(),
@@ -1206,6 +1264,7 @@ class SettingsDialog(QDialog):
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         local['character']['window_occlusion'] = self.window_occlusion.isChecked()
         local['character']['game_spectator'] = self.game_spectator_enabled.isChecked()
+        local['character']['desk_activity'] = self.desk_activity_enabled.isChecked()
         local['character']['emotion_delta_duration_ms'] = round(self.emotion_delta_duration.value() * 1000)
         local['character']['emotion_delta_enabled'] = self.emotion_delta_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
@@ -1213,6 +1272,7 @@ class SettingsDialog(QDialog):
             'included_processes': self.game_processes.toPlainText().splitlines(),
             'keywords': self.game_keywords.toPlainText().splitlines(),
             'excluded_processes': self.game_excluded_processes.toPlainText().splitlines(),
+            'motions': self.game_motion_rules,
         })
         if game_rules != self.local_baseline['game_rules']:
             changed['game_rules'] = game_rules

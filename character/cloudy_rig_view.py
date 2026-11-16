@@ -23,7 +23,7 @@ from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 from .desktop_geometry import NativeWindowClip
 from .rig_v8 import NodeRigPlanner
-from .rig_state import TRIP_ACTIONS
+from .rig_state import RIG_ACTIONS, TRIP_ACTIONS
 from .texture_cache import BoundedTextureCache
 
 
@@ -81,7 +81,6 @@ _GL_BLEND, _GL_DEPTH_TEST, _GL_CULL_FACE = 0x0BE2, 0x0B71, 0x0B44
 _GL_ONE, _GL_ONE_MINUS_SRC_ALPHA = 1, 0x0303
 _GL_FLOAT, _GL_TRIANGLES = 0x1406, 0x0004
 _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
-_ACTIONS = {"idle", "walk", "run", "wave", "stretch", "arrive", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate", "game_cheer", "game_oops"} | TRIP_ACTIONS
 
 
 def _texture_storage_bytes(part):
@@ -130,6 +129,7 @@ class CloudyRigView(QOpenGLWidget):
             self._identity_metadata[identity] = (name, part)
         self._cache = BoundedTextureCache(texture_budget_bytes, self._load_texture,
                                          lambda texture: texture.destroy())
+        self._activity_textures = {}
         self._program = self._buffer = self._gl = None
         self._buffer_capacity = 0
         self._error = None
@@ -301,7 +301,7 @@ class CloudyRigView(QOpenGLWidget):
         self._program.setUniformValue(self._locations['revealEllipse'], QVector4D(*values))
 
     def set_action(self, action: str, loop: bool = True):
-        action = action if action in _ACTIONS else "idle"
+        action = action if action in RIG_ACTIONS else "idle"
         if action not in {"jump", "fall", "land"}:
             self._jump_phase = None
             self._authored_jump = False
@@ -437,7 +437,11 @@ class CloudyRigView(QOpenGLWidget):
         gl, program = self._gl, self._program
         for command in commands:
             for unit, name in enumerate(('base', 'replacement', 'bodyNegativeLower', 'bodyNegativeUpper')):
-                self._cache.get(self._identities[command[name]]).bind(unit)
+                source = command[name]
+                texture = self._activity_textures.get(source)
+                if texture is None:
+                    texture = self._cache.get(self._identities[source])
+                texture.bind(unit)
             for name in ('replacementAmount', 'bodyBlendEnabled', 'bodyPositiveWeight', 'opacity', 'sourceClipEnabled'):
                 program.setUniformValue(self._locations[name], float(command[name]))
             program.setUniformValue(self._locations['sourceClipAxis'], QVector3D(*command['sourceClipAxis']))
@@ -627,15 +631,16 @@ class CloudyRigView(QOpenGLWidget):
             image = QImage(identity)
         if image.isNull():
             raise RuntimeError(f"Cannot decode rig texture: {name}")
+        return self._make_texture(image, bool(part.get("drawnTearFrame"))), _texture_storage_bytes(part)
+
+    def _make_texture(self, image, painted_tear=False):
         image = image.convertToFormat(QImage.Format.Format_RGBA8888_Premultiplied)
-        size = _texture_storage_bytes(part)
         self._peak_decode_bytes = max(self._peak_decode_bytes, image.sizeInBytes())
         texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
         texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
         texture.setSize(image.width(), image.height())
         # Painted tear cels shrink substantially on the cheek. Prefilter them
         # instead of sparsely sampling the high-resolution ink and highlights.
-        painted_tear = bool(part.get("drawnTearFrame"))
         texture.setMipLevels(max(image.width(), image.height()).bit_length() if painted_tear else 1)
         texture.setAutoMipMapGenerationEnabled(False)
         texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
@@ -647,7 +652,21 @@ class CloudyRigView(QOpenGLWidget):
                         image.constBits())
         if painted_tear:
             texture.generateMipMaps()
-        return texture, size
+        return texture
+
+    def _prepare_activity_textures(self, layers):
+        from .rig_fx import build_effect
+        for name in self._activity_textures.keys() - layers.keys():
+            self._activity_textures.pop(name).destroy()
+        for name, recipe in layers.items():
+            image = build_effect(name, recipe)
+            texture = self._activity_textures.get(name)
+            if texture is not None and (texture.width(), texture.height()) == (image.width(), image.height()):
+                texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, image.constBits())
+            else:
+                if texture is not None:
+                    self._activity_textures.pop(name).destroy()
+                self._activity_textures[name] = self._make_texture(image)
 
     def paintGL(self):
         if self._released or self._error or self._gl is None:
@@ -661,11 +680,15 @@ class CloudyRigView(QOpenGLWidget):
             self._plan_ms = (time.perf_counter() - t0) * 1000
             self._max_plan_ms = max(self._max_plan_ms, self._plan_ms)
             self._last_plan = plan
+            layers = plan.get('activityLayers', {})
             sizes = {}
             for name in plan["requiredTextures"]:
+                if name in layers:
+                    continue
                 part = self._parts[name]
                 sizes[self._identities[name]] = _texture_storage_bytes(part)
             self._cache.prepare(sizes)
+            self._prepare_activity_textures(layers)
             # Use the original projection even when a fall needs a wider canvas.
             dpr = self.devicePixelRatioF()
             framebuffer_size = self.size() * dpr
@@ -758,6 +781,7 @@ class CloudyRigView(QOpenGLWidget):
         self.makeCurrent()
         self._diagnostic_fbo = None
         self._cache.clear()
+        self._prepare_activity_textures({})
         if self._buffer is not None and self._buffer.isCreated():
             self._buffer.destroy()
         if self._program is not None:

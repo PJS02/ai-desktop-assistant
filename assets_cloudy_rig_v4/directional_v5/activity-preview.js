@@ -564,23 +564,22 @@
   }
 
   const games = root.CloudyActivityGames.createClips({heldLayout, bodyPoint, shape, box, oval, shade});
-  const clips = {
-    music, ...games, spectate, writing, reading, documents,
+  const clips = Object.assign({music}, games, {
+    spectate, writing, reading, documents,
     'high-five': highFiveClip('하이파이브', highFiveMotion, 0),
-    'high-five-jump': highFiveClip('점프 하이파이브', highFiveMotion.jump, 1),
-    ...trip.clips
-  };
+    'high-five-jump': highFiveClip('점프 하이파이브', highFiveMotion.jump, 1)
+  }, trip.clips);
 
   function clipTime(clip, seconds) {
     return clip.once ? Math.max(0, Math.min(clip.duration, seconds)) : loop(seconds, clip.duration);
   }
 
-  function pose(action, seconds, yaw) {
+  function pose(action, seconds, yaw, options) {
     const clip = clips[action];
     const t = clipTime(clip, seconds);
     const side = yaw < -21 ? -1 : yaw > 21 ? 1 : 0;
     if (clip.sample) return clip.sample(t, side);
-    const p = M.pose('idle', t * 4.6 / clip.duration);
+    const p = M.pose('idle', t * 4.6 / clip.duration, options);
     clip.body(p, t, side);
     if (clip.held) {
       p.idleGesture = 0;
@@ -592,32 +591,34 @@
 
   class Renderer extends BaseRenderer {
     render(pose, yaw, time, options = {}) {
-      this.activity = Object.hasOwn(clips, options.action) ? clips[options.action] : null;
-      this.activityTime = this.activity ? clipTime(this.activity, options.activityTime ?? time) : 0;
-      super.render(pose, yaw, time, this.activity?.fall ? {...options, companion: false} : options);
+      this.activity = options.activity !== false && Object.prototype.hasOwnProperty.call(clips, options.action)
+        ? clips[options.action] : null;
+      this.activityFrame = null;
+      this.activityTime = this.activity ? clipTime(this.activity, options.activityTime == null ? time : options.activityTime) : 0;
+      super.render(pose, yaw, time, this.activity && this.activity.fall ? {...options, companion: false} : options);
     }
 
     renderView(cfg, pose, opacity, time) {
-      if (this.activity?.fall) {
+      if (this.activity && this.activity.fall) {
         this.renderTrip(cfg, pose, opacity, time);
         return;
       }
-      const frame = this.activity?.frame(cfg, pose, this.activityTime);
+      const frame = this.activity && this.activity.frame(cfg, pose, this.activityTime);
       this.activityFrame = frame;
       this.handOverlays = [];
-      const behind = frame?.behindArms;
+      const behind = frame && frame.behindArms;
       if (behind) this.paintLayer(behind, behind.paint, 'behind-arms');
-      const posed = this.activity?.held ? {...pose} : pose;
-      if (this.activity?.held) {
+      const posed = this.activity && this.activity.held ? {...pose} : pose;
+      if (this.activity && this.activity.held) {
         // Solve against the pose being painted so the moving props and fingers
         // share the same body transform even while the pose is transitioning.
         frame.hands.forEach((grip, index) => this.aimHand(cfg, posed, index, grip));
       }
-      if (frame?.farArmBehindBody) {
+      if (frame && frame.farArmBehindBody) {
         this.paintArm(cfg, 1, posed, opacity, frame.hands[1]);
       }
       super.renderView(cfg, posed, opacity, time);
-      if (frame?.foreground) this.paintLayer(frame, frame.foreground);
+      if (frame && frame.foreground) this.paintLayer(frame, frame.foreground);
       for (const placement of this.handOverlays) this.paintHand(placement, 'front');
     }
 
@@ -639,7 +640,7 @@
 
     tripOutline(name) {
       if (!this.textures[name] || !this.images[name]) return [];
-      this.tripOutlines ??= new Map();
+      if (!this.tripOutlines) this.tripOutlines = new Map();
       if (!this.tripOutlines.has(name)) {
         this.tripOutlines.set(name, trip.contour(this.images[name], this.parts[name].bbox));
       }
@@ -648,13 +649,14 @@
 
     face(cfg, pose, opacity, time) {
       const frame = this.activityFrame;
-      if (frame?.back) this.paintLayer(frame, frame.back);
+      if (frame && frame.back) this.paintLayer(frame, frame.back);
       super.face(cfg, pose, opacity, time);
-      if (frame?.paint) this.paintLayer(frame, frame.paint);
+      if (frame && frame.paint) this.paintLayer(frame, frame.paint);
     }
 
     limb(cfg, index, type, pose, opacity, surface) {
-      const grip = type === 'arm' && this.activityFrame?.hands?.[index];
+      const frame = this.activityFrame;
+      const grip = type === 'arm' && frame && frame.hands && frame.hands[index];
       if (!grip) {
         super.limb(cfg, index, type, pose, opacity, surface);
         return;
@@ -700,14 +702,14 @@
     }
 
     drawSprite(name, pivot, location, scale, angle, opacity) {
-      const drop = this.activityFrame?.companionDrop;
+      const drop = this.activityFrame && this.activityFrame.companionDrop;
       if (name === 'front_14' && drop) location = {x: location.x, y: location.y + drop};
       const active = this.activityHand;
-      if (active?.name !== name) {
+      if (!active || active.name !== name) {
         super.drawSprite(name, pivot, location, scale, angle, opacity);
         return;
       }
-      const placement = {...active, location, angle, opacity};
+      const placement = Object.assign({location, angle, opacity}, active);
       this.paintHand(placement, 'paint');
       this.paintCuffForeground(active, opacity);
       if (active.grip.art.front) this.handOverlays.push(placement);
@@ -726,7 +728,7 @@
 
     paintHand({grip, location, angle, flex, opacity}, layer) {
       const frame = {
-        bounds: grip.art.bounds ?? [-15, -10, 30, 38],
+        bounds: grip.art.bounds || [-15, -10, 30, 38],
         point(x, y) {
           // Seat the wrist inside the sleeve, then bend into the hand pose.
           const roll = angle - flex * (1 - ease((y + 1) / 10));
@@ -739,7 +741,7 @@
 
     paintLayer({bounds, point}, paint, slot = 'prop', opacity = 1, rows = 1) {
       const name = 'preview_activity_' + slot;
-      this.activityCanvases ??= {};
+      if (!this.activityCanvases) this.activityCanvases = {};
       if (!this.activityCanvases[slot]) {
         const canvas = document.createElement('canvas');
         this.activityCanvases[slot] = canvas.getContext('2d');

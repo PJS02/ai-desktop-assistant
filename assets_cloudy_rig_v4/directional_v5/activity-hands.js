@@ -257,7 +257,9 @@
     right_03: [-18, 14, -12, -3, 22, -29, 34, -31]
   };
 
-  function cuffForeground(name, image, [x, y], [bx, by, width, height]) {
+  function cuffForeground(name, image, cuff, bounds) {
+    const [x, y] = cuff;
+    const [bx, by, width, height] = bounds;
     const [left, startY, ax, ay, bx2, by2, right, endY] = cuffEdges[name];
     const canvas = document.createElement('canvas');
     canvas.width = width;

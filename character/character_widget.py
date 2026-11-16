@@ -60,7 +60,7 @@ CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_
 # Context 모듈 import
 try:
     from context.active_window_classifier import (
-        get_active_window_info,
+        get_foreground_window_info as get_active_window_info,
         capture_active_window_image,
         extract_dialogue,
         build_gemini_prompt,
@@ -177,6 +177,7 @@ class CharacterWidget(QLabel):
         self.show_debug = options['show_hitboxes']
         self.window_occlusion = options['window_occlusion']
         self.game_spectator_enabled = options['game_spectator']
+        self.desk_activity_enabled = options['desk_activity']
 
         # MediaPipe 프로세스는 main.py가 관리하고, 캐릭터는 창 표시만 요청한다.
         self._show_perception_console_callback = on_show_perception_console
@@ -1303,7 +1304,9 @@ class CharacterWidget(QLabel):
             category = activity_category(process)
             lookup = getattr(self, 'igdb_lookup', None)
             checking_igdb = category == 'work' and lookup is not None and lookup.enabled
-            game = resolve_game_activity(process, title, category, lookup, wait=True)
+            game = resolve_game_activity(process, title, category, lookup, wait=True,
+                                         window_id=info.get('window_id', 0),
+                                         process_instance=info.get('process_instance'))
             if checking_igdb:
                 # Lookup time can span a foreground change or a credential edit.
                 if (getattr(self, '_character_closing', False) or lookup is not self.igdb_lookup
@@ -1332,9 +1335,12 @@ class CharacterWidget(QLabel):
                 return
             if game_visual:
                 current = get_active_window_info()
-                if not current or current.get('process', '').lower() != process:
+                if (not current or current.get('process', '').lower() != process
+                        or current.get('window_id', 0) != game.window_id
+                        or current.get('process_instance') != game.process_instance):
                     return
                 context['game_process'] = process
+                context['game_session'] = game.session_key
                 context['game_observed_at'] = captured_at
                 image = prepare_game_image(image)
                 log_event('game.frame_prepared', '게임 분석 이미지 준비', category='대화·AI',
@@ -2638,7 +2644,7 @@ class CharacterWidget(QLabel):
         jump_height=None, show_hitboxes=None, movement_range_extra_percent=None,
         boredom_minutes=None, *, running_speed=None, emotion_delta_duration_ms=None,
         emotion_delta_enabled=None, personality_traits=None, window_occlusion=None,
-        game_spectator=None, trace_id=None,
+        game_spectator=None, desk_activity=None, trace_id=None,
     ):
         """Update bounds and personality without resetting the current mood."""
         requested_width, requested_height = width, height
@@ -2659,6 +2665,7 @@ class CharacterWidget(QLabel):
             'show_hitboxes': self.show_debug if show_hitboxes is None else show_hitboxes,
             'window_occlusion': self.window_occlusion if window_occlusion is None else window_occlusion,
             'game_spectator': self.game_spectator_enabled if game_spectator is None else game_spectator,
+            'desk_activity': self.desk_activity_enabled if desk_activity is None else desk_activity,
             'movement_range_extra_percent': (self.movement_range_extra_percent
                                             if movement_range_extra_percent is None else movement_range_extra_percent),
             'boredom_minutes': (self.autonomous_needs.boredom_minutes
@@ -2684,9 +2691,12 @@ class CharacterWidget(QLabel):
         self.emotion_delta_overlay.set_enabled(options['emotion_delta_enabled'])
         self.set_show_hitboxes(options['show_hitboxes'])
         self.window_occlusion = options['window_occlusion']
+        activity_settings_changed = (options['game_spectator'] != self.game_spectator_enabled
+                                     or options['desk_activity'] != self.desk_activity_enabled)
         self.game_spectator_enabled = options['game_spectator']
-        if not self.game_spectator_enabled:
-            self.game_spectator.stop()
+        self.desk_activity_enabled = options['desk_activity']
+        if activity_settings_changed:
+            self.game_spectator.poll()
         if not self.window_occlusion:
             self.window_presence.cancel()
         self.jump_force = math.sqrt(2 * self.gravity * self.jump_height)

@@ -6,6 +6,9 @@
   }
   var P = root.CLOUDY_PARTS;
   var trip = root.CloudyActivityTrip;
+  var preview = root.CloudyActivityPreview;
+  var activityActions = ['music', 'writing', 'reading', 'documents',
+    'gaming', 'gaming-console', 'gaming-racing', 'gaming-rhythm'];
   var copy = function (value) { return JSON.parse(JSON.stringify(value)); };
   var finite = function (value, fallback) { return Number.isFinite(value) ? value : fallback; };
   var textureToken = function (name) { return {name: name}; };
@@ -65,27 +68,39 @@
     return gl;
   }
 
-  // Capture the original Canvas2D recipe. Qt renders these commands once into
-  // effect textures; the original renderer still places and animates them.
+  var pathOperations = ['moveTo', 'lineTo', 'quadraticCurveTo', 'bezierCurveTo',
+    'arc', 'ellipse', 'closePath', 'rect', 'roundRect'];
+  function RecordedPath() { this.commands = []; }
+  pathOperations.forEach(function (op) {
+    RecordedPath.prototype[op] = function () {
+      this.commands.push({op: op, args: Array.prototype.slice.call(arguments)});
+    };
+  });
+  root.Path2D = RecordedPath;
+
+  // Capture the authored Canvas2D commands for rasterization in Qt.
   function recordingCanvas() {
     var canvas = {width: 300, height: 150, commands: []};
     var state = {lineCap: 'butt', lineJoin: 'miter', lineWidth: 1,
       strokeStyle: '#000000', fillStyle: '#000000', globalAlpha: 1,
       globalCompositeOperation: 'source-over', font: '10px sans-serif',
       textAlign: 'start', textBaseline: 'alphabetic'};
-    var currentPath = [], saved = [];
+    var currentPath = new RecordedPath(), saved = [];
     var context = {};
     Object.keys(state).forEach(function (key) {
       Object.defineProperty(context, key, {get: function () { return state[key]; },
         set: function (value) { state[key] = value; }});
     });
-    ['moveTo', 'lineTo', 'quadraticCurveTo', 'bezierCurveTo', 'arc', 'ellipse', 'closePath', 'rect']
-      .forEach(function (op) { context[op] = function () {
-        currentPath.push({op: op, args: Array.prototype.slice.call(arguments)});
-      }; });
-    context.beginPath = function () { currentPath = []; };
-    ['fill', 'stroke'].forEach(function (op) { context[op] = function () {
-      canvas.commands.push({op: op, path: copy(currentPath), state: copy(state)});
+    pathOperations.forEach(function (op) {
+      context[op] = function (...args) { currentPath[op](...args); };
+    });
+    context.beginPath = function () { currentPath = new RecordedPath(); };
+    function pathArgs(path, rule) {
+      return {path: copy((path instanceof RecordedPath ? path : currentPath).commands),
+        evenOdd: path === 'evenodd' || rule === 'evenodd'};
+    }
+    ['fill', 'stroke'].forEach(function (op) { context[op] = function (path, rule) {
+      canvas.commands.push(Object.assign({op: op, state: copy(state)}, pathArgs(path, rule)));
     }; });
     ['fillText', 'strokeText', 'fillRect', 'clearRect'].forEach(function (op) {
       context[op] = function () {
@@ -94,13 +109,23 @@
     });
     context.save = function () { saved.push(copy(state)); };
     context.restore = function () { if (saved.length) state = saved.pop(); };
-    context.scale = function (x, y) {
-      var t = state.transform || (state.transform = [1, 1, 0, 0]);
-      t[0] *= x; t[1] *= y;
+    context.clip = function (path, rule) {
+      if (!state.clips) state.clips = [];
+      state.clips.push(Object.assign({transform: state.transform && state.transform.slice()}, pathArgs(path, rule)));
     };
-    context.translate = function (x, y) {
-      var t = state.transform || (state.transform = [1, 1, 0, 0]);
-      t[2] += t[0] * x; t[3] += t[1] * y;
+    context.setTransform = function (a, b, c, d, x, y) {
+      state.transform = [a, b, c, d, x, y];
+    };
+    function transform(a, b, c, d, x, y) {
+      var t = state.transform || [1, 0, 0, 1, 0, 0];
+      context.setTransform(t[0]*a+t[2]*b, t[1]*a+t[3]*b, t[0]*c+t[2]*d, t[1]*c+t[3]*d,
+        t[0]*x+t[2]*y+t[4], t[1]*x+t[3]*y+t[5]);
+    }
+    context.scale = function (x, y) { transform(x, 0, 0, y, 0, 0); };
+    context.translate = function (x, y) { transform(1, 0, 0, 1, x, y); };
+    context.rotate = function (angle) {
+      var cos = Math.cos(angle), sin = Math.sin(angle);
+      transform(cos, sin, -sin, cos, 0, 0);
     };
     context.drawImage = function (image) {
       canvas.commands.push({op: 'drawImage', image: image.name,
@@ -168,6 +193,18 @@
         };
       });
       var highFive = root.CloudyHighFive;
+      ['front', 'left', 'right'].forEach(function (direction) {
+        var yaw = direction === 'left' ? -65 : direction === 'right' ? 65 : 0;
+        var view = root.CloudyRig.views.find(function (entry) { return entry.yaw === yaw; });
+        view.arms.forEach(function (arm) {
+          var sleeve = direction + '_' + String(arm.i).padStart(2, '0');
+          var part = P[sleeve];
+          var image = root.CloudyActivityHands.cuffForeground(sleeve, textureToken(sleeve), arm.cuff, part.bbox);
+          var name = 'fx_activity_cuff_' + sleeve;
+          recipes[name] = {width: image.width, height: image.height, commands: image.commands};
+          effectParts[name] = Object.assign({}, part, {file: null, generated: true});
+        });
+      });
       var palmBounds = highFive.bounds;
       for (var i = 0; i <= 6; i++) {
         var palm = recordingCanvas(), painter = palm.getContext('2d');
@@ -190,7 +227,7 @@
         recipes[pair[0]] = {width: 128, height: 128, commands: image.commands};
       });
       Object.keys(recipes).forEach(function (name) {
-        effectParts[name] = {bbox: [0, 0, recipes[name].width, recipes[name].height],
+        if (!effectParts[name]) effectParts[name] = {bbox: [0, 0, recipes[name].width, recipes[name].height],
           size: [recipes[name].width, recipes[name].height], generated: true};
       });
     } finally {
@@ -199,12 +236,42 @@
     }
   }
 
+  class NativeActivityRenderer extends preview.Renderer {
+    paintCuffForeground({sleeve, sleeveMap}, opacity) {
+      this.mesh('fx_activity_cuff_' + sleeve, sleeveMap, opacity, 8, 26);
+    }
+
+    paintLayer({bounds, point}, paint, slot = 'prop', opacity = 1, rows = 1) {
+      var [x, y, w, h] = bounds, scale = 2;
+      var image = recordingCanvas(), ctx = image.getContext('2d');
+      image.width = Math.ceil(w * scale);
+      image.height = Math.ceil(h * scale);
+      ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
+      ctx.lineCap = ctx.lineJoin = 'round';
+      paint(ctx);
+      if (!image.commands.length) return;
+      var name = 'activity_' + slot + '_' + Object.keys(this.layers).length;
+      this.layers[name] = {width: image.width, height: image.height, commands: image.commands};
+      this.parts[name] = {bbox: [0, 0, image.width, image.height]};
+      this.textures[name] = textureToken(name);
+      this.mesh(name, p => point(x + p.x / scale, y + p.y / scale), opacity, 1, rows);
+      delete this.parts[name];
+      delete this.textures[name];
+    }
+  }
+
+  function activityYaw(action, yaw) {
+    if (action === 'gaming-rhythm') return 0;
+    if (action === 'gaming' || action === 'gaming-console') return yaw > 0 ? 65 : -65;
+    return yaw;
+  }
+
   var renderer, gl, transition, transitionSignature;
   function prepareRenderer() {
     if (renderer) return;
     prepareEffects();
     gl = recordingGL();
-    renderer = new root.CloudyRenderer({width: 720, height: 1080,
+    renderer = new NativeActivityRenderer({width: 720, height: 1080,
       getContext: function () { return gl; }});
     renderer.parts = Object.assign({}, P, effectParts);
     // Availability follows metadata, not native GPU residency. Missing cached
@@ -282,9 +349,18 @@
     var sampleAction = authoredFlight ? 'jump' : action;
     var sampleTime = authoredFlight ? Math.max(.15, Math.min(.70, state.jumpPhase)) * 2.4 : time;
     var clip = Object.prototype.hasOwnProperty.call(trip.landings, action) ? trip.landings[action] : null;
-    var yaw = finite(state.yaw, 0);
+    var yaw = activityYaw(action, finite(state.yaw, 0));
     var pose = clip ? clip.sample(Math.max(0, Math.min(time, clip.duration)), yaw < -21 ? -1 : yaw > 21 ? 1 : 0)
+      : activityActions.includes(sampleAction) ? preview.pose(sampleAction, sampleTime, yaw, options)
       : root.CloudyMotion.pose(sampleAction, sampleTime, options);
+    if (clip || activityActions.includes(sampleAction)) {
+      pose = root.CloudyMotion.applySpeech(root.CloudyMotion.applyEmotion(pose, options.emotion),
+        options.speaking, options.speechTime);
+    }
+    if (action === 'spectate' && state.speaking) {
+      pose.snackGesture = 0;
+      pose.elbowNear = 65;
+    }
     var originalPose = copy(pose), adjustment = 0, hostJumpArms = null;
     if (state.externalPhysics === true) {
       if (Number.isFinite(state.externalRootHeight)) adjustment = -state.externalRootHeight;
@@ -348,13 +424,14 @@
 
   function plan(state) {
     state = state || {}; prepareRenderer();
-    var frame = sample(state), yaw = finite(state.yaw, 0);
+    var frame = sample(state), yaw = activityYaw(frame.action, finite(state.yaw, 0));
     var highFive = state.highFive;
+    renderer.layers = {};
     renderer.renderView = Object.prototype.hasOwnProperty.call(trip.landings, frame.action)
-      ? renderTripView : root.CloudyRenderer.prototype.renderView;
+      ? renderTripView : preview.Renderer.prototype.renderView;
     renderer.render(frame.pose, yaw, frame.time, {
       action: frame.action, emotionEffects: state.emotionEffects,
-      companion: state.companion, highFive: highFive
+      companion: state.companion, highFive: highFive, activity: !highFive && activityActions.includes(frame.action)
     });
     var commands = gl.result(), required = Object.create(null);
     var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -363,7 +440,7 @@
         .forEach(function (name) { if (name) required[name] = true; });
       // Character parts only: floating companions and emotion effects do not
       // enlarge the body box. Use the very meshes submitted for this frame.
-      command.characterPart = command.opacity > 0 && /^(?:(front|left|right)_(0\d|1[0-3])(?:_|$)|fx_high_five_palm_)/.test(command.base || '');
+      command.characterPart = command.opacity > 0 && /^(?:(front|left|right)_(0\d|1[0-3])(?:_|$)|fx_high_five_palm_|activity_hand_|fx_activity_cuff_)/.test(command.base || '');
       if (command.characterPart) {
         for (var i = 0; i < command.vertices.length; i += 4) {
           left = Math.min(left, command.vertices[i]); top = Math.min(top, command.vertices[i + 1]);
@@ -379,7 +456,7 @@
       },
       logicalSize: [360, 540], groundY: root.CloudyRig.groundY,
       characterBounds: Number.isFinite(left) ? [left, top, right, bottom] : null,
-      commands: commands, requiredTextures: Object.keys(required)};
+      commands: commands, requiredTextures: Object.keys(required), activityLayers: renderer.layers};
   }
 
   root.CloudyRigBridge = {
