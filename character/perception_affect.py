@@ -105,11 +105,11 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
             return result
         result['wake'] = True
         result['arousal'] = min(.02, max(0., -before[1]))
-    if signal.startswith('head_') and not actor.get('recent_dialogue'):
-        result['reason'] = 'no_dialogue_context'
-        return result
-
-    if signal in POSITIVE_SIGNALS or signal == 'face' and label == 'happy':
+    head_outside_dialogue = signal in ('head_agree', 'head_negative') and not actor.get('recent_dialogue')
+    if head_outside_dialogue:
+        result['arousal'] = .012 * (1. - .35 * weights['down'])
+        raw = {}
+    elif signal in POSITIVE_SIGNALS or signal == 'face' and label == 'happy':
         strength = POSITIVE_SIGNALS.get(signal, .25)
         raw = mix_profiles(POSITIVE_PROFILES, weights)
         if signal in ('ok', 'head_agree'):
@@ -135,7 +135,8 @@ def appraise_perception(signal, occ, before, actor=None, *, label=None):
 
     if unit(actor.get('rest', 0.)) >= .65:
         result['multiplier'] *= .7
-    result.update(accepted=True, requested_occ=raw, reset_idle=signal != 'face')
-    result['interpretation'] = {PROFILE_NAMES[name]: round(weight, 4)
-                                for name, weight in weights.items() if weight > 1e-6}
+    result.update(accepted=True, requested_occ=raw, reset_idle=signal != 'face' and not head_outside_dialogue)
+    result['interpretation'] = (
+        {'고개 움직임에 주의를 기울임': 1.} if head_outside_dialogue else
+        {PROFILE_NAMES[name]: round(weight, 4) for name, weight in weights.items() if weight > 1e-6})
     return result
