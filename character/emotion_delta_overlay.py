@@ -95,12 +95,10 @@ class EmotionDeltaOverlay(QWidget):
         host = self.parentWidget()
         if not self.enabled or not host.isVisible() or getattr(host, '_character_closing', False):
             return
+        now = time.monotonic()
         for emotion, delta in changes.items():
             key = (source, emotion)
-            now = time.monotonic()
-            if now - self._pending_at.get(key, now) > 4.:
-                self._pending.pop(key, None)
-                self._pending_coordinates.pop(key, None)
+            self._discard_stale_fragment(key, now)
             self._pending[key] = self._pending.get(key, 0.0) + delta
             self._pending_at[key] = now
         if not self._batch.isActive():
@@ -132,6 +130,23 @@ class EmotionDeltaOverlay(QWidget):
         self._popups.clear()
         self.hide()
 
+    @staticmethod
+    def _display_scale(key):
+        source, emotion = key
+        return 10000 if source in PRECISE_SOURCES or emotion == 'arousal' else 100
+
+    @staticmethod
+    def _meets_threshold(delta, scale):
+        return abs(delta) >= 1 / scale - 1e-12
+
+    def _discard_stale_fragment(self, key, now):
+        # Keep displayable changes queued even if an earlier popup takes several seconds.
+        if (now - self._pending_at.get(key, now) > 4.0
+                and not self._meets_threshold(self._pending[key], self._display_scale(key))):
+            del self._pending[key]
+            del self._pending_at[key]
+            self._pending_coordinates.pop(key, None)
+
     def _show_pending(self):
         if self._animation.isActive():
             return
@@ -140,15 +155,12 @@ class EmotionDeltaOverlay(QWidget):
             return
         now = time.monotonic()
         for key in list(self._pending):
-            if now - self._pending_at.get(key, now) > 4.:
-                del self._pending[key]
-                self._pending_at.pop(key, None)
-                self._pending_coordinates.pop(key, None)
+            self._discard_stale_fragment(key, now)
         ranked = []
         for key, delta in self._pending.items():
             # Confirmed recognition events can be smaller than one display point.
-            scale = 10000 if key[0] in PRECISE_SOURCES or key[1] == 'arousal' else 100
-            if abs(delta) >= 1 / scale - 1e-12:
+            scale = self._display_scale(key)
+            if self._meets_threshold(delta, scale):
                 ranked.append((key, delta, scale))
         ranked.sort(key=lambda entry: abs(entry[1]), reverse=True)
         lines = []
