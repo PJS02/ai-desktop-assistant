@@ -59,7 +59,7 @@ from .manual_control import ManualControl, SPRITE_DISPLAY_EMOTIONS
 from .taskbar_visibility import TaskbarVisibilityGuard
 from .desktop_geometry import (WINDOW_SCAN_AVAILABLE, desktop_windows, exposed_top_spans,
                                exposed_windows, support_span, surface_rect)
-from .desktop_icons import notify_item_moved, queue_returned_icon, refresh_desktop_after_drop
+from .desktop_icons import desktop_body_bounds, notify_item_moved, return_desktop_item, wait_for_desktop_removal
 
 CHARACTER_ITEMS_DIRECTORY = USER_DATA_ROOT / "character_items"
 
@@ -123,6 +123,8 @@ class CharacterWidget(QLabel):
     occ_changed = pyqtSignal(str, dict)
     arousal_changed = pyqtSignal(str, float)
     popup_coordinates_changed = pyqtSignal(str, tuple, float, float)
+    item_receipt_finished = pyqtSignal(object)
+    item_return_finished = pyqtSignal(object)
     CHARACTER_WIDTH = 150
     CHARACTER_HEIGHT = 200
     MOUSE_THROW_MIN_SPEED = 400.  # Logical pixels per second.
@@ -252,6 +254,9 @@ class CharacterWidget(QLabel):
         # 아이템 반환 타이머 (순차 배치용)
         self._release_timer = None
         self._remaining_items_to_release = []  # 반환 대기 중인 아이템
+        self._return_in_progress = False
+        self.item_receipt_finished.connect(self._show_received_items, Qt.ConnectionType.QueuedConnection)
+        self.item_return_finished.connect(self._apply_item_return, Qt.ConnectionType.QueuedConnection)
         
         # 캐릭터 아이템 폴더 생성
         self.character_items_path = CHARACTER_ITEMS_DIRECTORY
@@ -1891,6 +1896,8 @@ class CharacterWidget(QLabel):
 
     def _get_item_icon(self, file_path):
         """파일/폴더의 아이콘을 QPixmap으로 반환"""
+        if file_path in self.held_items_icons:
+            return self.held_items_icons[file_path]
         try:
             icon_provider = QFileIconProvider()
             file_info = QFileInfo(file_path)
@@ -1904,6 +1911,7 @@ class CharacterWidget(QLabel):
                 icon = icon_provider.icon(QFileIconProvider.IconType.File)
                 icon_pixmap = icon.pixmap(64, 64)
             
+            self.held_items_icons[file_path] = icon_pixmap
             return icon_pixmap
         except Exception as e:
             print(f"[오류] 아이콘 가져오기 실패: {e}")
@@ -2915,23 +2923,44 @@ class CharacterWidget(QLabel):
 
     def dropEvent(self, event):
         """파일/폴더를 드롭했을 때 - 여러 개 파일 수용"""
-        if not self._body_contains(event.position().toPoint()):
+        if not self._body_contains(event.position().toPoint()) or not event.mimeData().hasUrls():
             event.ignore()
             return
-        mime_data = event.mimeData()
-        
-        if mime_data.hasUrls():
-            urls = mime_data.urls()
-            acquired = []
-            for url in urls:
-                file_path = url.toLocalFile()
-                if file_path and self.acquire_item(file_path, appraise=False):
-                    acquired.append(Path(file_path))
-            if acquired:
-                refresh_desktop_after_drop(acquired)
-                experience(self, "file_received", count=len(acquired),
-                           event_id=new_trace_id('file-received'))
+
+        urls = event.mimeData().urls()
+        acquired = []
+        for url in urls:
+            file_path = url.toLocalFile()
+            if not file_path:
+                continue
+            source = Path(file_path)
+            try:
+                destination = self._item_destination(source, self.character_items_path)
+                destination = Path(shutil.move(source, destination))
+            except OSError as exc:
+                print(f"[오류] 아이템 획득 실패: {exc}")
+                continue
+            notify_item_moved(source, destination)
+            acquired.append((source, destination))
+        if not acquired:
+            event.ignore()
+            return
+
+        actions = event.possibleActions()
+        if len(acquired) == len(urls) and HAS_WINDOWS_API and actions & Qt.DropAction.MoveAction:
+            # The target already moved the files. Let Explorer update its source view
+            # without asking it to remove the originals a second time.
+            event.setDropAction(Qt.DropAction.TargetMoveAction)
+            event.accept()
+        elif actions & Qt.DropAction.CopyAction:
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        elif len(acquired) == len(urls):
             event.acceptProposedAction()
+        else:
+            event.ignore()
+        threading.Thread(target=self._wait_for_item_receipt, args=(acquired,),
+                         name='character-file-receipt', daemon=True).start()
 
     def _restore_held_items(self):
         """The existing storage folder is the inventory across app restarts."""
@@ -2948,60 +2977,39 @@ class CharacterWidget(QLabel):
             log_event('character.items.restored', '보관 아이템 목록을 복구했습니다.',
                       category='캐릭터 상태', held_item_count=len(self.held_items))
 
-    def acquire_item(self, file_path, *, appraise=True):
-        """파일/폴더를 획득했을 때 - 캐릭터 폴더로 이동 (여러 개 가능)"""
+    @staticmethod
+    def _item_destination(source, folder):
+        destination = folder / source.name
+        counter = 1
+        while destination.exists() or destination.is_symlink():
+            destination = folder / f"{source.stem}_{counter}{source.suffix}"
+            counter += 1
+        return destination
+
+    def _wait_for_item_receipt(self, acquired):
+        wait_for_desktop_removal(source for source, _ in acquired)
         try:
-            file_path = Path(file_path)
-            
-            # 파일 이름 추출
-            item_name = file_path.name
-            
-            # 캐릭터 폴더로 파일/폴더 이동
-            dest_path = self.character_items_path / item_name
-            
-            # 이미 존재하면 번호 추가
-            if dest_path.exists():
-                stem = file_path.stem
-                suffix = file_path.suffix
-                counter = 1
-                while (self.character_items_path / f"{stem}_{counter}{suffix}").exists():
-                    counter += 1
-                dest_path = self.character_items_path / f"{stem}_{counter}{suffix}"
-            
-            # 파일/폴더 이동
-            shutil.move(str(file_path), str(dest_path))
-            
-            # 리스트에 추가
-            self.held_items.append(str(dest_path))
-            notify_item_moved(file_path, dest_path)
-            
-            if appraise:
-                experience(self, 'file_received', count=1, event_id=new_trace_id('file-received'))
-            
-            print(f"   - {item_name} (총 {len(self.held_items)}개)")
-            print(f"   위치: {dest_path}")
-            
-            # 마지막 아이템이면 감정 로그 출력
-            if len(self.held_items) >= 1:
-                log_event('mood.snapshot', '아이템 획득 후 감정 상태', category='캐릭터 상태', reason='item_acquired',
-                          item=item_name, held_item_count=len(self.held_items),
-                          state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
-                          formatted_state=self.mood_system.get_formatted_mood_log())
-                print()
-            
-            # 현재 감정 애니메이션 갱신 + 아이콘 표시
-            mood = self.mood_system.decide_emotion()
-            self.update_action(mood)
-            return True
-        except Exception as e:
-            print(f"[오류] 아이템 획득 실패: {e}")
-            return False
+            self.item_receipt_finished.emit(acquired)
+        except RuntimeError:
+            pass  # The Qt window may have been destroyed after the files moved.
+
+    @pyqtSlot(object)
+    def _show_received_items(self, acquired):
+        if self._character_closing:
+            return
+        self.held_items.extend(str(destination) for _, destination in acquired)
+        experience(self, 'file_received', count=len(acquired), event_id=new_trace_id('file-received'))
+        mood = self.mood_system.decide_emotion()
+        log_event('mood.snapshot', '아이템 획득 후 감정 상태', category='캐릭터 상태', reason='item_acquired',
+                  item=acquired[-1][0].name, held_item_count=len(self.held_items),
+                  state=self.mood_system.get_russell_state(), final_emotion=mood,
+                  formatted_state=self.mood_system.get_formatted_mood_log())
+        self.update_action(mood)
+        self.render()
 
     def release_items_to_desktop(self, *, forced=False):
         """들고있던 아이템을 바탕화면으로 순차적 반환 (1초 간격)"""
-        if not self.held_items:
-            return
-        if self._release_timer is not None and self._release_timer.isActive():
+        if self._character_closing or not self.held_items or self._remaining_items_to_release:
             return
         
         # 반환 대기 리스트 설정
@@ -3015,91 +3023,76 @@ class CharacterWidget(QLabel):
         
         # 즉시 반환 뒤에도 마지막 항목까지 타이머로 처리한다.
         if len(self._remaining_items_to_release) > 1:
-            self._release_timer = QTimer()
+            self._release_timer = QTimer(self)
             self._release_timer.timeout.connect(self._release_single_item)
             self._release_timer.start(1000)  # 1초 간격
 
-        # 첫 번째 아이템 즉시 반환 (한 개라면 완료 처리까지 실행)
+        # 첫 번째 아이템 반환 작업을 즉시 시작한다.
         self._release_single_item()
 
     def _release_single_item(self):
-        """단일 아이템을 바탕화면으로 반환"""
-        if not self._remaining_items_to_release:
-            if self._release_timer:
-                self._release_timer.stop()
-                self._release_timer = None
-            
-            # 반환 도중 새로 받은 아이템은 보관 목록에 남겨 둔다.
-            if not self.held_items:
-                self.held_items_icons = {}
-            return_id = getattr(self, '_return_event_id', None)
-            if return_id and getattr(self, '_return_completed', 0):
-                self._return_event_id = None
-                experience(self, 'files_returned', event_id=return_id,
-                           count=self._return_completed,
-                           forced=getattr(self, '_return_forced', False))
-            
-            print(f"\n[모든 아이템 반환 완료]")
-            log_event('mood.snapshot', '아이템 반환 후 감정 상태', category='캐릭터 상태', reason='items_released',
-                      held_item_count=len(self.held_items),
-                      state=getattr(self.mood_system, 'get_russell_state', lambda: {})(), final_emotion=self.mood_system.decide_emotion(),
-                      formatted_state=self.mood_system.get_formatted_mood_log())
-            print()
-            
-            mood = self.mood_system.decide_emotion()
-            self.update_action(mood)
+        if self._character_closing or self._return_in_progress or not self._remaining_items_to_release:
             return
-        
+        self._return_in_progress = True
+        item_path = self._remaining_items_to_release[0]
+        bounds = desktop_body_bounds(self)
+        # Let an active file move finish even if the character is closed.
+        threading.Thread(target=self._move_item_to_desktop, args=(item_path, bounds),
+                         name='character-file-return', daemon=False).start()
+
+    def _move_item_to_desktop(self, item_path, bounds):
         try:
             desktop_location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
             if not desktop_location or not Path(desktop_location).is_dir():
                 raise FileNotFoundError("바탕화면 경로를 찾을 수 없습니다")
-            desktop_path = Path(desktop_location)
-            
-            # 반환할 아이템 선택
-            item_path = self._remaining_items_to_release[0]
-            held_item_path = Path(item_path)
-            item_name = held_item_path.name
-            
-            # 대상 경로 설정
-            dest_path = desktop_path / item_name
-            
-            # 이미 존재하면 번호 추가
-            if dest_path.exists():
-                stem = held_item_path.stem
-                suffix = held_item_path.suffix
-                counter = 1
-                while (desktop_path / f"{stem}_{counter}{suffix}").exists():
-                    counter += 1
-                dest_path = desktop_path / f"{stem}_{counter}{suffix}"
-            
-            # 바탕화면으로 이동
-            shutil.move(str(held_item_path), str(dest_path))
-            self._remaining_items_to_release.pop(0)
-            self._return_completed = getattr(self, '_return_completed', 0) + 1
-            
-            # held_items에서도 제거
-            self.held_items.remove(item_path)
-            if item_path in self.held_items_icons:
-                del self.held_items_icons[item_path]
-            notify_item_moved(held_item_path, dest_path)
-            queue_returned_icon(self, dest_path)
-            
-            print(f"[아이템 반환] {item_name}")
-            print(f"   -> {dest_path}")
-            print(f"   캐릭터 위치: ({self.x()}, {self.y()})")
-            print(f"   남은 아이템: {len(self.held_items)}개")
-            
-            # 아이콘 업데이트 (제거된 아이템을 반영)
+            source = Path(item_path)
+            destination = self._item_destination(source, Path(desktop_location))
+            destination = return_desktop_item(source, destination, bounds)
+            result = item_path, destination, None
+        except OSError as exc:
+            result = item_path, None, str(exc)
+        try:
+            self.item_return_finished.emit(result)
+        except RuntimeError:
+            pass  # The Qt window may have been destroyed during the move.
+
+    @pyqtSlot(object)
+    def _apply_item_return(self, result):
+        self._return_in_progress = False
+        if self._character_closing:
+            return
+        item_path, destination, error = result
+        if error is not None:
+            self._remaining_items_to_release.clear()
+            print(f"[오류] 아이템 반환 실패: {error}")
+            self._finish_item_return()
+            return
+
+        self._remaining_items_to_release.pop(0)
+        self._return_completed += 1
+        self.held_items.remove(item_path)
+        self.held_items_icons.pop(item_path, None)
+        print(f"[아이템 반환] {destination} ({len(self.held_items)}개 보관 중)")
+        if self._remaining_items_to_release:
             self.render()
-            if not self._remaining_items_to_release:
-                self._release_single_item()
-            
-        except Exception as e:
-            if self._release_timer is not None:
-                self._release_timer.stop()
-                self._release_timer = None
-            print(f"[오류] 아이템 반환 실패: {e}")
+        else:
+            self._finish_item_return()
+
+    def _finish_item_return(self):
+        if self._release_timer is not None:
+            self._release_timer.stop()
+            self._release_timer.deleteLater()
+            self._release_timer = None
+        event_id, self._return_event_id = self._return_event_id, None
+        if self._return_completed:
+            experience(self, 'files_returned', event_id=event_id, count=self._return_completed,
+                       forced=self._return_forced)
+            log_event('mood.snapshot', '아이템 반환 후 감정 상태', category='캐릭터 상태', reason='items_released',
+                      held_item_count=len(self.held_items),
+                      state=self.mood_system.get_russell_state(), final_emotion=self.mood_system.decide_emotion(),
+                      formatted_state=self.mood_system.get_formatted_mood_log())
+        self.render()
+        self.update_action(self.mood_system.decide_emotion())
 
     # ====== 점프 시스템 ======
     def _manual_control_active(self):
@@ -3268,7 +3261,7 @@ class CharacterWidget(QLabel):
             trace = getattr(self, '_drag_trace_id', None)
             experience(self, 'drag_held', event_id=f'{trace}:held' if trace else None)
         # File release remains a mouse gesture.
-        if mode is None and self.drag_time >= 3.0 and self.held_items and not self._remaining_items_to_release:
+        if mode is None and previous < 3.0 <= self.drag_time and self.held_items and not self._remaining_items_to_release:
             print(f"[드래그 중 3초 도달] drag_time={self.drag_time:.1f}초 - 아이템 반환 시작")
             self.release_items_to_desktop(forced=True)
             

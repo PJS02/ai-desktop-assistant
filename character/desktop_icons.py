@@ -1,10 +1,11 @@
-"""Notify Explorer about moved items and position returned icons in its desktop view."""
+"""Synchronize file handoffs with the Windows desktop view."""
+import errno
 import os
+import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from threading import Thread
-
-from PyQt6.QtCore import QStandardPaths, QTimer
+from threading import Event, Thread
 
 from app_logging import log_throttled
 
@@ -31,57 +32,135 @@ def notify_item_moved(source, destination):
                       interval=30, category='캐릭터 상태', error=type(exc).__name__)
 
 
-def refresh_desktop_after_drop(paths):
+def wait_for_desktop_removal(sources):
+    """Wait for the moved icons to leave the desktop view before showing receipt."""
     if shell is None:
         return
-    desktop = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
-    if desktop and any(path.parent == Path(desktop) for path in paths):
-        Thread(target=_refresh_desktop, name='desktop-icon-refresh', daemon=True).start()
+    pythoncom.CoInitialize()
+    view = folder = None
+    try:
+        desktops = {os.path.normcase(shell.SHGetFolderPath(0, location, None, 0))
+                    for location in (shellcon.CSIDL_DESKTOPDIRECTORY, shellcon.CSIDL_COMMON_DESKTOPDIRECTORY)}
+        paths = {os.path.normcase(str(path)) for path in sources
+                 if os.path.normcase(str(path.parent)) in desktops}
+        if not paths:
+            return
+        _, view = _desktop_view()
+        if view is None:
+            return
+        folder = view.GetFolder(shell.IID_IShellFolder)
+        pending = set()
+        for item in _view_items(view):
+            try:
+                path = folder.GetDisplayNameOf([item], shellcon.SHGDN_FORPARSING)
+                if os.path.normcase(path) in paths:
+                    pending.add(item)
+            except pywintypes.com_error:
+                continue
+
+        deadline = time.monotonic() + 3.
+        while pending and time.monotonic() < deadline:
+            for item in tuple(pending):
+                try:
+                    view.GetItemPosition(item)
+                except pywintypes.com_error:
+                    pending.remove(item)
+            if pending:
+                time.sleep(.025)
+    except (OSError, pywintypes.error, pywintypes.com_error, AttributeError) as exc:
+        log_throttled('desktop.icons.receipt_failed', '바탕화면에서 원본 아이콘이 사라졌는지 확인하지 못했습니다.',
+                      interval=30, category='캐릭터 상태', error=type(exc).__name__)
+    finally:
+        folder = view = None
+        pythoncom.CoUninitialize()
 
 
-def _refresh_desktop():
+def desktop_body_bounds(widget):
+    if shell is None:
+        return None
+    try:
+        body = widget._physics_body_rect()
+        scale = widget.devicePixelRatioF()
+        x, y = win32gui.ClientToScreen(int(widget.winId()), (0, 0))
+        return (x + round(body.x() * scale), y + round(body.y() * scale),
+                x + round((body.x() + body.width()) * scale),
+                y + round((body.y() + body.height()) * scale))
+    except (OSError, pywintypes.error):
+        return None
+
+
+def return_desktop_item(source, destination, body):
+    """Move the file and place its desktop icon from the return worker."""
+    if shell is None or body is None:
+        return _move_and_notify(source, destination)
     pythoncom.CoInitialize()
     view = None
     try:
-        _, view = _desktop_view()
-        if view is not None:
-            view.QueryInterface(shell.IID_IShellView).Refresh()
-    except (OSError, pywintypes.error, pywintypes.com_error) as exc:
-        log_throttled('desktop.icons.refresh_failed', '바탕화면 아이콘을 새로고침하지 못했습니다.',
-                      interval=30, category='캐릭터 상태', error=type(exc).__name__)
+        try:
+            hwnd, view = _desktop_view()
+            position = _return_position(hwnd, view, body)
+        except (OSError, pywintypes.error, pywintypes.com_error, AttributeError) as exc:
+            _log_position_failure(exc)
+            position = None
+        if position is None:
+            return _move_and_notify(source, destination)
+
+        with _hold_desktop_paint(hwnd):
+            try:
+                source.rename(destination)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV and getattr(exc, 'winerror', None) != 17:
+                    raise
+            else:
+                notify_item_moved(source, destination)
+                _place_returned_icon(view, destination, position)
+                return destination
+
+        # A copy to another drive can take a long time. Allow the view to paint during the transfer.
+        destination = _move_and_notify(source, destination)
+        _place_returned_icon(view, destination, position)
+        return destination
     finally:
         view = None
         pythoncom.CoUninitialize()
 
 
-def queue_returned_icon(widget, path):
-    if shell is None:
-        return
-    try:
-        body = widget._physics_body_rect()
-        scale = widget.devicePixelRatioF()
-        x, y = win32gui.ClientToScreen(int(widget.winId()), (0, 0))
-        bounds = (x + round(body.left() * scale), y + round(body.top() * scale),
-                  x + round((body.x() + body.width()) * scale),
-                  y + round((body.y() + body.height()) * scale))
-    except (OSError, pywintypes.error):
-        return
+def _move_and_notify(source, destination):
+    target = Path(shutil.move(source, destination))
+    notify_item_moved(source, target)
+    return target
 
-    deadline = time.monotonic() + 5.
 
-    def try_place():
+@contextmanager
+def _hold_desktop_paint(hwnd):
+    """Preserve the last painted icons while Explorer registers the returned file."""
+    from ctypes import WinDLL, wintypes
+
+    lock_window = WinDLL('user32').LockWindowUpdate
+    lock_window.argtypes = [wintypes.HWND]
+    lock_window.restype = wintypes.BOOL
+    ready, placed = Event(), Event()
+
+    def hold():
         try:
-            if not path.exists() or _position_icon(path, bounds):
-                return
-        except (OSError, pywintypes.error, pywintypes.com_error, AttributeError) as exc:
-            log_throttled('desktop.icons.position_failed', '반환한 아이콘의 위치를 지정하지 못했습니다.',
-                          interval=30, category='캐릭터 상태', error=type(exc).__name__)
-            return
-        # The file can exist before Explorer includes it in the view.
-        if time.monotonic() < deadline:
-            QTimer.singleShot(120, try_place)
+            locked = lock_window(hwnd)
+        finally:
+            ready.set()
+        if locked:
+            try:
+                # Release independently if Explorer takes too long to answer a COM call.
+                placed.wait(3)
+            finally:
+                lock_window(None)
 
-    QTimer.singleShot(0, try_place)
+    guard = Thread(target=hold, name='desktop-file-return-paint', daemon=True)
+    guard.start()
+    ready.wait()
+    try:
+        yield
+    finally:
+        placed.set()
+        guard.join()
 
 
 def _desktop_view():
@@ -99,30 +178,27 @@ def _desktop_view():
     return shell_view.GetWindow(), shell_view.QueryInterface(shell.IID_IFolderView)
 
 
-def _position_icon(path, body):
-    """Return False when Explorer has yet to list the returned file."""
-    hwnd, view = _desktop_view()
-    if view is None or view.GetAutoArrange():
-        return True
-
-    folder = view.GetFolder(shell.IID_IShellFolder)
-    expected = os.path.normcase(os.path.normpath(path))
-    target, occupied = None, []
+def _view_items(view):
     for index in range(view.ItemCount(shellcon.SVGIO_ALLVIEW)):
         try:
             item = view.Item(index)
-            if item is None:
-                continue
-            name = folder.GetDisplayNameOf([item], shellcon.SHGDN_FORPARSING)
-            if os.path.normcase(os.path.normpath(name)) == expected:
-                target = item
-            else:
-                occupied.append(view.GetItemPosition(item))
+            if item is not None:
+                yield item
         except pywintypes.com_error:
-            # Explorer's list can change as files are added or removed.
+            # The view can change while it is being read.
             continue
-    if target is None:
-        return False
+
+
+def _return_position(hwnd, view, body):
+    if view is None or view.GetAutoArrange():
+        return None
+
+    occupied = []
+    for item in _view_items(view):
+        try:
+            occupied.append(view.GetItemPosition(item))
+        except pywintypes.com_error:
+            continue
 
     left, top, right, bottom = body
     monitor = win32api.MonitorFromPoint(((left + right) // 2, (top + bottom) // 2),
@@ -132,10 +208,36 @@ def _position_icon(path, body):
     body_in_view = (left + offset_x, top + offset_y, right + offset_x, bottom + offset_y)
     work_in_view = (work[0] + offset_x, work[1] + offset_y, work[2] + offset_x, work[3] + offset_y)
     spacing = view.GetSpacing(0, 0)
-    position = _nearest_open_position(body_in_view, work_in_view, spacing, occupied)
-    if position is not None:
-        view.SelectAndPositionItem(target, position, shellcon.SVSI_POSITIONITEM)
-    return True
+    return _nearest_open_position(body_in_view, work_in_view, spacing, occupied)
+
+
+def _place_returned_icon(view, path, position):
+    try:
+        item_ids, _ = shell.SHParseDisplayName(str(path), 0)
+        if not item_ids:
+            return
+        target = item_ids[-1]
+        folder = view.GetFolder(shell.IID_IShellFolder)
+        name = folder.GetDisplayNameOf([target], shellcon.SHGDN_FORPARSING)
+        if os.path.normcase(os.path.normpath(name)) != os.path.normcase(os.path.normpath(path)):
+            return
+
+        deadline = time.monotonic() + 3.
+        while time.monotonic() < deadline and path.exists():
+            try:
+                view.GetItemPosition(target)
+            except pywintypes.com_error:
+                time.sleep(.025)
+                continue
+            view.SelectAndPositionItem(target, position, shellcon.SVSI_POSITIONITEM)
+            return
+    except (OSError, pywintypes.error, pywintypes.com_error, AttributeError) as exc:
+        _log_position_failure(exc)
+
+
+def _log_position_failure(exc):
+    log_throttled('desktop.icons.position_failed', '반환한 아이콘의 위치를 지정하지 못했습니다.',
+                  interval=30, category='캐릭터 상태', error=type(exc).__name__)
 
 
 def _nearest_open_position(body, work, spacing, occupied):
