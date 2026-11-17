@@ -12,9 +12,10 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app_logging import log_throttled, register_secret
+from app_paths import USER_DATA_ROOT
 
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config" / "igdb_config.json"
+CONFIG_PATH = USER_DATA_ROOT / "context" / "config" / "igdb_config.json"
 REQUEST_TIMEOUT = 4
 
 

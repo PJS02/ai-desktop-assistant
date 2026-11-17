@@ -7,7 +7,8 @@
    11.8; newer GPU architectures need separate compatibility validation.
 2. With the app closed, run `setup_tts_runtime.cmd` once. It creates `.tts-runtime/env`, installs the
    pinned inference libraries and Korean text-processing resources, and checks
-   CUDA availability. It does not replace the application's Python environment.
+   CUDA availability. For a Windows installation, run the command from its `app` folder.
+   The optional environment is stored in `%LOCALAPPDATA%\Cloudy\.tts-runtime`.
 3. Open **설정 → 대화·음성 → 음성 모델 다운로드**. Download the desired engine, then select its voice and apply.
    This step downloads model files only; it does not run pip or modify drivers.
 
@@ -18,9 +19,9 @@ are verified and reused on retry; partial files are removed. Downloads continue
 when the settings dialog closes, and reopening it shows the current job.
 
 Models default to the current user's application-data directory under
-`PJS02/AIDesktopAssistant/tts-models`. `CAPSTONE_TTS_MODEL_DIR` can override this
-location. Nothing depends on the original author's desktop path. The selected
-voice and enabled state use the existing QSettings storage.
+`PJS02/AIDesktopAssistant/tts-models` for source runs and `%LOCALAPPDATA%\Cloudy\tts-models`
+for Windows installations. `CAPSTONE_TTS_MODEL_DIR` can override this location.
+The selected voice and enabled state use QSettings.
 
 Supertonic remains available. Additional voices become selectable only after
 their models and runtime are ready. Inference runs in a persistent subprocess;

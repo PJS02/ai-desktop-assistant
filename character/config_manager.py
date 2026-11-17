@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 from app_logging import log_event
+from app_paths import IS_INSTALLED, USER_DATA_ROOT
 from .motion_options import normalize_character_options
 from .dialogue_styles import normalize_dialogue_style
 from .dialogue_options import normalize_dialogue_options
@@ -9,7 +10,7 @@ from .hand_overlay_options import normalize_hand_overlay_options
 from .personality_system import BigFivePersonality, PersonalitySystem
 
 
-CONFIG_FILE = Path.home() / ".ai_desktop_assistant" / "config.json"
+CONFIG_FILE = (USER_DATA_ROOT if IS_INSTALLED else Path.home() / ".ai_desktop_assistant") / "config.json"
 
 
 def load_config():

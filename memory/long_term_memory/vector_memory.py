@@ -13,6 +13,8 @@ from threading import RLock
 from typing import Any, Iterable
 from uuid import uuid4
 
+from app_paths import IS_INSTALLED, USER_DATA_ROOT
+
 from .importance import MIN_NEW_FACT_IMPORTANCE
 from .screen_memory import evaluate_screen_observation, screen_key
 from .settings import MEMORY_TYPES, RETENTION_POLICIES, MemorySettings, load_memory_settings
@@ -36,6 +38,7 @@ SCREEN_PENDING_TOPIC_LIMIT = 64
 # 이전 상수 이름은 호환용으로 유지한다. 실행 설정은 config.json의 후보 검토 힌트로 관리한다.
 MIN_RECALL_SIMILARITY = 0.75
 MIN_DUPLICATE_SIMILARITY = 0.90
+DEFAULT_DATABASE_PATH = (USER_DATA_ROOT if IS_INSTALLED else Path()) / "data/long_term_memory.sqlite3"
 
 # 추가 컬럼은 기존 INSERT문도 계속 사용할 수 있도록 기본값을 둔다.
 METADATA_COLUMNS = {
@@ -96,7 +99,7 @@ class LongTermMemory:
 
     def __init__(
         self,
-        database_path: str | Path = "data/long_term_memory.sqlite3",
+        database_path: str | Path = DEFAULT_DATABASE_PATH,
         model_name: str = "intfloat/multilingual-e5-small",
         embedder: Any | None = None,
         settings: MemorySettings | None = None,

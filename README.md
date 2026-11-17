@@ -2,7 +2,35 @@
 
 Python + PyQt 기반 데스크탑 캐릭터 예제 프로젝트
 
-## 실행 방법
+## Windows 설치
+
+1. Windows 10(1809 이상) 또는 Windows 11 x64에서 `Cloudy-Setup-x64.exe`를 실행합니다.
+2. 설치 화면에서 원하는 폴더를 선택합니다. 바탕화면 아이콘도 추가할 수 있습니다.
+3. 설치가 끝나면 시작 메뉴에서 **Cloudy**를 엽니다.
+4. 성격을 선택하고 **시작하기**를 누릅니다. Gemini 대화는 캐릭터 우클릭 → **설정 → 대화·음성 → AI 연결**에서 API 키를 입력한 뒤 사용할 수 있습니다.
+
+캐릭터 실행에 필요한 Python, Node.js, 라이브러리와 캐릭터 파일을 설치 프로그램에 포함합니다.
+Supertonic 음성, 장기기억 임베딩, 화면 OCR과 개인정보 탐지 모델은 처음 준비할 때 인터넷에서 다운로드합니다.
+GPT-SoVITS와 OpenVoice V2를 쓰려면 지원되는 NVIDIA 환경에서 설치 폴더의 **app** 안에 있는
+`setup_tts_runtime.cmd`로 추가 환경을 준비하세요. 이 단계에는 Windows Python 3.10이 필요합니다.
+
+**Windows 설정 → 앱 → 설치된 앱 → Cloudy**에서 앱을 제거할 수 있습니다.
+설치판의 API 설정, 장기기억, 로그 등은 사용자별 `%LOCALAPPDATA%\Cloudy`에 저장되며 앱을 제거해도 보관됩니다.
+
+### 설치 파일 빌드
+
+`requirements.txt`와 `medeapipe_capstone/requirements.txt`의 의존성이 설치된 Windows x64 Python 3.10 가상환경과 Tcl/Tk가 필요합니다.
+[Inno Setup](https://jrsoftware.org/inno-setup/downloads)의 컴파일러,
+공식 [Node.js Windows x64 ZIP](https://nodejs.org/en/download)의 압축을 푼 폴더,
+최신 Visual C++ 재배포 라이브러리가 들어 있는 x64 `Microsoft.VC143.CRT` 폴더를 지정합니다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\windows\build_installer.py --iscc "<ISCC.exe 경로>" --node-dir "<Node.js 폴더>" --vc-redist "<Microsoft.VC143.CRT 폴더>"
+```
+
+빌드 결과는 `dist\Cloudy-Setup-x64.exe`입니다.
+
+## 소스에서 실행
 
 1. Python 설치 (3.10+ 권장)
 
@@ -106,13 +134,14 @@ GPT-SoVITS와 OpenVoice V2는 **설정 → 대화·음성 → 음성 모델 다�
 카메라는 실행 중이면 새 장치로 재연결하고, 마이크·STT 옵션 변경은 실행 중인
 음성 인식을 다시 시작합니다. 중지된 장치는 다음 시작부터 새 설정을 사용합니다.
 **장치 새로고침**으로 현재 인식 프로세스의 장치 목록을 갱신할 수 있습니다.
-AI 설정은 `ai/config/gemini_config.json` 한 곳에 저장하며 수동·음성 대화와 자동 활동 반응의 이후 요청부터 적용됩니다.
+AI 설정은 앱 데이터 아래 `ai/config/gemini_config.json`에 저장하며 수동·음성 대화와 자동 활동 반응의 이후 요청부터 적용됩니다.
 기존 `context/gemini_config.json` 또는 `context/config/gemini_config.json`은 공통 설정 파일이 없을 때만 읽어 이전하며, 원본은 남겨 둡니다.
 **설정 → 대화·음성 → AI 연결**에서 활성 창·프로그램 자동 감지 여부와 감지 주기, 자동 대화 및 입력·음성 대화의 최소 요청 간격을 변경할 수 있습니다.
 **대화용 모델 ID**는 입력·음성 대화에, **자동대화용 모델 ID**는 활성 창을 분석해 생성하는 대화에 사용합니다. 자동대화용 모델 ID를 비워 두면 대화용 모델을 사용합니다.
 같은 메뉴의 **OCR·개인정보 마스킹**을 끄면 활성 창 이미지와 창 제목·URL을 가리지 않고 Gemini에 보냅니다.
 기본값은 자동 감지 켜짐, 감지 주기 30초, 자동 대화 요청 간격 20초, 입력·음성 대화 요청 간격 10초입니다.
-이 항목은 `~/.ai_desktop_assistant/config.json`의 `dialogue`에 저장되며 적용 즉시 반영되고 앱을 다시 실행해도 유지됩니다.
+이 항목은 `config.json`의 `dialogue`에 저장되며 적용 즉시 반영되고 앱을 다시 실행해도 유지됩니다.
+설치판은 `%LOCALAPPDATA%\Cloudy\config.json`을 사용하고 소스 실행은 `~/.ai_desktop_assistant/config.json`을 사용합니다.
 자동 감지를 꺼도 직접 입력·음성 대화와 **직접 조작 → 대사 → 대사 생성**은 사용할 수 있습니다. 이미 전송된 API 요청은 취소하지 않지만 자동 응답은 표시하지 않습니다.
 수동으로 **대사 생성**을 누른 뒤 5초 안에 분석할 Chrome 등의 다른 창을 선택하면 해당 화면을 바탕으로 대사를 생성합니다.
 인식 콘솔과 감정 판단 근거·로그창은 우클릭 메뉴에서 계속 열 수 있습니다.

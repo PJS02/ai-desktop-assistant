@@ -1,16 +1,16 @@
 """Local Gemini request counts grouped by Google's Pacific-time quota day."""
 from contextlib import closing
 from hashlib import sha256
-from pathlib import Path
 import sqlite3
 
 from PyQt6.QtCore import QTimeZone, Qt
 
 from app_logging import log_throttled
+from app_paths import USER_DATA_ROOT
 
 
 PACIFIC_TIME = QTimeZone(b"America/Los_Angeles")
-USAGE_PATH = Path(__file__).resolve().parent.parent / "data" / "gemini_usage.sqlite3"
+USAGE_PATH = USER_DATA_ROOT / "data" / "gemini_usage.sqlite3"
 
 
 def quota_day(moment):

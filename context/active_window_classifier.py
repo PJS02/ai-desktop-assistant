@@ -4,12 +4,15 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 from ai.gemini_client import automatic_dialogue_config, load_gemini_config, request_gemini
+from app_paths import USER_DATA_ROOT
 from .igdb import (extract_title_query, load_igdb_config, normalize_game_query,
                    request_igdb_token, search_igdb_games)
 from .rules_config import get_rules
+
+
+CACHE_DIR = USER_DATA_ROOT / "context" / "cache"
 
 
 def _is_own_process(process):
@@ -296,11 +299,8 @@ def call_gemini(prompt, config, image=None, *, log_context=None):
 
 def generate_dialogue_json(start_server=False):
     # 외부 호출을 위한 1회 실행 결과를 반환합니다.
-    base_dir = Path(__file__).resolve().parent
-    config_dir = base_dir / "config"
-    cache_dir = base_dir / "cache"
-    config_dir.mkdir(exist_ok=True)
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir = CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
     url_cache_path = cache_dir / "url_cache.json"
     if start_server:
         try:
@@ -426,12 +426,9 @@ def classify_activity(info, rules, igdb_config, cache_dir):
 
 
 def main():
-    base_dir = Path(__file__).resolve().parent
     # 로컬 URL 캐시 경로입니다.
-    config_dir = base_dir / "config"
-    cache_dir = base_dir / "cache"
-    config_dir.mkdir(exist_ok=True)
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir = CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
     url_cache_path = cache_dir / "url_cache.json"
     start_url_server(8765, url_cache_path)
     gemini_config = load_gemini_config()

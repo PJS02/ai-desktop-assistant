@@ -4,6 +4,7 @@ from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont, QFontMet
 from PyQt6.QtCore import QEvent, QLocale, QSettings, QTimer, Qt, QSize, QRect, QRectF, pyqtSignal, QPoint
 from math import ceil
 from pathlib import Path
+from app_paths import IS_INSTALLED, USER_DATA_ROOT
 from .dialogue_styles import normalize_dialogue_style
 from .overlay_geometry import place_above_character, place_near_ankles
 
@@ -462,7 +463,10 @@ class DialogueInputWidget(QWidget):
 
     def __init__(self, parent=None, *, settings=None):
         super().__init__(parent)
-        self._settings = settings if settings is not None else QSettings('PJS02', 'AIDesktopAssistant')
+        if settings is None:
+            settings = (QSettings(str(USER_DATA_ROOT / 'ui.ini'), QSettings.Format.IniFormat)
+                        if IS_INSTALLED else QSettings('PJS02', 'AIDesktopAssistant'))
+        self._settings = settings
         self._drag_offset = None
         self._follow_latest = True
         self._turns = {}

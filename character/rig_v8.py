@@ -12,6 +12,7 @@ import struct
 import subprocess
 import threading
 from app_logging import log_event, new_trace_id
+from app_paths import APP_ROOT, IS_INSTALLED
 
 DEFAULT_RIG_ROOT = Path(__file__).resolve().parents[1] / "assets_cloudy_rig_v4" / "directional_v5"
 
@@ -23,6 +24,8 @@ def find_node() -> str:
         if candidate.is_file():
             return str(candidate)
         raise FileNotFoundError("CLOUDY_NODE does not point to a Node.js executable")
+    if IS_INSTALLED:
+        return str(APP_ROOT.parent / 'runtime' / 'node' / 'node.exe')
     found = shutil.which("node")
     if found:
         return found

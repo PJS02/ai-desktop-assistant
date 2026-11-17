@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-from pathlib import Path
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,11 +12,12 @@ from urllib.request import Request, urlopen
 from PyQt6.QtCore import QDateTime
 
 from app_logging import log_event, new_trace_id, register_secret
+from app_paths import USER_DATA_ROOT
 from context.screen_privacy import ScreenPrivacyError, redact_screen
 from .gemini_usage import record_attempt
 
 
-AI_DIR = Path(__file__).resolve().parent
+AI_DIR = USER_DATA_ROOT / "ai"
 REQUEST_TIMEOUT_SECONDS = 120
 DAILY_REQUEST_QUOTA_EXHAUSTED = "[gemini error] HTTP 429: daily model request quota exhausted"
 CONFIG_PATH = AI_DIR / "config" / "gemini_config.json"

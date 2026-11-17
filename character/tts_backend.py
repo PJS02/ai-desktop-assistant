@@ -10,11 +10,12 @@ import threading
 import time
 import wave
 from app_logging import log_event
+from app_paths import APP_ROOT, USER_DATA_ROOT
 
 from .tts_models import ModelStore
 
-ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_CONFIG = Path(os.environ.get('CAPSTONE_TTS_RUNTIME_CONFIG', str(ROOT / '.tts-runtime' / 'runtime.json')))
+TTS_RUNTIME_HOME = USER_DATA_ROOT / '.tts-runtime'
+RUNTIME_CONFIG = Path(os.environ.get('CAPSTONE_TTS_RUNTIME_CONFIG', str(TTS_RUNTIME_HOME / 'runtime.json')))
 
 
 def runtime_python():
@@ -25,7 +26,7 @@ def runtime_python():
             raise ValueError('missing interpreter')
         return python
     except (OSError, ValueError, KeyError):
-        raise ValueError('TTS 실행 환경이 준비되지 않았습니다. 프로젝트의 setup_tts_runtime.cmd를 먼저 실행해 주세요.') from None
+        raise ValueError('TTS 실행 환경이 준비되지 않았습니다. setup_tts_runtime.cmd를 먼저 실행해 주세요.') from None
 
 
 class SynthesisCancelled(Exception):
@@ -84,12 +85,12 @@ class LocalVoiceBackend:
             env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1',
                        TOKENIZERS_PARALLELISM='false', HF_HUB_OFFLINE='1',
                        TRANSFORMERS_OFFLINE='1', HF_HOME=str(self.store.root / '.cache'),
-                       NLTK_DATA=str(ROOT / '.tts-runtime' / 'nltk_data'))
+                       NLTK_DATA=str(TTS_RUNTIME_HOME / 'nltk_data'))
             settings = json.loads(RUNTIME_CONFIG.read_text(encoding='utf8'))
             env['CAPSTONE_TTS_EXTRA_SITE'] = json.dumps(settings.get('site_packages', []))
             self.lines, self.errors = queue.Queue(), deque(maxlen=20)
             process = subprocess.Popen([str(python), '-B', '-X', 'utf8', '-u',
-                str(ROOT / 'tts_runtime' / 'worker.py'), voice, str(self.store.root)],
+                str(APP_ROOT / 'tts_runtime' / 'worker.py'), voice, str(self.store.root)],
                 cwd=work, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, encoding='utf8', text=True, bufsize=1,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

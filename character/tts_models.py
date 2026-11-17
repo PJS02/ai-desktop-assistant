@@ -9,6 +9,7 @@ import urllib.request
 
 from PyQt6.QtCore import QCoreApplication, QObject, QStandardPaths, pyqtSignal
 from PyQt6 import sip
+from app_paths import IS_INSTALLED, USER_DATA_ROOT
 
 CATALOG_PATH = Path(__file__).with_name('tts_models.json')
 ENGINE_NAMES = {'gpt_sovits': 'GPT-SoVITS', 'openvoice_v2': 'OpenVoice V2'}
@@ -18,6 +19,8 @@ def model_directory():
     override = os.environ.get('CAPSTONE_TTS_MODEL_DIR')
     if override:
         return Path(override).resolve()
+    if IS_INSTALLED:
+        return USER_DATA_ROOT / 'tts-models'
     return Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation)) / 'PJS02' / 'AIDesktopAssistant' / 'tts-models'
 
 

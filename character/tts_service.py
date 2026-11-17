@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 from app_logging import log_event, new_trace_id
+from app_paths import IS_INSTALLED, USER_DATA_ROOT
 from .tts_models import ENGINE_NAMES, ModelStore
 from .tts_backend import LocalVoiceBackend, SynthesisCancelled, runtime_python
 
@@ -62,7 +63,10 @@ class SupertonicTTS(QObject):
 
     def __init__(self, settings=None, model_factory=None):
         super().__init__()
-        self._settings = settings if settings is not None else QSettings("PJS02", "AIDesktopAssistant")
+        if settings is None:
+            settings = (QSettings(str(USER_DATA_ROOT / 'ui.ini'), QSettings.Format.IniFormat)
+                        if IS_INSTALLED else QSettings('PJS02', 'AIDesktopAssistant'))
+        self._settings = settings
         self._enabled = self._settings.value("tts/enabled", True, type=bool)
         self._sync_bubble = self._settings.value('tts/sync_bubble', False, type=bool)
         saved_voice = self._settings.value("tts/voice_id", "F1", type=str)

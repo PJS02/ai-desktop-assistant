@@ -11,6 +11,7 @@ from collections import deque
 from datetime import datetime, timezone
 from hashlib import sha256
 from app_logging import log_event, log_throttled, new_trace_id
+from app_paths import USER_DATA_ROOT
 from pathlib import Path
 from PIL import Image
 from PyQt6.QtWidgets import QLabel, QApplication, QFileIconProvider, QMenu
@@ -60,7 +61,7 @@ from .desktop_geometry import (WINDOW_SCAN_AVAILABLE, desktop_windows, exposed_t
                                exposed_windows, support_span, surface_rect)
 from .desktop_icons import notify_item_moved, queue_returned_icon, refresh_desktop_after_drop
 
-CHARACTER_ITEMS_DIRECTORY = Path(__file__).resolve().parent.parent / "character_items"
+CHARACTER_ITEMS_DIRECTORY = USER_DATA_ROOT / "character_items"
 
 
 # Context 모듈 import

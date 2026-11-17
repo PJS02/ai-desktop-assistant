@@ -7,7 +7,10 @@ import sys
 import venv
 
 ROOT = Path(__file__).resolve().parents[1]
-HOME = ROOT / '.tts-runtime'
+sys.path.insert(0, str(ROOT))
+from app_paths import USER_DATA_ROOT
+
+HOME = USER_DATA_ROOT / '.tts-runtime'
 
 
 def run(python, *args):

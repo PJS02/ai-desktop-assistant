@@ -9,6 +9,7 @@ import time
 
 from app_logging import (SESSION_ID, configure_logging, ingest_event, log_event,
                          new_trace_id, register_environment_secrets, shutdown_logging)
+from app_paths import APP_ROOT, IS_INSTALLED, USER_DATA_ROOT
 from log_classification import classify_output
 
 _startup_capture = None
@@ -16,7 +17,7 @@ if __name__ == '__main__':
     # Capture native/library diagnostics before importing either GUI or models.
     from native_log_capture import StartupCapture
     register_environment_secrets()
-    configure_logging(Path(__file__).resolve().parent / 'logs')
+    configure_logging(USER_DATA_ROOT / 'logs')
     _startup_capture = StartupCapture()
     def _close_startup_logging():
         _startup_capture.close()
@@ -26,12 +27,13 @@ if __name__ == '__main__':
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtGui import QIcon
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(USER_DATA_ROOT / '.env' if IS_INSTALLED else None)
 register_environment_secrets()
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_ROOT
 MEDIAPIPE_MAIN = PROJECT_ROOT / "medeapipe_capstone" / "main.py"
 
 
@@ -79,10 +81,11 @@ class MediaPipeProcessManager(QObject):
             child_env["PYTHONUNBUFFERED"] = "1"
             child_env['CAPSTONE_LOG_PROTOCOL'] = '1'
             child_env['CAPSTONE_LOG_SESSION'] = SESSION_ID
+            python_args = ['-B', '-X', 'utf8', '-u'] if IS_INSTALLED else []
             self._stopping = False
             self._healthy = False
             self.process = subprocess.Popen(
-                [sys.executable, str(self.script_path), "--background"],
+                [sys.executable, *python_args, str(self.script_path), "--background"],
                 cwd=str(PROJECT_ROOT),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -329,8 +332,10 @@ class MediaPipeProcessManager(QObject):
 
 
 def main():
-    configure_logging(PROJECT_ROOT / 'logs')
+    configure_logging(USER_DATA_ROOT / 'logs')
     app = QApplication(sys.argv)
+    if IS_INSTALLED:
+        app.setWindowIcon(QIcon(str(APP_ROOT.parent / 'Cloudy.ico')))
     if _startup_capture is not None:
         _startup_capture.handoff_python()
     # Subscribe before character initialization so its early readiness is retained.
