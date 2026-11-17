@@ -6,7 +6,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -54,7 +54,7 @@ class PopupRecord:
 
 
 class EmotionDeltaOverlay(QWidget):
-    BASELINE = 110
+    PADDING = 3
 
     def __init__(self, character, duration_ms, *, enabled=True):
         super().__init__(
@@ -66,7 +66,8 @@ class EmotionDeltaOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setFixedSize(248, 170)
+        self._popup_bounds = QRectF()
+        self._paint_scale = 1.0
         self._font = QFont("Malgun Gothic")
         self._font.setPixelSize(18)
         self._font.setBold(True)
@@ -188,17 +189,18 @@ class EmotionDeltaOverlay(QWidget):
             self._animation.start()
 
     def _make_popups(self, lines):
-        x = self.width() / 2 + random.uniform(-11, 11)
-        y = self.BASELINE + random.uniform(-2, 4)
+        x = random.uniform(-11, 11)
+        y = random.uniform(-2, 4)
         side = random.choice((-1, 1))
-        height_gap = random.choice((-1, 1)) * random.uniform(44, 46)
+        second_below = random.choice((True, False))
         metrics = QFontMetricsF(self._font)
         cause_metrics = QFontMetricsF(self._cause_font)
         popups = []
+        bounds = QRectF()
         for index, (source, emotion, points) in enumerate(lines):
-            label = cause_metrics.elidedText(
-                SOURCE_LABELS.get(source, source), Qt.TextElideMode.ElideRight, 126
-            )
+            label = SOURCE_LABELS.get(source, source)
+            if label.isascii():
+                label = '감정 사건'
             cause = QPainterPath()
             cause.addText(-cause_metrics.horizontalAdvance(label) / 2, -22, self._cause_font, label)
             sign = '+' if points > 0 else '−'
@@ -207,20 +209,28 @@ class EmotionDeltaOverlay(QWidget):
             path = QPainterPath()
             path.addText(-metrics.horizontalAdvance(text) / 2, 0, self._font, text)
             if index:
-                origin = QPointF(x + side * random.uniform(17, 30), y + height_gap)
+                x += side * random.uniform(17, 30)
                 drift_x = side * random.uniform(8, 17)
                 delay = random.uniform(.065, .11)
             else:
-                origin = QPointF(x, y)
                 drift_x = -side * random.uniform(4, 12)
                 delay = 0.0
             drift = QPointF(drift_x, -random.uniform(22, 27))
+            text_bounds = cause.boundingRect().united(path.boundingRect())
+            travel_bounds = text_bounds.united(text_bounds.translated(drift))
+            if index:
+                # Separate the paths for the whole ascent, including the delayed popup.
+                y = (bounds.bottom() - travel_bounds.top() + 5 if second_below else
+                     bounds.top() - travel_bounds.bottom() - 5)
+            origin = QPointF(x, y)
+            bounds = bounds.united(travel_bounds.translated(origin))
             if emotion == 'arousal':
                 color = QColor('#8fc8ff')
             else:
                 positive_gain = (points > 0) != (OccEmotionToMood(emotion) in NEGATIVE_OCC_EMOTIONS)
                 color = QColor('#a6f284' if positive_gain else '#ff797d')
             popups.append(EmotionPopup(cause, path, label, text, color, origin, drift, delay))
+        self._popup_bounds = bounds
         return popups
 
     def _advance(self):
@@ -239,16 +249,27 @@ class EmotionDeltaOverlay(QWidget):
         body = host._physics_body_rect().translated(host.mapToGlobal(QPoint()))
         screen = QApplication.screenAt(body.center()) or host.screen()
         bounds = screen.availableGeometry()
-        x = body.center().x() - self.width() // 2
-        y = body.top() + round(body.height() * .60) - self.BASELINE
-        self.move(
-            max(bounds.left(), min(x, bounds.right() + 1 - self.width())),
-            max(bounds.top(), min(y, bounds.bottom() + 1 - self.height())),
+        popup = self._popup_bounds
+        padding = self.PADDING
+        scale = min(1.0, (bounds.width() - 2 * padding) / popup.width(),
+                    (bounds.height() - 2 * padding) / popup.height())
+        self._paint_scale = scale
+        width = min(bounds.width(), math.ceil(popup.width() * scale) + 2 * padding)
+        height = min(bounds.height(), math.ceil(popup.height() * scale) + 2 * padding)
+        x = body.center().x() + round(popup.left() * scale) - padding
+        y = body.top() + round(body.height() * .60 + popup.top() * scale) - padding
+        self.setGeometry(
+            max(bounds.left(), min(x, bounds.right() + 1 - width)),
+            max(bounds.top(), min(y, bounds.bottom() + 1 - height)),
+            width, height,
         )
 
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.translate(self.PADDING, self.PADDING)
+        painter.scale(self._paint_scale, self._paint_scale)
+        painter.translate(-self._popup_bounds.topLeft())
         outline = QPen(QColor('#27312d'), 2.5)
         outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         for popup in self._popups:
