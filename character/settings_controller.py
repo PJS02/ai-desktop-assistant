@@ -1,6 +1,7 @@
 from app_logging import log_event, new_trace_id
 from context.igdb import IGDBLookup, load_igdb_config, save_igdb_config
 from inspect import signature
+from inference_device import load_inference_device
 
 from PyQt6.QtCore import QObject, QTimer
 
@@ -67,7 +68,8 @@ class SettingsController(QObject):
                       category='오류', level='ERROR', error=str(exc))
             ai = self.character.gemini_config
             ai_error = 'AI 설정 파일을 읽을 수 없습니다. 파일을 확인한 뒤 다시 열어 주세요.'
-        local = {'character': {'width': width, 'height': height, 'personality': personality,
+        local = {'inference_device': load_inference_device(),
+                 'character': {'width': width, 'height': height, 'personality': personality,
                                'personality_traits': personality_traits},
                  'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
                            'sync_bubble': tts.sync_bubble},
@@ -259,6 +261,8 @@ class SettingsController(QObject):
                         tts.set_enabled(True)
                     tts.set_sync_bubble(value.get('sync_bubble', False))
                     tts.sync_settings()
+                elif section == 'inference_device':
+                    save_config(*load_config(), inference_device=value, trace_id=self.operation_id)
                 elif section == 'dialogue':
                     width, height, personality = load_config()
                     save_config(width, height, personality, dialogue_style=value['style'],

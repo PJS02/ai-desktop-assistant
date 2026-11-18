@@ -9,7 +9,7 @@ import urllib.request
 
 from PyQt6.QtCore import QCoreApplication, QObject, QStandardPaths, pyqtSignal
 from PyQt6 import sip
-from app_paths import IS_INSTALLED, USER_DATA_ROOT
+from app_paths import BUNDLED_TTS_MODELS, IS_INSTALLED, USER_DATA_ROOT
 
 CATALOG_PATH = Path(__file__).with_name('tts_models.json')
 ENGINE_NAMES = {'gpt_sovits': 'GPT-SoVITS', 'openvoice_v2': 'OpenVoice V2'}
@@ -20,6 +20,8 @@ def model_directory():
     if override:
         return Path(override).resolve()
     if IS_INSTALLED:
+        if BUNDLED_TTS_MODELS.is_dir():
+            return BUNDLED_TTS_MODELS
         return USER_DATA_ROOT / 'tts-models'
     return Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation)) / 'PJS02' / 'AIDesktopAssistant' / 'tts-models'
 
@@ -57,6 +59,10 @@ class ModelStore:
         self.catalog = catalog if catalog is not None else load_catalog()
         self.opener = opener or urllib.request.urlopen
 
+    @property
+    def bundled(self):
+        return IS_INSTALLED and self.root == BUNDLED_TTS_MODELS
+
     def assets(self, engine):
         if engine not in ENGINE_NAMES:
             raise ValueError('알 수 없는 음성 엔진입니다.')
@@ -73,11 +79,16 @@ class ModelStore:
 
     def installed(self, engine):
         try:
+            assets = self.assets(engine)
+            if self.bundled:
+                # Setup preserves the files but can round Windows timestamps.
+                return all(self.target(a).is_file() and self.target(a).stat().st_size == a['size']
+                           for a in assets)
             receipt = json.loads(self.marker(engine).read_text(encoding='utf8'))
             return (receipt['fingerprint'] == fingerprint(self.catalog, engine)
                     and all(self.target(a).stat().st_size == a['size']
                             and self.target(a).stat().st_mtime_ns == receipt['files'][a['path']]
-                            for a in self.assets(engine)))
+                            for a in assets))
         except (OSError, KeyError, ValueError):
             return False
 
@@ -98,9 +109,13 @@ class ModelStore:
 
     def verify_engine(self, engine):
         if not self.installed(engine) or not all(self.verified(a) for a in self.assets(engine)):
+            if self.bundled:
+                raise ValueError('설치된 음성 모델 파일을 읽지 못했습니다. Cloudy를 다시 설치해 주세요.')
             raise ValueError('음성 모델이 없거나 손상되었습니다. 설정 → 대화·음성 → 음성 모델 다운로드에서 다시 다운로드해 주세요.')
 
     def install(self, engine, cancel, progress):
+        if self.bundled:
+            raise ValueError('설치된 음성 모델을 복구하려면 Cloudy를 다시 설치해 주세요.')
         assets = self.assets(engine)
         if not self.published(engine):
             raise ValueError('학습한 목소리의 배포 파일을 준비하고 있습니다.')

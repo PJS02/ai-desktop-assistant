@@ -16,6 +16,9 @@ OutputDir={#Output}
 OutputBaseFilename=Cloudy-Setup-x64
 WizardStyle=modern
 Compression=zip/1
+DiskSpanning=yes
+DiskSliceSize=2000000000
+SlicesPerDisk=26
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"

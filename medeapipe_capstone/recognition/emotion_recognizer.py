@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from inference_device import torch_device
 
 
 # Matches src/class_indices.json from the FER-mobilenet project.
@@ -371,7 +372,7 @@ def mobilenet_v3_large(num_classes: int, reduced_tail: bool = True) -> MobileNet
 class EmotionRecognizer:
     def __init__(self, weight_path):
         self.weight_path = Path(weight_path)
-        self.device = torch.device("cpu")
+        self.device = torch.device(torch_device(torch))
         self.model = mobilenet_v3_large(num_classes=len(EMOTION_LABELS))
         checkpoint = torch.load(self.weight_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint

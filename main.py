@@ -10,6 +10,7 @@ import time
 from app_logging import (SESSION_ID, configure_logging, ingest_event, log_event,
                          new_trace_id, register_environment_secrets, shutdown_logging)
 from app_paths import APP_ROOT, IS_INSTALLED, USER_DATA_ROOT
+from inference_device import configure_inference_process
 from log_classification import classify_output
 
 _startup_capture = None
@@ -333,6 +334,7 @@ class MediaPipeProcessManager(QObject):
 
 def main():
     configure_logging(USER_DATA_ROOT / 'logs')
+    log_event('inference.device.configuration', '로컬 모델 연산 장치 설정', mode=configure_inference_process())
     app = QApplication(sys.argv)
     if IS_INSTALLED:
         app.setWindowIcon(QIcon(str(APP_ROOT.parent / 'Cloudy.ico')))

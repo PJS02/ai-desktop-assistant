@@ -13,7 +13,8 @@ from threading import RLock
 from typing import Any, Iterable
 from uuid import uuid4
 
-from app_paths import IS_INSTALLED, USER_DATA_ROOT
+from app_paths import BUNDLED_MODELS_DIR, IS_INSTALLED, USER_DATA_ROOT
+from inference_device import torch_device
 
 from .importance import MIN_NEW_FACT_IMPORTANCE
 from .screen_memory import evaluate_screen_observation, screen_key
@@ -39,6 +40,7 @@ SCREEN_PENDING_TOPIC_LIMIT = 64
 MIN_RECALL_SIMILARITY = 0.75
 MIN_DUPLICATE_SIMILARITY = 0.90
 DEFAULT_DATABASE_PATH = (USER_DATA_ROOT if IS_INSTALLED else Path()) / "data/long_term_memory.sqlite3"
+DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 
 # 추가 컬럼은 기존 INSERT문도 계속 사용할 수 있도록 기본값을 둔다.
 METADATA_COLUMNS = {
@@ -100,7 +102,7 @@ class LongTermMemory:
     def __init__(
         self,
         database_path: str | Path = DEFAULT_DATABASE_PATH,
-        model_name: str = "intfloat/multilingual-e5-small",
+        model_name: str = DEFAULT_EMBEDDING_MODEL,
         embedder: Any | None = None,
         settings: MemorySettings | None = None,
     ):
@@ -648,9 +650,15 @@ class LongTermMemory:
         """모델을 처음 필요할 때만 불러와 텍스트 하나를 벡터화한다."""
         with self._embedding_lock:
             if self._embedder is None:
+                import torch
                 from sentence_transformers import SentenceTransformer
 
-                self._embedder = SentenceTransformer(self.model_name)
+                device = torch_device(torch, auto_cuda=True)
+                if IS_INSTALLED and self.model_name == DEFAULT_EMBEDDING_MODEL:
+                    model_path = BUNDLED_MODELS_DIR / DEFAULT_EMBEDDING_MODEL.split("/")[-1]
+                    self._embedder = SentenceTransformer(str(model_path), local_files_only=True, device=device)
+                else:
+                    self._embedder = SentenceTransformer(self.model_name, device=device)
             vector = self._embedder.encode(text, normalize_embeddings=True)
             result = [float(value) for value in vector]
             self._embedding_prepared = True

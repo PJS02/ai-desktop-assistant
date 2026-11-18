@@ -5,6 +5,7 @@ import binascii
 from ai.gemini_client import is_screen_privacy_enabled
 from app_logging import log_event
 from context.igdb import normalize_igdb_config
+from inference_device import DEVICE_CHOICES
 
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
@@ -131,6 +132,7 @@ class SettingsDialog(QDialog):
         self._game_rules_page(local)
         self.memory_view = MemoryView(long_term_memory, self)
         self.tabs.addTab(self.memory_view, '장기기억')
+        self._environment_page(local)
         self._preview_active = False
         self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
@@ -611,6 +613,14 @@ class SettingsDialog(QDialog):
         for key, control in self.personality_trait_inputs.items():
             control.setValue(round(preset[key] * 100))
 
+    def _environment_page(self, local):
+        _, _, form = self._page('실행 환경')
+        self.inference_device = self._combo(DEVICE_CHOICES, local.get('inference_device', 'auto'))
+        form.addRow('로컬 모델 연산 장치', self.inference_device)
+        hint = QLabel('Cloudy를 다시 실행하면 적용됩니다. CUDA를 사용할 수 없는 모델은 CPU에서 실행됩니다.')
+        hint.setWordWrap(True)
+        form.addRow(hint)
+
     def _dialogue_page(self, local):
         self.dialogue_page, layout, form = self._page('대화·음성', '말풍선 모양과 AI 답변을 읽을 목소리를 설정합니다.')
         self._dialogue_style_fields(form, local)
@@ -632,7 +642,8 @@ class SettingsDialog(QDialog):
         self.sync_bubble.setToolTip('켜면 음성이 실제로 시작될 때 말풍선을 표시합니다.\n'
                                    '끄면 답변을 먼저 표시합니다. 음성을 재생하지 못하면 텍스트만 표시합니다.')
         timing.addRow(self.sync_bubble)
-        _, _, form = self._section(layout, '음성 모델 다운로드')
+        section_title = '추가 음성 모델' if self.model_manager.store.bundled else '음성 모델 다운로드'
+        _, _, form = self._section(layout, section_title)
         self.voice_runtime_status = QLabel()
         self.voice_runtime_status.setWordWrap(True)
         form.addRow(self.voice_runtime_status)
@@ -682,11 +693,13 @@ class SettingsDialog(QDialog):
             else:
                 progress.hide()
                 button.setText('설치 완료' if installed else '다시 다운로드' if engine in self.model_manager.last_result else '다운로드')
-                button.setEnabled(active is None and not installed and store.published(engine))
+                button.setEnabled(active is None and not installed and not store.bundled and store.published(engine))
                 if engine in self.model_manager.last_result:
                     status.setText(self.model_manager.last_result[engine][1])
                 elif installed:
                     status.setText('설치 완료 — 목소리를 선택하고 적용해 주세요.')
+                elif store.bundled:
+                    status.setText('모델 파일이 빠져 있습니다. Cloudy를 다시 설치해 주세요.')
                 elif not store.published(engine):
                     status.setText('배포 준비 중 — 학습한 목소리가 게시되면 다운로드할 수 있습니다.')
                 else:
@@ -1274,6 +1287,9 @@ class SettingsDialog(QDialog):
         local['character']['emotion_delta_duration_ms'] = round(self.emotion_delta_duration.value() * 1000)
         local['character']['emotion_delta_enabled'] = self.emotion_delta_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
+        device = self.inference_device.currentData()
+        if device != self.local_baseline.get('inference_device', 'auto'):
+            changed['inference_device'] = device
         game_rules = normalize_game_rules({
             'included_processes': self.game_processes.toPlainText().splitlines(),
             'keywords': self.game_keywords.toPlainText().splitlines(),
@@ -1354,6 +1370,8 @@ class SettingsDialog(QDialog):
     def complete(self, message, success=True, local=None, remote=None):
         if local:
             self.local_baseline.update(deepcopy(local))
+            if 'inference_device' in local:
+                message += ' 연산 장치는 Cloudy를 다시 실행하면 적용됩니다.'
         if remote:
             self.set_remote(remote, preserve_draft=not success)
         self.set_pending(False)

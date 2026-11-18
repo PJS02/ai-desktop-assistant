@@ -4,6 +4,7 @@ import atexit
 import multiprocessing
 import os
 
+from app_paths import BUNDLED_MODELS_DIR, IS_INSTALLED
 
 OCR_TIMEOUT_SECONDS = 120
 _RESULT_FIELDS = ("rec_texts", "rec_scores", "rec_polys", "dt_polys",
@@ -23,13 +24,25 @@ def _serve(connection):
                 return
             try:
                 if engine is None:
+                    model_options = dict(lang="korean", ocr_version="PP-OCRv5")
+                    if IS_INSTALLED:
+                        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+                        detection = "PP-OCRv5_server_det"
+                        recognition = "korean_PP-OCRv5_mobile_rec"
+                        model_options = dict(
+                            text_detection_model_name=detection,
+                            text_detection_model_dir=str(BUNDLED_MODELS_DIR / detection),
+                            text_recognition_model_name=recognition,
+                            text_recognition_model_dir=str(BUNDLED_MODELS_DIR / recognition),
+                        )
                     from paddleocr import PaddleOCR
 
                     engine = PaddleOCR(
-                        lang="korean", ocr_version="PP-OCRv5", device="cpu", cpu_threads=2,
+                        device="cpu", cpu_threads=2,
                         enable_mkldnn=False,  # Windows oneDNN/PIR inference is unsupported on some Paddle versions.
                         use_doc_orientation_classify=False, use_doc_unwarping=False,
                         use_textline_orientation=False, text_rec_score_thresh=0.0,
+                        **model_options,
                     )
                 results = [{key: page[key] for key in _RESULT_FIELDS if key in page}
                            for page in engine.predict(image, return_word_box=return_word_box)]

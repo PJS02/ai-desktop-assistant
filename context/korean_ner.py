@@ -4,6 +4,8 @@ import math
 import re
 
 from presidio_analyzer import EntityRecognizer, RecognizerResult
+from app_paths import BUNDLED_MODELS_DIR, IS_INSTALLED
+from inference_device import torch_device
 
 
 MODEL_ID = "Leo97/KoELECTRA-small-v3-modu-ner"
@@ -14,21 +16,25 @@ _pipeline = None
 def _get_pipeline():
     global _pipeline
     if _pipeline is None:
+        import torch
         from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
 
         # Reuse installed weights without remote metadata requests on every launch.
         options = dict(local_files_only=True, trust_remote_code=False)
+        model_path = str(BUNDLED_MODELS_DIR / MODEL_ID.split("/")[-1]) if IS_INSTALLED else MODEL_ID
         try:
-            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True, **options)
+            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, **options)
             model = AutoModelForTokenClassification.from_pretrained(
-                MODEL_ID, use_safetensors=True, **options)
+                model_path, use_safetensors=True, **options)
         except OSError:
+            if IS_INSTALLED:
+                raise
             tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True, trust_remote_code=False)
             model = AutoModelForTokenClassification.from_pretrained(
                 MODEL_ID, use_safetensors=True, trust_remote_code=False)
         tokenizer.model_max_length = min(tokenizer.model_max_length, 512)
         _pipeline = pipeline("token-classification", model=model, tokenizer=tokenizer,
-                             aggregation_strategy="simple", stride=64, device=-1)
+                             aggregation_strategy="simple", stride=64, device=torch_device(torch))
     return _pipeline
 
 

@@ -4,15 +4,17 @@ Python + PyQt 기반 데스크탑 캐릭터 예제 프로젝트
 
 ## Windows 설치
 
-1. Windows 10(1809 이상) 또는 Windows 11 x64에서 `Cloudy-Setup-x64.exe`를 실행합니다.
+1. Windows 10(1809 이상) 또는 Windows 11 x64에서 `Cloudy-Setup-x64-full.zip`을 풉니다. 압축을 푼 폴더에서 `Cloudy-Setup-x64.exe`를 실행합니다.
 2. 설치 화면에서 원하는 폴더를 선택합니다. 바탕화면 아이콘도 추가할 수 있습니다.
 3. 설치가 끝나면 시작 메뉴에서 **Cloudy**를 엽니다.
 4. 성격을 선택하고 **시작하기**를 누릅니다. Gemini 대화는 캐릭터 우클릭 → **설정 → 대화·음성 → AI 연결**에서 API 키를 입력한 뒤 사용할 수 있습니다.
 
-캐릭터 실행에 필요한 Python, Node.js, 라이브러리와 캐릭터 파일을 설치 프로그램에 포함합니다.
-Supertonic 음성, 장기기억 임베딩, 화면 OCR과 개인정보 탐지 모델은 처음 준비할 때 인터넷에서 다운로드합니다.
-GPT-SoVITS와 OpenVoice V2를 쓰려면 지원되는 NVIDIA 환경에서 설치 폴더의 **app** 안에 있는
-`setup_tts_runtime.cmd`로 추가 환경을 준비하세요. 이 단계에는 Windows Python 3.10이 필요합니다.
+설치 프로그램에는 Python, Node.js, 라이브러리, 캐릭터 파일과 함께 Supertonic 3, GPT-SoVITS, OpenVoice V2,
+장기기억 임베딩, 화면 OCR·개인정보 탐지, MediaPipe 자세 인식 모델이 들어 있습니다.
+Cloudy는 설치 폴더에서 기본 모델을 불러옵니다. [모델 출처와 라이선스](docs/bundled-models.md)
+**설정 → 실행 환경 → 로컬 모델 연산 장치**에서 자동·CPU·CUDA를 고를 수 있습니다.
+설정을 저장하고 Cloudy를 다시 실행하면 적용됩니다. CUDA를 사용할 수 없는 모델은 CPU에서 실행됩니다.
+두 추가 음성은 **설정 → 대화·음성 → 목소리**에서 고를 수 있습니다.
 
 **Windows 설정 → 앱 → 설치된 앱 → Cloudy**에서 앱을 제거할 수 있습니다.
 설치판의 API 설정, 장기기억, 로그 등은 사용자별 `%LOCALAPPDATA%\Cloudy`에 저장되며 앱을 제거해도 보관됩니다.
@@ -20,7 +22,7 @@ GPT-SoVITS와 OpenVoice V2를 쓰려면 지원되는 NVIDIA 환경에서 설치 
 ### 설치 파일 빌드
 
 `requirements.txt`와 `medeapipe_capstone/requirements.txt`의 의존성이 설치된 Windows x64 Python 3.10 가상환경과 Tcl/Tk가 필요합니다.
-[Inno Setup](https://jrsoftware.org/inno-setup/downloads)의 컴파일러,
+[Inno Setup 6.5.2 이상](https://jrsoftware.org/inno-setup/downloads)의 컴파일러,
 공식 [Node.js Windows x64 ZIP](https://nodejs.org/en/download)의 압축을 푼 폴더,
 최신 Visual C++ 재배포 라이브러리가 들어 있는 x64 `Microsoft.VC143.CRT` 폴더를 지정합니다.
 
@@ -28,7 +30,8 @@ GPT-SoVITS와 OpenVoice V2를 쓰려면 지원되는 NVIDIA 환경에서 설치 
 .\.venv\Scripts\python.exe scripts\windows\build_installer.py --iscc "<ISCC.exe 경로>" --node-dir "<Node.js 폴더>" --vc-redist "<Microsoft.VC143.CRT 폴더>"
 ```
 
-빌드 결과는 `dist\Cloudy-Setup-x64.exe`입니다.
+빌드할 때 기존 캐시의 지정된 모델과 `.tts-runtime` 실행 환경을 재사용합니다. 필요한 모델과 실행 환경은 빌드 중 준비합니다.
+빌드 결과는 `dist\Cloudy-Setup-x64-full.zip`입니다. 설치 프로그램과 `.bin` 파일을 한 폴더에 풀어 실행합니다.
 
 ## 소스에서 실행
 
@@ -112,20 +115,20 @@ python main.py
 ## 화면 개인정보 보호
 
 기본 설정에서는 자동 활동 반응에 사용할 활성 창 이미지를 PaddleOCR·Microsoft Presidio·한국어 탐지 규칙·OpenCV로 처리해 개인정보를 가린 뒤 Gemini에 전달합니다.
-마스킹이 켜진 상태에서 OCR 또는 탐지에 실패하면 전송을 차단합니다. 첫 사용 시 OCR 모델을 다운로드합니다.
+마스킹이 켜진 상태에서 OCR 또는 탐지에 실패하면 전송을 차단합니다. 소스에서 실행하면 모델을 처음 준비할 때 다운로드합니다.
 설치·처리 흐름·테스트·탐지 한계는 [화면 개인정보 보호 설명](docs/SCREEN_PRIVACY.md)에 정리했습니다.
 
 ## 로컬 음성 읽기 (TTS)
 
 AI 답변을 Supertonic 3 모델로 기기에서 합성해 읽습니다. 별도 TTS API 요금은 없습니다.
-처음 음성을 사용할 때 모델 파일 약 400MB를 다운로드하며, 이후 합성은 인터넷 없이 동작합니다.
+소스에서 실행할 때는 처음 준비 과정에서 모델 파일 약 400MB를 다운로드합니다. 로컬 음성 합성은 인터넷 없이 동작합니다.
 캐릭터를 우클릭해 **설정 → 대화·음성**에서 **AI 답변 음성으로 읽기**를 켜거나 끄고, **목소리**에서
 Supertonic 3의 기본 목소리 F1–F5, M1–M5를 고를 수 있습니다. 처음에는 F1로
 음성 읽기가 켜져 있으며 선택은 저장됩니다. 모델은 OpenRAIL-M 라이선스를 따릅니다.
 
-GPT-SoVITS와 OpenVoice V2는 **설정 → 대화·음성 → 음성 모델 다운로드**에서 설치할 수 있습니다.
+Windows 설치본의 GPT-SoVITS와 OpenVoice V2는 **설정 → 대화·음성 → 목소리**에서 선택합니다.
 추가 음성은 Windows Python 3.10과 지원되는 NVIDIA GPU/드라이버가 필요하며,
-앱을 닫고 `setup_tts_runtime.cmd`로 전용 실행 환경을 한 번 준비한 뒤 모델만 다운로드합니다.
+소스에서 실행할 때는 `setup_tts_runtime.cmd`로 전용 실행 환경을 준비하고 설정에서 모델을 다운로드합니다.
 학습한 목소리는 [TTS 릴리스](https://github.com/PJS02/ai-desktop-assistant/releases/tag/tts-74107e113436-v1)에서 제공하며, 설정창이 필요한 파일을 자동으로 다운로드하고 검증합니다.
 설치·배포 절차와 파일 구성은 [추가 TTS 설치 안내](docs/tts-installation.md)를 참고하세요.
 

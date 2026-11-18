@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QSettings, Qt, pyqtSignal
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 from app_logging import log_event, new_trace_id
-from app_paths import IS_INSTALLED, USER_DATA_ROOT
+from app_paths import BUNDLED_MODELS_DIR, IS_INSTALLED, USER_DATA_ROOT
 from .tts_models import ENGINE_NAMES, ModelStore
 from .tts_backend import LocalVoiceBackend, SynthesisCancelled, runtime_python
 
@@ -276,6 +276,9 @@ class SupertonicTTS(QObject):
     def _create_model():
         from supertonic import TTS
 
+        if IS_INSTALLED:
+            return TTS(model="supertonic-3", model_dir=BUNDLED_MODELS_DIR / 'supertonic-3',
+                       auto_download=False)
         print("[TTS] Supertonic 3 모델 로딩 중 (첫 실행 시 약 400MB 다운로드)")
         return TTS(model="supertonic-3", auto_download=True)
 

@@ -56,8 +56,8 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-처음 화면을 처리할 때 PaddleOCR의 탐지·한국어 인식 모델과 한국어 이름 NER 모델을 내려받습니다. NER 가중치는 약 56MB이며 PyTorch·Transformers가 필요합니다.
-모델 다운로드가 가능한 인터넷 연결과 모델 캐시 디렉터리 쓰기 권한이 필요합니다. 이후 OCR·개인정보 탐지는 로컬에서 실행되며 화면·OCR 텍스트를 모델 제공자에게 전송하지 않습니다.
+소스에서 실행하면 PaddleOCR의 탐지·한국어 인식 모델과 한국어 이름 NER 모델을 처음 준비할 때 내려받습니다. 모델 다운로드에는 인터넷 연결과 캐시 디렉터리 쓰기 권한이 필요합니다.
+Windows 설치본에서는 각 모델을 설치 폴더에서 불러옵니다. OCR·개인정보 탐지는 로컬에서 실행되며 화면·OCR 텍스트를 모델 제공자에게 전송하지 않습니다.
 AI 설정에는 이미지를 지원하는 Gemini 모델을 지정해야 합니다. API 키와 모델 설정 경로는 기존 `ai/config/gemini_config.json`입니다.
 
 ## 검증

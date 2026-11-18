@@ -1,8 +1,8 @@
 # 해상도 설정 저장/불러오기
 import json
-from pathlib import Path
 from app_logging import log_event
-from app_paths import IS_INSTALLED, USER_DATA_ROOT
+from app_paths import APP_CONFIG_FILE
+from inference_device import normalize_inference_device
 from .motion_options import normalize_character_options
 from .dialogue_styles import normalize_dialogue_style
 from .dialogue_options import normalize_dialogue_options
@@ -10,7 +10,7 @@ from .hand_overlay_options import normalize_hand_overlay_options
 from .personality_system import BigFivePersonality, PersonalitySystem
 
 
-CONFIG_FILE = (USER_DATA_ROOT if IS_INSTALLED else Path.home() / ".ai_desktop_assistant") / "config.json"
+CONFIG_FILE = APP_CONFIG_FILE
 
 
 def load_config():
@@ -120,7 +120,8 @@ def save_hand_overlay_options(options, *, trace_id=None):
 
 
 def save_config(width, height, personality=PersonalitySystem.DEFAULT_PRESET, character_options=None,
-                dialogue_style=None, personality_traits=None, *, trace_id=None, dialogue_options=None):
+                dialogue_style=None, personality_traits=None, *, trace_id=None, dialogue_options=None,
+                inference_device=None):
     """설정 저장 (해상도, 성격)"""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -128,6 +129,8 @@ def save_config(width, height, personality=PersonalitySystem.DEFAULT_PRESET, cha
         if not isinstance(config, dict):
             raise ValueError('설정 파일 형식이 올바르지 않습니다.')
         config.update(resolution={'width': width, 'height': height}, personality=personality)
+        if inference_device is not None:
+            config['inference_device'] = normalize_inference_device(inference_device, strict=True)
         if personality_traits is not None:
             selected = personality if personality in PersonalitySystem.PERSONALITY_PRESETS else PersonalitySystem.DEFAULT_PRESET
             defaults = PersonalitySystem.PERSONALITY_PRESETS[selected]
