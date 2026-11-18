@@ -7,6 +7,7 @@ from pathlib import Path
 from app_paths import IS_INSTALLED, USER_DATA_ROOT
 from .dialogue_styles import normalize_dialogue_style
 from .overlay_geometry import place_above_character, place_near_ankles
+from .floating_panels import configure_floating_panel
 
 
 class DialogueBubble(QWidget):
@@ -474,6 +475,7 @@ class DialogueInputWidget(QWidget):
         self._retry_icon = QIcon(str(icons / 'chat_retry.svg'))
         self._speaker_icon = QIcon(str(icons / 'chat_speaker.svg'))
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        configure_floating_panel(self)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle('채팅하기')
         self.setMinimumSize(300, 250)

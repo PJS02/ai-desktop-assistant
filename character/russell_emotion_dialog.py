@@ -5,6 +5,7 @@ from datetime import datetime
 from app_logging import log_event, log_throttled
 from .mood_system import OCC_EMOTION_NAMES
 from .russell_sectors import SECTOR_ANGLE, SECTOR_NAMES, SECTORS, russell_face
+from .floating_panels import configure_floating_panel
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -391,6 +392,7 @@ class RussellEmotionDialog(QDialog):
         self.setWindowTitle("Russell 감정 판단 근거 · Explainable Emotion AI")
         self.setFont(QFont("Malgun Gothic", 9))
         self.setWindowFlags(Qt.WindowType.Window)
+        configure_floating_panel(self)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setWindowModality(Qt.WindowModality.NonModal)
 

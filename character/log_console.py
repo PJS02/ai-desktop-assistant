@@ -15,6 +15,7 @@ from app_logging import EventLoggingHandler, LogEvent, file_status, get_events, 
 from context import screen_history
 from log_classification import classify_output
 from .log_presentation import CATEGORY_TABS, SCREEN_PRIVACY_TOPIC, present_event
+from .floating_panels import configure_floating_panel
 
 LOG_CATEGORIES = ('전체', '사용자 인식', '캐릭터 상태', '대화·AI', '시스템', '오류')
 LogEntry = LogEvent
@@ -185,6 +186,7 @@ class LogWindow(QWidget):
     """One chronological integrated view and domain-specific views of the same records."""
     def __init__(self, manager):
         super().__init__()
+        configure_floating_panel(self)
         self.manager = manager
         self.is_paused = False
         self._allow_close = False
@@ -376,6 +378,7 @@ class LogWindow(QWidget):
         self.screen_panel.hide()
 
         self.screen_dialog = QDialog(self)
+        configure_floating_panel(self.screen_dialog)
         self.screen_dialog.setWindowTitle('마스킹 이미지')
         self.screen_dialog.resize(900, 600)
         preview_layout = QVBoxLayout(self.screen_dialog)

@@ -48,6 +48,7 @@ from .hide_and_seek import HideAndSeek
 from .drag_shake import DragShakeDetector
 from .dialogue_persona import character_voice
 from .window_presence import WindowPresence
+from .floating_panels import FloatingPanels, raise_active_panel
 from .game_spectator import GameSpectator
 from .game_detection import activity_category, game_context_instruction, resolve_game_activity
 from .game_reactions import (decode_game_response, game_response_schema, game_response_instruction,
@@ -310,6 +311,7 @@ class CharacterWidget(QLabel):
 
         # 드래그 관련
         self.is_dragging = False
+        self.floating_panels = FloatingPanels(self)
         self.drag_time = 0
         self._mouse_drag_samples = deque()
         self._mouse_throw_active = False
@@ -553,6 +555,8 @@ class CharacterWidget(QLabel):
             int(self.winId()),
             body_offset=(body.x(), body.y(), body.width(), body.height()),
             widget_size=(self.width(), self.height()))
+        if restored and not self.is_dragging:
+            raise_active_panel()
         overlay = getattr(self, 'hand_overlay', None)
         if restored and overlay is not None:
             overlay.raise_above_character()
@@ -2177,6 +2181,7 @@ class CharacterWidget(QLabel):
         self._mark_character_interaction()
         self.drag_pos = press[0]
         self.is_dragging = True
+        self.floating_panels.raise_character()
         self.drag_time = 0
         self._start_drag_shake(self.drag_pos.x(), self.drag_pos.y())
         self._drag_trace_id = new_trace_id('drag')

@@ -28,6 +28,7 @@ from .game_rules import (DEFAULT_GAME_RULES, GAME_MOTION_LABELS, normalize_game_
                          normalize_game_rules, running_process_names)
 from .gemini_usage_view import GeminiUsageView
 from .memory_view import MemoryView
+from .floating_panels import configure_floating_panel
 
 
 GEMINI_MODEL_IDS = (
@@ -101,7 +102,7 @@ class SettingsDialog(QDialog):
         local['game_rules'] = normalize_game_rules(local.get('game_rules'))
         local['igdb'] = normalize_igdb_config(local.get('igdb'))
         self.setWindowTitle('설정')
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
+        configure_floating_panel(self)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.resize(700, 640)
         self.setMinimumSize(520, 430)

@@ -12,6 +12,7 @@ from .memory_view import MemoryView
 from .mood_system import OCC_EMOTION_NAMES
 from .overlay_geometry import place_beside_character
 from .russell_emotion_dialog import RussellEmotionCanvas, RussellEmotionDialog
+from .floating_panels import configure_floating_panel
 
 
 class _StatusContentView(QGraphicsView):
@@ -45,6 +46,7 @@ class _StatusContentView(QGraphicsView):
 class CharacterStatusWindow(QDialog):
     def __init__(self, character, title, *, layout_width, layout_height):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.WindowCloseButtonHint)
+        configure_floating_panel(self)
         self._character = character
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setWindowTitle(title)

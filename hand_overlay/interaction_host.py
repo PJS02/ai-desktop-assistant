@@ -151,6 +151,7 @@ class CharacterHandActions:
                 return False
             self.palm_offset = self.body_rect().center[0] - point[0]
             c.is_dragging = True
+            c.floating_panels.raise_character()
             c._hand_control_mode = mode
             c.drag_pos = QPoint(round(point[0]), round(point[1]))
             c.drag_time = 0
