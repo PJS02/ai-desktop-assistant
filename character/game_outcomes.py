@@ -47,7 +47,7 @@ def _classify_result(page, size):
         if not (.27 <= center_x <= .73 and .15 <= center_y <= .78
                 and max(ys) - min(ys) >= .035 * height and max(xs) - min(xs) >= .045 * width):
             continue
-        if not .86 <= quality <= 1.:
+        if not .83 <= quality <= 1.:
             uncertain = True
             continue
         detected[outcome] = max(detected.get(outcome, 0.), float(quality))

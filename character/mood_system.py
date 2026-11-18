@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Dict, Optional, Tuple
 
 from .russell_sectors import SECTOR_NAMES, russell_face
-from .perception_affect import unit, update_label
+from .perception_affect import contact_refusal_conditions, unit, update_label
 
 
 class OccEmotionToMood(Enum):
@@ -299,9 +299,9 @@ class MoodSystem:
 
     def should_refuse_pet(self) -> bool:
         """Sustained hostility can refuse contact; fear alone accepts comfort."""
-        anger, valence = self.occ_intensities[OccEmotionToMood.ANGER], self.russell.valence
-        return update_label('contact_refusal', anger >= .65 and valence <= -.4,
-                            anger > .5 and valence < -.25,
+        anger = self.occ_intensities[OccEmotionToMood.ANGER]
+        enter, remain = contact_refusal_conditions(self.get_display_emotion(), anger)
+        return update_label('contact_refusal', enter, remain,
                             self.interactions.perception_states,
                             self.interactions.perception_pending, self.emotion_time())
 
@@ -759,7 +759,7 @@ class MoodSystem:
         state_before = self._capture_emotion_state()
         previous_pressure = self._idle_pressure
         idle_seconds = max(0.0, float(idle_seconds))
-        self._idle_pressure = max(0.0, min(1.0, (idle_seconds - 10.0) / 90.0))
+        self._idle_pressure = max(0.0, min(1.0, (idle_seconds - 9.0) / 91.0))
         self._update_russell_from_occ()
         if abs(self._idle_pressure - previous_pressure) > 1e-12:
             self._record_influence(

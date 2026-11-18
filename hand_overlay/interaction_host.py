@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled, new_trace_id
-from character.reactions import react, reaction_mood, experience
+from character.reactions import react, experience
 from .high_five import DesktopHighFive
 from .interactions import Box, HandInteractionEngine
 
@@ -256,7 +256,6 @@ class CharacterHandActions:
 
     def poke(self, point):
         c = self.character
-        before = reaction_mood(c)
         now = time.monotonic()
         repeated = now - getattr(self, '_last_poke', -math.inf) <= 3.2
         self._last_poke = now
@@ -276,7 +275,7 @@ class CharacterHandActions:
         c._mark_character_interaction()
         self.feedback.pulse('poke', point)
         if repeated:
-            experience(c, "poke_discomfort" if before[0] < -.24 else "poke_play")
+            experience(c, "poke_play")
         else:
             experience(c, "poke_start", familiar=now - getattr(c, '_last_pet_time', -math.inf) < 2.)
         log_event('hand_interaction.cheek.poked', '손끝으로 볼 콕 찌르기', category='캐릭터 상태')

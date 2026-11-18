@@ -132,8 +132,9 @@ class CharacterWidget(QLabel):
     MOUSE_THROW_MAX_SPEED = 10_800.
     TRIP_HORIZONTAL_SPEED = 780.  # Shared mouse/hand release threshold, in logical pixels per second.
     FLOOR_BOUNCE_SPEED = 20.  # Vertical logical pixels per 60 Hz physics frame.
+    IMPACT_EMOTION_MIN_SPEED = 16.  # Logical pixels per 60 Hz physics frame.
     PET_MIN_SAMPLE_INTERVAL = 0.1
-    PET_MIN_DISTANCE = 6
+    PET_MIN_DISTANCE = 5
     MANUAL_WINDOW_SELECTION_SECONDS = 5
 
     # ====== 감정별 캐릭터 반응 영역 ======
@@ -3279,7 +3280,7 @@ class CharacterWidget(QLabel):
             return
         previous = self.drag_time
         self.drag_time += .1
-        if previous < 1.5 <= self.drag_time:
+        if previous < 1.3 <= self.drag_time:
             trace = getattr(self, '_drag_trace_id', None)
             experience(self, 'drag_held', event_id=f'{trace}:held' if trace else None)
         # File release remains a mouse gesture.
@@ -3693,7 +3694,7 @@ class CharacterWidget(QLabel):
                 and standing.y_level == previous_level
                 and abs(current_y + previous_bottom - standing.y_level) <= 1
                 and support_span(standing, left, left + body.width()) is not None):
-            if collision_speed >= 18.:
+            if collision_speed >= CharacterWidget.IMPACT_EMOTION_MIN_SPEED:
                 experience(self, 'impact', impact_speed=collision_speed, contact_at=self._physics_seconds)
                 if reactions is not None:
                     reactions.safe()
@@ -3762,12 +3763,12 @@ class CharacterWidget(QLabel):
             distance_to_surface = landing_surface.y_level - (current_y + body_bottom)
             impact_speed = min(terminal, math.sqrt(velocity ** 2 + 2 * self.gravity * distance_to_surface)
                                if distance_to_surface >= 0 else self.velocity_y)
-            hard_impact = (not self.is_jumping or unexpected_drop) and impact_speed >= 18.
-            if hard_impact:
+            unplanned_landing = not self.is_jumping or unexpected_drop
+            if unplanned_landing:
                 collision_speed = max(collision_speed, impact_speed)
             new_y = landing_surface.y_level - body_bottom
             floor_throw = throwing and landing_surface.name == 'ground'
-            if floor_throw and hard_impact and impact_speed >= CharacterWidget.FLOOR_BOUNCE_SPEED:
+            if floor_throw and unplanned_landing and impact_speed >= CharacterWidget.FLOOR_BOUNCE_SPEED:
                 self.velocity_y = -impact_speed * self.bounce_damping
                 self.velocity_x *= .9
             else:
@@ -3788,7 +3789,7 @@ class CharacterWidget(QLabel):
                     throw_direction = getattr(self, '_throw_direction', 0) or None
                 landed = self.rig_view is not None or not self.is_moving or throwing
 
-        if collision_speed >= 18.:
+        if collision_speed >= CharacterWidget.IMPACT_EMOTION_MIN_SPEED:
             experience(self, 'impact', impact_speed=collision_speed, contact_at=self._physics_seconds)
         if self.on_ground and not landed and reactions is not None:
             reactions.safe()

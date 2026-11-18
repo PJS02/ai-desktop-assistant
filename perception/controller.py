@@ -15,13 +15,13 @@ class PerceptionController:
     """공통 인식 이벤트를 중복과 노이즈가 제거된 캐릭터 반응으로 바꾼다."""
 
     AWAY_CONFIRM_SECONDS = 5.0
-    B2_MIN_CONFIDENCE = 0.30
+    B2_MIN_CONFIDENCE = 0.28
 
     def __init__(
         self,
         mood_system,
         on_dialogue: Callable[[str], None] | None = None,
-        emotion_confidence: float = 0.55,
+        emotion_confidence: float = 0.52,
         emotion_samples: int = 3,
         emotion_cooldown: float = 8.0,
         reaction_cooldown: float = 3.0,
@@ -223,7 +223,7 @@ class PerceptionController:
             state['face'] = face
             state['face_applied'] = None
         face['last'], face['samples'] = observed, face['samples'] + 1
-        if face['samples'] < self.emotion_samples or observed - face['since'] < 1.:
+        if face['samples'] < self.emotion_samples or observed - face['since'] < .9:
             return
         if now - self._last_emotion_at < self.emotion_cooldown:
             self._reject('emotion', 'cooldown', event, label=observation.label)
@@ -284,7 +284,7 @@ class PerceptionController:
             episode['last'], episode['samples'] = observed, episode['samples'] + 1
             if episode['latched']:
                 continue
-            if signal != 'greeting' and (episode['samples'] < 2 or observed - episode['since'] < .25):
+            if signal != 'greeting' and (episode['samples'] < 2 or observed - episode['since'] < .22):
                 continue
             episode['latched'] = True
             if signal == 'greeting':

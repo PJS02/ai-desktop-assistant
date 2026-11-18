@@ -149,7 +149,7 @@ class TearOverlay(QWidget):
 class WindowPresence(QObject):
     HIDDEN_SECONDS = 8.
     COVER_CONFIRM_SECONDS = .3
-    COVER_APPRAISAL_SECONDS = 1.
+    COVER_APPRAISAL_SECONDS = .85
 
     def __init__(self, host, observer=None):
         super().__init__(host)

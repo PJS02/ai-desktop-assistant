@@ -7,14 +7,11 @@ import time
 from PyQt6.QtCore import QObject, QTimer
 
 from app_logging import log_event, log_throttled
-from .russell_sectors import SECTORS, SECTOR_ANGLE, russell_face
+from .interaction_emotions import FALL_EMOTION_MIN_HEIGHT
+from .russell_sectors import MOOD_REFERENCES, SECTOR_DIRECTIONS, russell_face
 
 
-_FACES = {
-    name: (math.cos(math.radians(index * SECTOR_ANGLE)),
-           math.sin(math.radians(index * SECTOR_ANGLE)))
-    for index, (name, _) in enumerate(SECTORS)
-}
+_FACES = dict(SECTOR_DIRECTIONS)
 _FACES.update(fear=(-.60, .75), angry=(-.85, .85), scared=(0., .95))
 _CONCERN = {'neutral', 'anxious', 'fear', 'scared', 'distressed', 'hurt', 'displeased'}
 _PHYSICAL_EVENTS = {'throw', 'fall_risk', 'impact', 'safe_landing', 'drag_shake'}
@@ -29,17 +26,13 @@ def _strength(result):
 
 
 def choose_face(result, before, *, current=None):
-    """Combine the applied change, evidence and current Russell direction."""
+    """Score the event against the starting emotion category."""
     strength = _strength(result)
-    if strength < .10:
+    if strength < .05:
         return None
+    mood = russell_face(*before)
     changes = result.get('changes', {})
-    _, arousal = result.get('bias_change', (0., 0.))
-    delta = result.get('target_change', (0., 0.))
-    radius = math.hypot(*delta)
-    distance = .20 + .25 * strength
-    target = tuple(value + distance * movement / radius for value, movement in zip(before, delta)) if radius else before
-    radius = math.hypot(*target)
+    valence, arousal = result.get('bias_change', (0., 0.))
 
     gain = min(1., sum(max(0., changes.get(name, 0.)) for name in
                        ('joy', 'gratitude', 'pride', 'hope', 'satisfaction')) / .04)
@@ -51,9 +44,18 @@ def choose_face(result, before, *, current=None):
     risk = result.get('risk', 0.)
     threat = max(risk, min(1., max(0., changes.get('fear', 0.)) / .045))
     surprise = min(result.get('surprise', 0.), max(0., arousal) / .025)
+    shift_x = gain + .35 * comfort - max(loss, threat) + valence
+    shift_y = .65 * gain + threat + surprise - 1.65 * comfort - .35 * loss
+    shift_length = math.hypot(shift_x, shift_y)
+    distance = (.32 + .28 * strength) / shift_length if shift_length else 0.
+    mood_x, mood_y = MOOD_REFERENCES[mood]
+    target = (mood_x + distance * shift_x, mood_y + distance * shift_y)
+    radius = math.hypot(*target)
+
+    cheerful = gain * (1. - .4 * comfort)
     support = dict.fromkeys(_FACES, 0.)
     support.update(
-        pleasant=gain, happy=gain, excited=gain, thrilled=gain * .7,
+        pleasant=cheerful, happy=cheerful, excited=cheerful, thrilled=cheerful * .7,
         serene=max(gain * .8, comfort), calm=max(gain * .55, comfort),
         relieved=comfort, quiet=max(loss * .45, comfort * .7), tired=comfort * .4,
         sad=loss, depressed=loss * .7, hurt=loss, distressed=max(loss, threat * .5),
@@ -62,16 +64,14 @@ def choose_face(result, before, *, current=None):
         proud=min(1., max(0., changes.get('pride', 0.)) / .025),
     )
     special = {'scared', 'fear', 'angry', 'proud'}
-    candidates = ['neutral', *(face for face in _FACES if face not in special or support[face] > .10)]
+    candidates = ['neutral', *(face for face in _FACES if face not in special or support[face] > .06)]
     if changes.get('relief', 0.) <= 0:
         candidates.remove('relieved')
-    if strength < .30 and before[1] < .35:
-        candidates = [face for face in candidates if face not in {'thrilled', 'excited'}]
     if not changes and arousal > 0 and not surprise:
         candidates = ['neutral', 'quiet', 'calm', 'serene', 'tired']
         for face in candidates[1:]:
             support[face] = .55
-    base = current if current == 'neutral' or current in _FACES else russell_face(*before)
+    base = current if current == 'neutral' or current in _FACES else mood
     if base not in candidates:
         candidates.append(base)
     if risk >= .45 and strength >= .45:
@@ -86,10 +86,10 @@ def choose_face(result, before, *, current=None):
         if not continuity and base in _FACES:
             bx, by = _FACES[base]
             continuity = .5 if (x * bx + y * by) / (math.hypot(x, y) * math.hypot(bx, by)) >= .92 else 0.
-        return .6 * direction + .3 * support[face] + .1 * continuity
+        return .52 * direction + .44 * support[face] + .04 * continuity
 
     best = max(candidates, key=lambda face: (score(face), face == base))
-    return base if base in candidates and score(best) - score(base) < .06 else best
+    return base if base in candidates and score(best) - score(base) < .01 else best
 
 
 def reaction_mood(host):
@@ -142,18 +142,14 @@ class Reactions(QObject):
         while self._samples and now - self._samples[0][0] > .45:
             self._samples.popleft()
         changes = {}
-        valence = arousal = target_v = target_a = 0.
+        valence = arousal = 0.
         for _, sample in self._samples:
             for name, change in sample['changes'].items():
                 changes[name] = changes.get(name, 0.) + change
             dv, da = sample['bias_change']
             valence += dv
             arousal += da
-            dv, da = sample['target_change']
-            target_v += dv
-            target_a += da
-        return {**result, 'changes': changes, 'bias_change': (valence, arousal),
-                'target_change': (target_v, target_a)}
+        return {**result, 'changes': changes, 'bias_change': (valence, arousal)}
 
     def play(self, event, *, result, source=None, sustain=False):
         host = self.host
@@ -172,7 +168,8 @@ class Reactions(QObject):
         strength = _strength(result)
         animator = host.sprite_animator
         before = reaction_mood(host)
-        face = choose_face(result, before, current=getattr(animator, 'current_emotion', None))
+        face = choose_face(result, result.get('before', before),
+                           current=getattr(animator, 'current_emotion', None))
         if face is None:
             return False
         urgent = source == 'fall' or event in {'impact', 'safe_landing'}
@@ -235,7 +232,7 @@ class Reactions(QObject):
         self.clear()
 
     def falling(self, distance, *, sudden=False):
-        if distance < .38:
+        if distance < FALL_EMOTION_MIN_HEIGHT:
             return
         result = experience(self.host, 'fall_risk', distance=distance, sudden=sudden,
                             reaction_source='fall', sustain=True)

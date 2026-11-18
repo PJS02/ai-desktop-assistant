@@ -4,6 +4,8 @@ The numbers are application tuning, not calibrated probabilities or OCC constant
 """
 import math
 
+from .russell_sectors import CONTACT_REFUSAL_MOODS, MOOD_REFERENCES, russell_face
+
 POSITIVE_SIGNALS = {'heart': 1., 'thumbs_up': .8, 'greeting': .7,
                     'ok': .45, 'head_agree': .35}
 PROFILE_NAMES = {'normal': '호의 수용', 'fear': '안정과 위로',
@@ -34,7 +36,7 @@ def unit(value):
 
 
 def profile_weights(occ, before):
-    valence, arousal = before
+    valence, arousal = MOOD_REFERENCES[russell_face(*before)]
     fear, guard = unit(occ.get('fear', 0)), unit(occ.get('anger', 0))
     down = max(unit(occ.get('distress', 0)), max(0., -valence)) * unit((.1 - arousal) / .5)
     total = fear + guard + down
@@ -51,9 +53,15 @@ def mix_profiles(profiles, weights):
     return {key: value for key, value in result.items() if abs(value) > 1e-12}
 
 
+def contact_refusal_conditions(mood, anger):
+    refusal_mood = mood in CONTACT_REFUSAL_MOODS
+    return anger >= .60 and refusal_mood, anger > .50 and refusal_mood
+
+
 def state_labels(occ, before, rest, active, pending, now):
     """Hysteretic labels explain continuous appraisal, rather than replacing it."""
-    valence, arousal = before
+    mood = russell_face(*before)
+    valence, arousal = MOOD_REFERENCES[mood]
     down = max(occ.get('distress', 0.), max(0., -valence)) * unit((.1 - arousal) / .5)
     fear, anger = occ.get('fear', 0.), occ.get('anger', 0.)
     conditions = {
@@ -62,8 +70,7 @@ def state_labels(occ, before, rest, active, pending, now):
         'down': (down >= .35, down > .25),
         'bright': (valence >= .2, valence > .1),
         'tired': (rest >= .65, rest > .45),
-        'contact_refusal': (anger >= .65 and valence <= -.4,
-                            anger > .5 and valence < -.25),
+        'contact_refusal': contact_refusal_conditions(mood, anger),
     }
     for name, (enter, remain) in conditions.items():
         update_label(name, enter, remain, active, pending, now)

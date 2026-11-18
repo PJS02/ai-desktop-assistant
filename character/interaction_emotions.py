@@ -7,9 +7,14 @@ from collections import OrderedDict, deque
 import math
 import time
 
-from .perception_affect import appraise_perception, state_labels, unit
+from .perception_affect import appraise_perception, contact_refusal_conditions, state_labels, unit
+from .russell_sectors import LOW_MOOD_EMOTIONS, MOOD_REFERENCES
 
 from app_logging import log_event
+
+
+OCC_RESPONSE_GAIN = 1.15
+FALL_EMOTION_MIN_HEIGHT = .34
 
 
 SOURCES = {
@@ -90,7 +95,7 @@ class InteractionEmotions:
         if continuous:
             dose = 8. * math.exp(-prior / 8.) * -math.expm1(-amount / 8.)
         else:
-            dose = amount / (1. + .5 * prior)
+            dose = amount / (1. + .4 * prior)
         self.exposure[family] = now, prior + amount
         return dose
 
@@ -126,6 +131,9 @@ class InteractionEmotions:
             return result
         self._sync_claims()
         result['reaction'] = event
+        mood_name = mood.get_display_emotion()
+        mood_valence, mood_arousal = MOOD_REFERENCES[mood_name]
+        has_distress = mood.occ_intensities[self._key('distress')] >= .25
         raw, recovery = {}, {}
         valence = arousal = 0.
         dose = _number(context.get('strength'), 0., 2., 1.)
@@ -134,13 +142,33 @@ class InteractionEmotions:
         claim = self.claims.get(session, {})
         surprise = risk = 0.
 
-        if event == 'tap':
+        unwanted_contact = (
+            event in ('tap', 'high_five_ready', 'high_five')
+            and contact_refusal_conditions(mood_name, mood.occ_intensities[self._key('anger')])[0]
+        )
+        if unwanted_contact:
+            if event == 'high_five_ready':
+                result['reaction'] = None
+                return result
+
+            raw = {'distress': .03, 'anger': .02}
+            weight = 1.
+            if event == 'high_five':
+                raw['hope'] = -claim.get('hope', 0.)
+                self.claims.pop(session, None)
+                weight = _number(context.get('quality'), default=1.)
+            source = source or ('원치 않는 하이파이브' if event == 'high_five' else '원치 않는 클릭')
+            dose = self._dose(event, weight, now)
+            agency, valence, arousal = -.45, -.01, .025
+            meaning = '분노가 높은 상태에서 접촉을 불편하게 받아들임'
+        elif event == 'tap':
             dose = self._dose('tap', 1., now)
-            engagement = _number(.65 + before[0] * .35 + before[1] * .15)
+            engagement = _number(.65 + mood_valence * .35 + mood_arousal * .15)
             context['goal_relevance'] = engagement
             raw, agency = {'joy': .04 * engagement, 'gratitude': .015}, .45
             meaning = '짧고 분명한 접촉을 직전 기분에 따라 평가'
-            if before[0] < -.2:
+            if (mood_name in LOW_MOOD_EMOTIONS or has_distress
+                    or mood.occ_intensities[self._key('fear')] >= .30):
                 source = source or '캐릭터 클릭 (위로)'
                 recovery = {'distress': .025, 'fear': .018}
                 arousal = -.008
@@ -160,7 +188,7 @@ class InteractionEmotions:
                     contact['refused'] = True
                     raw = {'distress': .01}
                     meaning = '원하지 않는 접촉을 거절함'
-                elif contact['elapsed'] >= .8 and not contact['ignored']:
+                elif contact['elapsed'] >= .7 and not contact['ignored']:
                     contact['ignored'] = True
                     raw = {'distress': .01, 'anger': .02}
                     agency, meaning = -.6, '거절한 뒤에도 접촉이 지속됨'
@@ -170,11 +198,11 @@ class InteractionEmotions:
                     return result
                 dose = self._dose('refusal', 1., now)
             else:
-                quality = math.exp(-((speed - 140.) / 180.) ** 2)
+                quality = math.exp(-((speed - 140.) / 200.) ** 2)
                 dose = self._dose('pet', elapsed * quality, now, continuous=True, elapsed=elapsed)
                 raw = {'joy': .02, 'gratitude': .01, 'satisfaction': .01}
                 recovery = {'distress': .025, 'fear': .035}
-                if mood.occ_intensities[self._key('distress')] > .3:
+                if has_distress:
                     raw['joy'] *= .5
                 agency, arousal = .6, -.02
                 meaning = '편안한 접촉의 시간과 품질에 따라 위로와 친밀감을 누적'
@@ -184,14 +212,14 @@ class InteractionEmotions:
             familiar = context.get('familiar', False) and not mood.should_refuse_pet()
             surprise = .45 if familiar else 1.
             arousal, meaning = .025 * surprise, '접촉의 갑작스러움에 따라 각성 변화'
-            if familiar and before[0] > .1:
-                raw['joy'] = .012 * min(1., before[0] + .3)
+            if familiar and mood_valence > .1:
+                raw['joy'] = .012 * min(1., mood_valence + .3)
         elif event in ('poke_play', 'poke_discomfort', 'contact_ignored'):
             dose = self._dose('poke', 1., now)
             if event == 'contact_ignored' or mood.should_refuse_pet():
                 raw, agency = {'distress': .02, 'anger': .02}, -.6
                 result['reaction'] = 'contact_ignored'
-            elif event == 'poke_discomfort' or before[0] < -.24:
+            elif event == 'poke_discomfort' or mood_name in LOW_MOOD_EMOTIONS or has_distress:
                 raw = {'distress': .02}
                 result['reaction'] = 'poke_discomfort'
             else:
@@ -200,7 +228,7 @@ class InteractionEmotions:
         elif event in ('drag_start', 'drag_held', 'drag_shake'):
             if event == 'drag_start':
                 speed = _number(context.get('speed'), 0., 20.)
-                dose = _number((speed - 1.5) / 4.)
+                dose = _number((speed - 1.3) / 4.)
                 surprise = dose
             elif event == 'drag_held':
                 dose = .45
@@ -217,7 +245,7 @@ class InteractionEmotions:
                 self.fall = {'peak': 0., 'claim': 'fall:' + str(now)}
             session = self.fall['claim']
             control = _number(context.get('control'))
-            risk = _number((height - .38) / 1.5) * (1. - .65 * control)
+            risk = _number((height - FALL_EMOTION_MIN_HEIGHT) / 1.5) * (1. - .65 * control)
             previous = self.fall['peak']
             self.fall['peak'] = max(previous, risk)
             dose = max(0., risk - previous)
@@ -277,7 +305,7 @@ class InteractionEmotions:
             raw, agency, arousal = {'gratitude': .015, 'satisfaction': .01}, .6, -.015
             meaning = '안정적인 지지와 호의를 받음'
         elif event in ('high_five_ready', 'hide_ready', 'ball_ready'):
-            engagement = _number(.65 + before[0] * .35 + before[1] * .15)
+            engagement = _number(.65 + mood_valence * .35 + mood_arousal * .15)
             amount = .015 if event == 'ball_ready' else .02
             raw, dose = {'hope': amount * engagement}, self._dose(event, 1., now)
             meaning = '확인된 놀이 기회와 현재의 참여 의욕'
@@ -290,9 +318,9 @@ class InteractionEmotions:
                 meaning = '진행을 멈춘 놀이의 기대만 정리'
             else:
                 confidence = _number(context.get('quality'), default=1.)
-                engagement = _number(.60 + before[0] * .35 + before[1] * .15)
+                engagement = _number(.60 + mood_valence * .35 + mood_arousal * .15)
                 dose = self._dose(event, confidence, now)
-                raw.update(joy=.04 * engagement, satisfaction=min(.025, owned_hope * .7),
+                raw.update(joy=.04 * engagement, satisfaction=min(.025, owned_hope * .8),
                            gratitude=.03 * engagement * (.65 if event == 'high_five' else .3))
                 recovery = {'fear': .025, 'distress': .022} if event == 'high_five' else {}
                 agency = .65 if event == 'high_five' else .3
@@ -340,14 +368,14 @@ class InteractionEmotions:
             if outcome not in EXTERNAL_GAME_SOURCES:
                 raise ValueError('Unknown external game outcome')
             quality = _number(context.get('quality'), default=1.)
-            engagement = _number(.7 + before[0] * .18 + before[1] * .12)
+            engagement = _number(.7 + mood_valence * .18 + mood_arousal * .12)
             family = 'external_game_score' if outcome == 'score' else 'external_game_result'
             dose = self._dose(family, quality * engagement, now)
             source = source or EXTERNAL_GAME_SOURCES[outcome]
             if outcome == 'win':
                 raw, valence, arousal = {'joy': .05}, .02, .024
             elif outcome == 'loss':
-                raw, valence, arousal = {'distress': .044}, -.018, .012 * before[1]
+                raw, valence, arousal = {'distress': .044}, -.018, .012 * mood_arousal
             elif outcome == 'score':
                 raw, valence, arousal = {'joy': .026}, .01, .018
             else:
@@ -355,7 +383,7 @@ class InteractionEmotions:
             meaning = '사용자의 게임 화면에 확인된 결과를 관전 중인 캐릭터의 관점으로 평가'
         elif event.startswith('game_'):
             if event == 'game_start':
-                engagement = _number(.7 + before[0] * .3 + before[1] * .18)
+                engagement = _number(.7 + mood_valence * .3 + mood_arousal * .18)
                 raw = {'hope': (.008 if context.get('round') else .015) * engagement}
                 meaning = '게임 결과에 대한 기대'
             else:
@@ -419,7 +447,7 @@ class InteractionEmotions:
                 factors.extend(label for label in labels if label not in factors)
             factor = sum(weights.values()) / len(weights)
         applied_dose = dose * factor
-        increases = {name: amount * dose * weights.get(-1 if name in negative else 1, 1.)
+        increases = {name: amount * dose * OCC_RESPONSE_GAIN * weights.get(-1 if name in negative else 1, 1.)
                      for name, amount in raw.items() if amount > 0}
         physical_risk = event in ('throw', 'fall_risk')
         increases = {name: min(.10 if name == 'fear' and physical_risk else
@@ -441,7 +469,7 @@ class InteractionEmotions:
                 mood.occ_intensities[key] = max(0., current + amount)
         for name, rate in recovery.items():
             key = self._key(name)
-            mood.occ_intensities[key] *= math.exp(-rate * applied_dose)
+            mood.occ_intensities[key] *= math.exp(-rate * applied_dose * OCC_RESPONSE_GAIN)
         mood._event_valence_bias = max(-1., min(1., mood._event_valence_bias + valence * applied_dose))
         mood._event_arousal_bias = max(-1., min(1., mood._event_arousal_bias + arousal * applied_dose))
         if (mood.occ_intensities == state['occ'] and
@@ -517,7 +545,7 @@ class InteractionEmotions:
                 novelty=.2 if label == 'surprise' else 0.)
         factor = _number(factor, .25, 2., 1.)
         dose = quality * maintenance * repeat * factor * appraisal['multiplier']
-        requested = {name: max(-.04, min(.04, value * dose)) for name, value in raw.items()}
+        requested = {name: max(-.04, min(.04, value * dose * OCC_RESPONSE_GAIN)) for name, value in raw.items()}
         total = sum(abs(value) for value in requested.values())
         if total > .06:
             requested = {name: value * .06 / total for name, value in requested.items()}

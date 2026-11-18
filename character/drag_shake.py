@@ -5,7 +5,7 @@ from collections import deque
 class DragShakeDetector:
     WINDOW_SECONDS = 1.4
     COOLDOWN_SECONDS = 1.8
-    MIN_SPEED = 350.
+    MIN_SPEED = 320.
 
     def __init__(self, min_travel=28.):
         self.min_travel = max(24., float(min_travel))
