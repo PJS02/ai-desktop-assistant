@@ -5,7 +5,7 @@ from html import escape
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFrame, QGraphicsScene, QGraphicsView, QGridLayout,
-    QHBoxLayout, QLabel, QSizePolicy, QTextBrowser, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QProgressBar, QSizePolicy, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from .memory_view import MemoryView
@@ -59,6 +59,11 @@ class CharacterStatusWindow(QDialog):
             QLabel#statusMeta { color: #516278; font-size: 12px; }
             QLabel#statusValue { color: #203a54; font-size: 19px; font-weight: 700; }
             QWidget#occStrength QLabel { color: #245885; font-weight: 700; }
+            QProgressBar#occGauge {
+                background: #edf3f9; border: 1px solid #cddbec; border-radius: 4px;
+                text-align: center; min-height: 16px; font-size: 12px;
+            }
+            QProgressBar#occGauge::chunk { background: #a9cbee; border-radius: 3px; }
             QFrame#statusSummary { background: #f2f6fb; border-radius: 7px; }
             QTextBrowser {
                 background: white; border: 1px solid #d6e0ea; border-radius: 7px;
@@ -153,14 +158,16 @@ class EmotionStatusWindow(CharacterStatusWindow):
         components.setHorizontalSpacing(12)
         components.setVerticalSpacing(5)
         components.addWidget(QLabel('현재 OCC 성분 강도', objectName='statusHeading'), 0, 0, 1, 4)
-        self.occ_values = {}
+        self.occ_gauges = {}
         for index, (key, name) in enumerate(OCC_EMOTION_NAMES.items()):
             row, column = divmod(index, 2)
-            value = QLabel(accessibleName=name, alignment=Qt.AlignmentFlag.AlignRight)
+            gauge = QProgressBar(objectName='occGauge', accessibleName=f'{name} 강도')
+            gauge.setRange(0, 10_000)
+            gauge.setValue(0)
             components.addWidget(QLabel(name), row + 1, column * 2)
-            components.addWidget(value, row + 1, column * 2 + 1)
+            components.addWidget(gauge, row + 1, column * 2 + 1)
             components.setColumnStretch(column * 2 + 1, 1)
-            self.occ_values[key] = value
+            self.occ_gauges[key] = gauge
         left.addWidget(occ_panel)
 
         right.addWidget(QLabel('감정 변화 로그', objectName='statusHeading'))
@@ -192,7 +199,10 @@ class EmotionStatusWindow(CharacterStatusWindow):
         for label, value in zip(self.values, (name, f'{valence:+.3f}', f'{arousal:+.3f}')):
             label.setText(value)
         for component in state['occ_components']:
-            self.occ_values[component['name']].setText(f"{component['value']:.2%}")
+            gauge = self.occ_gauges[component['name']]
+            strength = component['value']
+            gauge.setValue(round(strength * gauge.maximum()))
+            gauge.setFormat(f'{strength:.2%}')
         popups = tuple(self.overlay.history)[:self.HISTORY_LIMIT]
         if popups == self._displayed:
             return

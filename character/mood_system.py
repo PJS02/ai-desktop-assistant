@@ -717,13 +717,16 @@ class MoodSystem:
             log_event('mood.influence', '감정 사건을 평가했습니다.', category='캐릭터 상태',
                       trace_id=self._last_influence_trace_id, **data)
 
+        if category in ('manual', 'recovery'):
+            return
+
         # A continuous input can merge into the history item. Report only this step.
-        if occ_changes and category != "recovery" and self._on_occ_change is not None:
+        if occ_changes and self._on_occ_change is not None:
             self._on_occ_change(source, occ_changes)
         arousal_change = inputs.get('arousal_change', 0.)
-        if arousal_change and category != 'recovery' and self._on_arousal_change is not None:
+        if arousal_change and self._on_arousal_change is not None:
             self._on_arousal_change(source, arousal_change)
-        if category != 'recovery' and self._on_popup_coordinates is not None:
+        if self._on_popup_coordinates is not None:
             names = tuple(occ_changes) + (('arousal',) if arousal_change else ())
             if names:
                 self._on_popup_coordinates(source, names, target_changes["valence"],
