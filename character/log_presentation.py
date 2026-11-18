@@ -14,11 +14,13 @@ from app_logging import LogEvent, sanitize
 from .mood_system import OCC_EMOTION_NAMES
 
 
+SCREEN_PRIVACY_TOPIC = 'OCR·마스킹'
+
 CATEGORY_TABS = {
     '전체': ('통합', '원본'),
     '사용자 인식': ('통합', '음성', '감정·동작·주의', '장치·연결', '원본'),
     '캐릭터 상태': ('통합', '감정', '상호작용·게임', '이동·표면', '원본'),
-    '대화·AI': ('통합', '대화 흐름', '요청·응답 전문', '음성 출력', '원본'),
+    '대화·AI': ('통합', '대화 흐름', '요청·응답 전문', SCREEN_PRIVACY_TOPIC, '음성 출력', '원본'),
     '시스템': ('통합', '시작·종료', '설정', '렌더·파일', '원본'),
     '오류': ('통합', '오류', '경고', '원본'),
 }
@@ -92,6 +94,7 @@ _LABELS = {
     'warmup_seconds': '준비 시간(초)', 'cooldown_seconds': '휴식 시간(초)',
     'changed_fields': '변경 항목', 'fields': '변경 항목', 'patch': '요청 설정',
     'values': '설정값', 'section': '설정 분류', 'applied_sections': '적용한 설정 분류',
+    'ocr_lines': 'OCR 인식 줄 수', 'masked_regions': '가린 영역 수', 'screen_image_id': '보관 이미지 ID',
     'runtime_status': '실행 반영 상태', 'runtime_applied': '실행 반영 여부',
     'runtime_configured': '실행 설정 반영 여부', 'result_message': '처리 결과 안내',
     'previous_status': '이전 요청 상태', 'late': '늦은 응답 여부', 'ok': '성공 여부',
@@ -206,6 +209,8 @@ _ACTIONS = {
     'gemini.connection_failed': 'Gemini 연결 실패', 'gemini.retry_scheduled': 'Gemini 재시도 예약',
     'gemini.text_extracted': 'Gemini 대사 추출', 'gemini.empty_response': 'Gemini 응답 내용 없음',
     'gemini.failed': 'Gemini 응답 처리 실패', 'gemini.skipped': 'Gemini 호출 생략',
+    'screen.history.save_failed': '마스킹 이미지 저장 실패',
+    'privacy.processing_failed': '화면 개인정보 보호 단계 실패',
     'gemini.screen_redacted': '화면 개인정보 마스킹 완료', 'gemini.privacy_blocked': '화면 개인정보 보호 실패·전송 차단',
     'tts.requested': '음성 합성 요청', 'tts.skipped': '음성 출력 생략',
     'tts.model_loading': '음성 모델 로딩', 'tts.model_ready': '음성 모델 준비',
@@ -288,7 +293,7 @@ def _domain(event: str, category: str, data: dict, message: str) -> str:
     source = data.get('source_category')
     if source in CATEGORY_TABS and source not in ('전체', '오류'):
         return source
-    if event.startswith(('dialogue.', 'gemini.', 'tts.')):
+    if event.startswith(('dialogue.', 'gemini.', 'tts.', 'screen.', 'privacy.')):
         return '대화·AI'
     if event.startswith(('perception.', 'stt.', 'transport.', 'recognition.')):
         return '사용자 인식'
@@ -320,6 +325,8 @@ def _topic(event: str, domain: str, message: str, data: dict, level: str) -> str
             return '상호작용·게임'
         return '이동·표면'
     if domain == '대화·AI':
+        if event.startswith(('screen.', 'privacy.')) or event in ('gemini.screen_redacted', 'gemini.privacy_blocked'):
+            return SCREEN_PRIVACY_TOPIC
         if event.startswith('tts.') or event == 'dialogue.tts_requested':
             return '음성 출력'
         if event.startswith('gemini.') or any(key in data for key in ('prompt', 'raw_response')):
@@ -450,7 +457,10 @@ def _settings_summary(data: dict) -> list[str]:
 
 def _summary(event: str, message: str, data: dict) -> str:
     parts: list[str] = []
-    if event.startswith('gemini.'):
+    if event == 'gemini.screen_redacted':
+        parts += [_field(data, 'ocr_lines', 'OCR 인식 줄 수'), _field(data, 'masked_regions', '가린 영역 수'),
+                  _duration(data)]
+    elif event.startswith('gemini.'):
         for key in ('status', 'attempt', 'next_attempt', 'delay_seconds', 'model'):
             label = 'HTTP' if key == 'status' else None
             parts.append(_field(data, key, label))

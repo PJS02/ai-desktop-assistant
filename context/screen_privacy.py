@@ -151,13 +151,13 @@ def try_read_screen_text(capture):
         _lock.release()
 
 
-def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None):
+def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None, summary=None):
     """Return a masked RGB image and scrubbed request text, or raise safely.
 
     Models are initialized lazily and serialized across request threads. Paddle
     runs in a child process so CPU inference cannot hold the GUI's GIL.
-    No images/text are saved.
-    Optional preview diagnostics stay in caller-owned memory and are never logged.
+    This function does not write to disk. Preview diagnostics can contain raw text.
+    The optional summary provides counts for logging without OCR text.
     """
     global _ocr
     stage = 'imports'
@@ -283,8 +283,11 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
             for left, top, right, bottom in masked:
                 cv2.rectangle(pixels, (left, top), (right, bottom), (0, 0, 0), thickness=-1)
             stage = 'prompt_redaction'
-            return (Image.fromarray(pixels), _redact_text(prompt, known_values),
-                    _redact_text(system_instruction, known_values) if system_instruction else system_instruction)
+            result = (Image.fromarray(pixels), _redact_text(prompt, known_values),
+                      _redact_text(system_instruction, known_values) if system_instruction else system_instruction)
+            if summary is not None:
+                summary.update(ocr_lines=len(lines), masked_regions=len(masked))
+            return result
     except Exception as error:
         # Exception messages from OCR can contain input data; never expose them.
         from app_logging import log_event

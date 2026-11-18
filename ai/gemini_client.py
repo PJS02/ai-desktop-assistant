@@ -13,6 +13,7 @@ from PyQt6.QtCore import QDateTime
 
 from app_logging import log_event, new_trace_id, register_secret
 from app_paths import USER_DATA_ROOT
+from context import screen_history
 from context.screen_privacy import ScreenPrivacyError, redact_screen
 from .gemini_usage import record_attempt
 
@@ -97,6 +98,7 @@ def save_gemini_config(api_key, model, *, automatic_model=None, screen_privacy_e
                 raise ValueError("화면 개인정보 마스킹 설정은 켬 또는 끔이어야 합니다.")
             config["screen_privacy_enabled"] = screen_privacy_enabled
         _write_config(config)
+        screen_history.set_enabled(is_screen_privacy_enabled(config))
         log_event("settings.ai.saved", "AI 공통 설정 저장", trace_id=trace_id,
                   path=str(CONFIG_PATH), model=model, automatic_model=config.get("automatic_model", ""),
                   api_key_present=bool(api_key))
@@ -168,14 +170,25 @@ def request_gemini(
     unmasked_screen = (image is not None and not is_screen_privacy_enabled(config)
                        and _allows_unmasked_screen())
     if image is not None and not unmasked_screen:
+        generation = screen_history.capture_generation() if is_screen_privacy_enabled(config) else None
+        started = time.monotonic()
+        summary = {}
         try:
-            image, prompt, system_instruction = redact_screen(image, prompt, system_instruction)
+            image, prompt, system_instruction = redact_screen(image, prompt, system_instruction, summary=summary)
         except ScreenPrivacyError:
             log_event("gemini.privacy_blocked", "화면 개인정보 보호 실패로 요청 차단", category="대화·AI",
                       level="ERROR", trace_id=trace_id, source=context.get("source"))
             return "[gemini error] 화면 개인정보 보호 처리 실패: 요청을 전송하지 않았습니다."
+        elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+        try:
+            image_id = screen_history.save(image, generation)
+        except OSError as error:
+            image_id = None
+            log_event("screen.history.save_failed", "마스킹 이미지 저장 실패", category="대화·AI",
+                      level="WARNING", trace_id=trace_id, error_type=type(error).__name__)
         log_event("gemini.screen_redacted", "활성 창 개인정보 마스킹 완료", category="대화·AI",
-                  trace_id=trace_id, width=image.width, height=image.height)
+                  trace_id=trace_id, width=image.width, height=image.height,
+                  elapsed_ms=elapsed_ms, screen_image_id=image_id, **summary)
 
     if expired():
         return '[gemini error] request deadline exceeded'

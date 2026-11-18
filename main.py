@@ -353,6 +353,7 @@ def main():
     from hand_overlay.controller import HandOverlayController
     from hand_overlay.interaction_host import HandInteractionController
     from character.log_console import AppLogManager, LogWindow
+    from context import screen_history
     log_manager = AppLogManager()
     log_manager.install_capture()
     log_event('application.qt_ready', 'Qt 앱 준비 완료')
@@ -379,6 +380,8 @@ def main():
         on_rps_command=mediapipe_manager.send_game_command,
         character_options=load_character_options(),
     )
+    screen_history.set_enabled(is_screen_privacy_enabled(character.gemini_config))
+    log_window.sync_screen_privacy()
     character._startup_choice_pending = True
     character.preparation_status = preparation
     preparation.configure_hands(load_hand_overlay_options()['enabled'])
