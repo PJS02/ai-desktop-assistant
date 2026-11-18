@@ -20,23 +20,38 @@ def covered_fraction(body, window):
     return overlap.width() * overlap.height() / area if area > 0 and not overlap.isEmpty() else 0.
 
 
+def _regular_app_window(hwnd):
+    widget = QWidget.find(hwnd)
+    if widget is None or widget.windowType() not in (
+            Qt.WindowType.Window, Qt.WindowType.Dialog, Qt.WindowType.Tool):
+        return False
+    overlay_flags = (Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus
+                     | Qt.WindowType.WindowTransparentForInput)
+    return not (widget.windowFlags() & overlay_flags)
+
+
 def foreground_window():
     """Only inspect the user's foreground window; never activate or alter it."""
     if os.name != 'nt':
         return None
+    import win32con
     import win32gui
     import win32process
     try:
         hwnd = win32gui.GetForegroundWindow()
         if not hwnd or not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
             return None
-        if win32process.GetWindowThreadProcessId(hwnd)[1] == os.getpid():
+        own_process = win32process.GetWindowThreadProcessId(hwnd)[1] == os.getpid()
+        if own_process and not _regular_app_window(hwnd):
             return None
         if win32gui.GetClassName(hwnd) in {'Shell_TrayWnd', 'Shell_SecondaryTrayWnd', 'Progman', 'WorkerW'}:
             return None
-        # Transparent/layered overlays aren't evidence of opaque window coverage.
+        style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
         if (not win32gui.GetWindowText(hwnd).strip() or _window_is_cloaked(hwnd)
-                or win32gui.GetWindowLong(hwnd, -20) & (0x20 | 0x80000)):
+                or style & win32con.WS_EX_TRANSPARENT):
+            return None
+        # The app's regular chat window uses per-pixel alpha for its rounded edges.
+        if not own_process and style & win32con.WS_EX_LAYERED:
             return None
         x, y, right, bottom = win32gui.GetWindowRect(hwnd)
         window = logical_window(SimpleNamespace(_hWnd=hwnd, left=x, top=y, width=right-x, height=bottom-y))

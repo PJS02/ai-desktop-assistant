@@ -102,6 +102,7 @@ class SettingsDialog(QDialog):
         local['igdb'] = normalize_igdb_config(local.get('igdb'))
         self.setWindowTitle('설정')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.resize(700, 640)
         self.setMinimumSize(520, 430)
         self.local_baseline = deepcopy(local)

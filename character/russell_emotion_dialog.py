@@ -390,9 +390,8 @@ class RussellEmotionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Russell 감정 판단 근거 · Explainable Emotion AI")
         self.setFont(QFont("Malgun Gothic", 9))
-        self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setWindowModality(Qt.WindowModality.NonModal)
 
         self._state_provider = None

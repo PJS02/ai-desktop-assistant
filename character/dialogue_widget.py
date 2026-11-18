@@ -473,8 +473,7 @@ class DialogueInputWidget(QWidget):
         icons = Path(__file__).resolve().parent.parent / 'assets/ui'
         self._retry_icon = QIcon(str(icons / 'chat_retry.svg'))
         self._speaker_icon = QIcon(str(icons / 'chat_speaker.svg'))
-        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                            | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle('채팅하기')
         self.setMinimumSize(300, 250)

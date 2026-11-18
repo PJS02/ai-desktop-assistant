@@ -80,7 +80,7 @@ class SettingsController(QObject):
         local['igdb'] = load_igdb_config()
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
-        self.dialog = SettingsDialog(local, self.character,
+        self.dialog = SettingsDialog(local, None,
                                      long_term_memory=self.character.dialogue_system.long_term_memory)
         self.dialog.dialogue_generation_requested.connect(self._generate_dialogue)
         self.dialog.manual_dialogue_requested.connect(self._show_manual_dialogue)

@@ -44,8 +44,8 @@ class _StatusContentView(QGraphicsView):
 
 class CharacterStatusWindow(QDialog):
     def __init__(self, character, title, *, layout_width, layout_height):
-        super().__init__(character, Qt.WindowType.Tool | Qt.WindowType.WindowCloseButtonHint
-                         | Qt.WindowType.WindowStaysOnTopHint)
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.WindowCloseButtonHint)
+        self._character = character
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setWindowTitle(title)
         self.setMinimumSize(round(layout_width * .55), round(layout_height * .55))
@@ -93,7 +93,7 @@ class CharacterStatusWindow(QDialog):
         super().hideEvent(event)
 
     def open_beside_character(self, avoid=None):
-        character = self.parentWidget()
+        character = self._character
         if not self.isVisible():
             body = character._physics_body_rect().translated(character.pos())
             screen = QApplication.screenAt(body.center()) or character.screen()

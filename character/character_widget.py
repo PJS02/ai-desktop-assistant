@@ -954,7 +954,7 @@ class CharacterWidget(QLabel):
         CharacterWidget._cancel_pointer_input(self)
         if getattr(self, 'action_menu', None) is not None:
             self.action_menu.dismiss('shutdown')
-        for name in ('_emotion_status', '_memory_status'):
+        for name in ('_emotion_status', '_memory_status', 'russell_dialog'):
             window = getattr(self, name, None)
             if window is not None:
                 window.close()
@@ -2834,7 +2834,7 @@ class CharacterWidget(QLabel):
         """Russell 감정 상태 다이얼로그 표시"""
         print("[show_russell_dialog] called")
         if self.russell_dialog is None:
-            self.russell_dialog = RussellEmotionDialog(self)
+            self.russell_dialog = RussellEmotionDialog(None)
             if hasattr(self.mood_system, "clear_manual_russell_state"):
                 self.russell_dialog.closed.connect(
                     self.mood_system.clear_manual_russell_state
