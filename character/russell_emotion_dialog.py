@@ -30,6 +30,75 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics, QPainterPat
 from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 
 
+class OccIntensityBar(QProgressBar):
+    intensity_requested = pyqtSignal(int)
+
+    def __init__(self, name):
+        super().__init__()
+        self.setRange(0, 100)
+        self.setValue(0)
+        self.setAccessibleName(name)
+        self._editable = False
+        self._dragging = False
+
+    def set_editable(self, editable):
+        self._editable = editable
+        self._dragging = False
+        if editable:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        else:
+            self.unsetCursor()
+            self.clearFocus()
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def _request_value(self, value):
+        value = max(self.minimum(), min(self.maximum(), value))
+        if value != self.value():
+            self.setValue(value)
+            self.intensity_requested.emit(value)
+
+    def _request_position(self, x):
+        fraction = x / max(1, self.width() - 1)
+        self._request_value(round(100 * fraction))
+
+    def mousePressEvent(self, event):
+        if self._editable and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._request_position(event.position().x())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging and event.buttons() & Qt.MouseButton.LeftButton:
+            self._request_position(event.position().x())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self._request_position(event.position().x())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        values = {
+            Qt.Key.Key_Left: self.value() - 1,
+            Qt.Key.Key_Right: self.value() + 1,
+            Qt.Key.Key_Home: self.minimum(),
+            Qt.Key.Key_End: self.maximum(),
+        }
+        if self._editable and event.key() in values:
+            self._request_value(values[event.key()])
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class RussellEmotionCanvas(QWidget):
     state_changed = pyqtSignal(float, float, str)
     RING_LABELS = tuple(
@@ -398,6 +467,10 @@ class RussellEmotionDialog(QDialog):
 
         self._state_provider = None
         self._manual_control_callback = None
+        self._manual_mode_callback = None
+        self._manual_occ_callback = None
+        self._manual_mode = False
+        self._automatic_history_samples = []
         self._explanation_provider = None
         self._influence_paused = False
         self._latest_events = []
@@ -444,7 +517,14 @@ class RussellEmotionDialog(QDialog):
         self.history_canvas = RussellHistoryCanvas(self)
         self.canvas.state_changed.connect(self._on_canvas_state_changed)
 
+        self.manual_mode_button = QPushButton("촬영용 감정 조작 시작")
+        self.manual_mode_button.setCheckable(True)
+        self.manual_mode_button.setAutoDefault(False)
+        self.manual_mode_button.setEnabled(False)
+        self.manual_mode_button.clicked.connect(self._request_manual_mode)
+
         left_layout = QVBoxLayout()
+        left_layout.addWidget(self.manual_mode_button)
         left_layout.addWidget(self.value_label)
         left_layout.addWidget(self.target_label)
         left_layout.addWidget(self.canvas, 1)
@@ -558,21 +638,19 @@ class RussellEmotionDialog(QDialog):
         occ_group = QGroupBox("현재 활성 OCC 성분")
         occ_layout = QGridLayout()
         occ_group.setTitle("누적 OCC 성분 강도")
-        occ_hint = QLabel("성분은 서로 독립된 누적 강도이며, 확률이나 합계 비율이 아닙니다.")
-        occ_hint.setWordWrap(True)
-        occ_hint.setStyleSheet("color: #687386; font-weight: normal;")
-        occ_layout.addWidget(occ_hint, 0, 0, 1, 2)
+        self.occ_hint = QLabel("성분은 서로 독립된 누적 강도이며, 확률이나 합계 비율이 아닙니다.")
+        self.occ_hint.setWordWrap(True)
+        self.occ_hint.setStyleSheet("color: #687386; font-weight: normal;")
+        occ_layout.addWidget(self.occ_hint, 0, 0, 1, 2)
         self.occ_row_names = list(self.OCC_NAMES)
         for index, name in enumerate(self.occ_row_names):
             row = QHBoxLayout()
             label = QLabel(self.OCC_NAMES[name])
             label.setFixedWidth(60)
-            bar = QProgressBar()
-            bar.setRange(0, 100)
-            bar.setValue(0)
-            bar.setTextVisible(True)
+            bar = OccIntensityBar(f"{self.OCC_NAMES[name]} 강도")
+            bar.intensity_requested.connect(lambda value, component=name: self._request_manual_occ(component, value))
             row.addWidget(label)
-            row.addWidget(bar)
+            row.addWidget(bar, 1)
             occ_layout.addLayout(row, index // 2 + 1, index % 2)
             self.occ_rows.append((label, bar))
         occ_group.setLayout(occ_layout)
@@ -632,6 +710,7 @@ class RussellEmotionDialog(QDialog):
                                    border-bottom: 1px solid #d9dfe9; padding: 6px; font-weight: 700; }
             QProgressBar { border: 1px solid #d6dce7; border-radius: 5px; text-align: center;
                            color: #202124; background: #edf0f5; min-height: 17px; }
+            QProgressBar:focus { border-color: #4667a8; }
             QProgressBar::chunk { background: #5b8def; border-radius: 4px; }
             QPushButton { background: white; color: #263b69; border: 1px solid #c8d9ff;
                           border-radius: 6px; padding: 7px 14px; }
@@ -643,6 +722,19 @@ class RussellEmotionDialog(QDialog):
 
     def set_state_change_callback(self, callback):
         self._manual_control_callback = callback
+
+    def set_manual_mode_callbacks(self, mode_callback, occ_callback):
+        self._manual_mode_callback = mode_callback
+        self._manual_occ_callback = occ_callback
+        self.manual_mode_button.setEnabled(True)
+
+    def _request_manual_mode(self, enabled):
+        if self._manual_mode_callback is not None:
+            self._manual_mode_callback(enabled)
+
+    def _request_manual_occ(self, component, value):
+        if self._manual_mode and self._manual_occ_callback is not None:
+            self._manual_occ_callback(component, value / 100)
 
     def set_live_mode(self):
         self._refresh_from_provider()
@@ -664,12 +756,32 @@ class RussellEmotionDialog(QDialog):
         )
 
     def _on_canvas_state_changed(self, valence: float, arousal: float, dominant: str) -> None:
-        self.update_state(valence, arousal, dominant)
         if self._manual_control_callback is not None:
             self._manual_control_callback(valence, arousal, dominant)
+        self.update_state(valence, arousal, dominant)
 
     def update_explanation(self, snapshot: dict) -> None:
         """MoodSystem의 설명 스냅샷을 분석 패널 전체에 반영한다."""
+        manual_mode = snapshot.get("manual_emotion_active", False)
+        mode_changed = manual_mode != self._manual_mode
+        if mode_changed:
+            if manual_mode:
+                self._automatic_history_samples = self.history_canvas.samples
+                self.history_canvas.samples = []
+            else:
+                self.history_canvas.samples = self._automatic_history_samples
+                self._automatic_history_samples = []
+            self._manual_mode = manual_mode
+            self.occ_hint.setText(
+                "강도 막대를 클릭하거나 좌우로 드래그해 조정하세요."
+                if manual_mode else "성분은 서로 독립된 누적 강도이며, 확률이나 합계 비율이 아닙니다."
+            )
+            for _, bar in self.occ_rows:
+                bar.set_editable(manual_mode)
+            self.manual_mode_button.setChecked(manual_mode)
+            self.manual_mode_button.setText(
+                "촬영 중 · 자동 감정 재개" if manual_mode else "촬영용 감정 조작 시작"
+            )
         self._latest_events = deepcopy(snapshot.get("recent_events", []))
         self.update_state(
             snapshot.get("valence", 0.0),
@@ -700,7 +812,7 @@ class RussellEmotionDialog(QDialog):
         else:
             self.change_label.setText("아직 기록된 감정 사건이 없습니다. 캐릭터와 상호작용해 보세요.")
 
-        if not self._influence_paused:
+        if mode_changed or not self._influence_paused:
             self._render_influence_events(self._latest_events)
 
         personality = snapshot.get("personality", {})
@@ -735,7 +847,6 @@ class RussellEmotionDialog(QDialog):
             value = float(component.get("value", 0.0))
             label.setText(self.OCC_NAMES.get(name, name or "-"))
             bar.setValue(int(round(value * 100)))
-            bar.setFormat(f"{value * 100:.0f}%")
             bar.setToolTip(f"실제 성분 강도 {value:.6f} ({value * 100:.4f}%)")
         history = snapshot.get("history", {})
         self.history_status_label.setText(

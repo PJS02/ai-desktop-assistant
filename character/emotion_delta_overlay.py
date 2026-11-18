@@ -29,6 +29,7 @@ SOURCE_LABELS = {
     "안전하게 착지": "안전한 착지",
 }
 PRECISE_SOURCES = frozenset((*FACE_SOURCES.values(), *GESTURE_SOURCES.values()))
+DELTA_EPSILON = 1e-12
 
 
 @dataclass(frozen=True)
@@ -132,18 +133,18 @@ class EmotionDeltaOverlay(QWidget):
         self.hide()
 
     @staticmethod
-    def _display_scale(key):
+    def _threshold_scale(key):
         source, emotion = key
-        return 10000 if source in PRECISE_SOURCES or emotion == 'arousal' else 100
+        return 10_000 if source in PRECISE_SOURCES or emotion == 'arousal' else 1_000
 
     @staticmethod
     def _meets_threshold(delta, scale):
-        return abs(delta) >= 1 / scale - 1e-12
+        return abs(delta) >= 1 / scale - DELTA_EPSILON
 
     def _discard_stale_fragment(self, key, now):
         # Keep displayable changes queued even if an earlier popup takes several seconds.
         if (now - self._pending_at.get(key, now) > 4.0
-                and not self._meets_threshold(self._pending[key], self._display_scale(key))):
+                and not self._meets_threshold(self._pending[key], self._threshold_scale(key))):
             del self._pending[key]
             del self._pending_at[key]
             self._pending_coordinates.pop(key, None)
@@ -159,15 +160,14 @@ class EmotionDeltaOverlay(QWidget):
             self._discard_stale_fragment(key, now)
         ranked = []
         for key, delta in self._pending.items():
-            # Confirmed recognition events can be smaller than one display point.
-            scale = self._display_scale(key)
+            scale = self._threshold_scale(key)
             if self._meets_threshold(delta, scale):
                 ranked.append((key, delta, scale))
         ranked.sort(key=lambda entry: abs(entry[1]), reverse=True)
         lines = []
         for (source, emotion), delta, scale in ranked[:2]:
-            points = (round(delta * 100, 2) if scale == 10000 else
-                      math.trunc(delta * 100 + math.copysign(1e-9, delta)))
+            points = (round(delta * 100, 2) if scale == 10_000 else
+                      math.trunc((delta + math.copysign(DELTA_EPSILON, delta)) * 10_000) / 100)
             lines.append((source, emotion, points))
             self._pending[source, emotion] -= points / 100
         if lines:

@@ -825,7 +825,6 @@ class CharacterWidget(QLabel):
                          or getattr(self, '_hand_control_mode', None) in ('grab', 'palm')),
             'manual_motion': bool(manual_motion),
             'manual_face': bool(getattr(manual, 'display_emotion', None)),
-            'manual_emotion': self.mood_system._manual_russell_override,
             'game': any(getattr(getattr(self, name, None), 'is_active', False)
                         for name in ('rps_game', 'cham_game')),
             'sleeping': self.current_action == 'sleep' or self._automatic_pose == 'sleep',
@@ -895,7 +894,7 @@ class CharacterWidget(QLabel):
     def _request_user_greeting(self):
         self._greeting_log_context = {'trace_id': getattr(getattr(self, 'perception_controller', None), 'current_trace_id', None), 'source': 'greeting'}
         actor = self._perception_actor_state()
-        if any(actor[name] for name in ('closing', 'physical', 'manual_motion', 'manual_emotion', 'game')):
+        if any(actor[name] for name in ('closing', 'physical', 'manual_motion', 'game')):
             self._greeting_result = None
             return False
         self._pending_user_greeting_until = time.monotonic() + 5.0
@@ -911,7 +910,7 @@ class CharacterWidget(QLabel):
         if deadline is None:
             return False
         actor = self._perception_actor_state()
-        blocked = next((name for name in ('closing', 'physical', 'manual_motion', 'manual_emotion', 'game')
+        blocked = next((name for name in ('closing', 'physical', 'manual_motion', 'game')
                         if actor[name]), None)
         if blocked or time.monotonic() > deadline:
             self._pending_user_greeting_until = None
@@ -2840,10 +2839,7 @@ class CharacterWidget(QLabel):
         print("[show_russell_dialog] called")
         if self.russell_dialog is None:
             self.russell_dialog = RussellEmotionDialog(None)
-            if hasattr(self.mood_system, "clear_manual_russell_state"):
-                self.russell_dialog.closed.connect(
-                    self.mood_system.clear_manual_russell_state
-                )
+            self.russell_dialog.closed.connect(lambda: set_manual_mode(False, refresh=False))
 
         def state_provider():
             if hasattr(self.mood_system, "get_russell_state"):
@@ -2863,15 +2859,35 @@ class CharacterWidget(QLabel):
 
             return state["valence"], state["arousal"], dominant
 
-        def apply_manual_state(valence: float, arousal: float, dominant: str):
-            if hasattr(self.mood_system, "set_russell_state"):
-                self.mood_system.set_russell_state(valence, arousal, dominant)
-            elif hasattr(self.mood_system, "russell"):
-                self.mood_system.russell.valence = max(-1.0, min(1.0, float(valence)))
-                self.mood_system.russell.arousal = max(-1.0, min(1.0, float(arousal)))
+        def set_manual_mode(enabled, *, refresh=True):
+            mood = self.mood_system
+            if enabled:
+                if not mood.begin_manual_emotion():
+                    return False
+                if hasattr(self, '_last_character_interaction_time'):
+                    self._automatic_emotion_idle_age = self.get_character_idle_time()
+            else:
+                if not mood.clear_manual_russell_state():
+                    return False
+                idle_age = getattr(self, '_automatic_emotion_idle_age', None)
+                if idle_age is not None:
+                    self._last_character_interaction_time = time.monotonic() - idle_age
+                    self._automatic_emotion_idle_age = None
+            reactions = getattr(self, 'reactions', None)
+            if reactions is not None:
+                reactions.clear()
+            if not getattr(self, '_character_closing', False):
+                self.update_action(mood.decide_emotion())
+            if refresh and self.russell_dialog.isVisible():
+                self.russell_dialog.set_live_mode()
+            return True
 
-            mood = self.mood_system.decide_emotion()
-            self.update_action(mood)
+        def apply_manual_state(valence: float, arousal: float, dominant: str):
+            entered_manual_mode = set_manual_mode(True, refresh=False)
+            self.mood_system.set_russell_state(valence, arousal, dominant)
+            self.update_action(self.mood_system.decide_emotion())
+            if entered_manual_mode:
+                self.russell_dialog.set_live_mode()
 
             print(
                 f"[Russell 수동 조작] Valence={valence:+.2f}, Arousal={arousal:+.2f}, Emotion={dominant}"
@@ -2879,6 +2895,7 @@ class CharacterWidget(QLabel):
 
         self.russell_dialog.set_state_provider(state_provider)
         self.russell_dialog.set_state_change_callback(apply_manual_state)
+        self.russell_dialog.set_manual_mode_callbacks(set_manual_mode, self.mood_system.set_manual_occ)
         if hasattr(self.mood_system, "get_emotion_explanation"):
             self.russell_dialog.set_explanation_provider(
                 self.mood_system.get_emotion_explanation

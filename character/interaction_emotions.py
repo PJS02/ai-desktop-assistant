@@ -108,7 +108,8 @@ class InteractionEmotions:
     def apply(self, event, *, event_id=None, source=None, **context):
         if event.startswith('user_'):
             return self._apply_perception(event[5:], event_id=event_id, source=source, **context)
-        mood, now = self.mood, time.monotonic()
+        mood = self.mood
+        now = mood.emotion_time(time.monotonic())
         before = (mood.russell.valence, mood.russell.arousal)
         result = {'before': before, 'reaction': None, 'applied': False, 'dose': 0.}
         for name in ('strength', 'elapsed', 'speed', 'distance', 'control', 'impact_speed', 'contact_at', 'quality'):
@@ -479,13 +480,13 @@ class InteractionEmotions:
 
     def _apply_perception(self, signal, *, event_id=None, source=None, actor_state=None,
                           label=None, quality=1., maintenance=1., **context):
-        mood, now = self.mood, time.monotonic()
+        mood = self.mood
+        now = mood.emotion_time(time.monotonic())
         quality, maintenance = unit(quality), unit(maintenance)
         state = mood._capture_emotion_state()
         before = (mood.russell.valence, mood.russell.arousal)
         occ = {key.value: value for key, value in mood.occ_intensities.items()}
         actor = dict(actor_state or {})
-        actor['manual_emotion'] = bool(actor.get('manual_emotion') or mood._manual_russell_override)
         appraisal = appraise_perception(signal, occ, before, actor, label=label)
         appraisal['state_labels'] = state_labels(
             occ, before, unit(actor.get('rest', 0.)), self.perception_states,

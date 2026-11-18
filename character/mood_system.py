@@ -199,6 +199,8 @@ class MoodSystem:
         self._last_drag_displeasure_elapsed = 0.0
         self._last_hard_drag_at = 0.0
         self._manual_russell_override = False
+        self._automatic_state = None
+        self._paused_emotion_time = 0.0
         self._event_valence_bias = 0.0
         self._event_arousal_bias = 0.0
         self._target_valence = 0.0
@@ -279,7 +281,7 @@ class MoodSystem:
         """Evaluate a confirmed short click with the same contact limits."""
         result = self.on_interaction('tap')
         if result['applied']:
-            self._emotion_hold_until = max(self._emotion_hold_until, time.monotonic() + 4.)
+            self._emotion_hold_until = max(self._emotion_hold_until, self.emotion_time() + 4.)
         return result
 
     def on_positive_gesture(self, label: str, **context):
@@ -301,7 +303,7 @@ class MoodSystem:
         return update_label('contact_refusal', anger >= .65 and valence <= -.4,
                             anger > .5 and valence < -.25,
                             self.interactions.perception_states,
-                            self.interactions.perception_pending, time.monotonic())
+                            self.interactions.perception_pending, self.emotion_time())
 
     def on_idle(self):
         """캐릭터가 오래 방치되었을 때 - 무시당함"""
@@ -333,7 +335,7 @@ class MoodSystem:
 
     def on_drag_hard(self, *, return_result=False):
         """빠른 좌우 반복 흔들림에 반응한다. 단순 이동에서는 호출하지 않는다."""
-        now = time.monotonic()
+        now = self.emotion_time()
         if now - self._last_hard_drag_at < 1.8:
             return False
         self._last_hard_drag_at = now
@@ -594,7 +596,7 @@ class MoodSystem:
                 hold_seconds += 2.0
             self._emotion_hold_until = max(
                 self._emotion_hold_until,
-                time.monotonic() + hold_seconds,
+                self.emotion_time() + hold_seconds,
             )
         return result
 
@@ -834,8 +836,9 @@ class MoodSystem:
 
     def decay(self):
         """시간에 따른 감정 자연 감소"""
+        now = self.emotion_time()
         blocked = ('manual_override' if self._manual_russell_override else
-                   'emotion_hold' if time.monotonic() < self._emotion_hold_until else None)
+                   'emotion_hold' if now < self._emotion_hold_until else None)
         if blocked != self._decay_block_reason:
             log_event('mood.recovery.deferred' if blocked else 'mood.recovery.resumed',
                       '감정 자연 회복을 보류합니다.' if blocked else '감정 자연 회복을 재개합니다.',
@@ -845,7 +848,7 @@ class MoodSystem:
         if self._manual_russell_override:
             return
 
-        if time.monotonic() < self._emotion_hold_until:
+        if now < self._emotion_hold_until:
             return
 
         state_before = self._capture_emotion_state()
@@ -990,11 +993,56 @@ class MoodSystem:
             "arousal": self.russell.arousal
         }
 
+    def emotion_time(self, now=None) -> float:
+        """Elapsed-time checks ignore time spent in the manual session."""
+        return (time.monotonic() if now is None else now) - self._paused_emotion_time
+
+    @property
+    def manual_emotion_active(self) -> bool:
+        return self._automatic_state is not None
+
+    def begin_manual_emotion(self) -> bool:
+        if self.manual_emotion_active:
+            return False
+        started_at = time.monotonic()
+        automatic = self.__dict__
+        # Keep the live host and its callbacks attached to the same MoodSystem.
+        shared = (self, self.personality_system, self._on_occ_change,
+                  self._on_arousal_change, self._on_popup_coordinates)
+        memo = {id(value): value for value in shared}
+        memo[id(self._emotion_influences)] = deque(maxlen=self._emotion_influences.maxlen)
+        self.__dict__ = deepcopy(automatic, memo)
+        self._automatic_state = (automatic, started_at)
+        self._excluded_influence_count = 0
+        self._last_influence_trace_id = None
+        return True
+
+    def set_manual_occ(self, name: str, value: float) -> None:
+        key = OccEmotionToMood(name)
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("OCC intensity must be finite")
+        self.begin_manual_emotion()
+        state_before = self._capture_emotion_state()
+        self.occ_intensities[key] = unit(value)
+        self.interactions._sync_claims()
+        if not self._manual_russell_override:
+            self._update_russell_from_occ()
+        self._record_influence(
+            source="수동 OCC 성분 조정", category="manual", base_weight=0.0,
+            adjusted_weight=0.0, personality_multiplier=1.0, personality_factors=[],
+            before=(self.russell.valence, self.russell.arousal),
+            before_occ=state_before["occ"], state_before=state_before, weight_applied=False,
+            details=f"{OCC_EMOTION_NAMES[name]} {self.occ_intensities[key]:.0%}",
+            event_input={"component": name, "intensity": self.occ_intensities[key]},
+        )
+
     def set_russell_state(self, valence: float, arousal: float, dominant: Optional[str] = None) -> None:
         """Russell 좌표를 직접 설정한다.
 
         디버그 UI에서 감정을 직접 드래그해 조정할 때 사용한다.
         """
+        self.begin_manual_emotion()
         state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
@@ -1019,14 +1067,18 @@ class MoodSystem:
             event_input={"valence": float(valence), "arousal": float(arousal)},
         )
 
-    def clear_manual_russell_state(self) -> None:
-        """수동 Russell 조작을 종료하고 자동 감정 갱신을 재개한다."""
-        was_manual = self._manual_russell_override
-        self._manual_russell_override = False
-        if was_manual:
-            log_event('mood.manual.released', '수동 감정 좌표 조정을 종료했습니다.',
-                      category='캐릭터 상태', trace_id=self._last_influence_trace_id,
-                      state=self.get_russell_state(), final_emotion=self.decide_emotion())
+    def clear_manual_russell_state(self) -> bool:
+        """촬영에 사용한 상태를 버리고 중단했던 자동 상태를 재개한다."""
+        if not self.manual_emotion_active:
+            return False
+        automatic, started_at = self._automatic_state
+        trace = self._last_influence_trace_id
+        self.__dict__ = automatic
+        self._paused_emotion_time += time.monotonic() - started_at
+        log_event('mood.manual.released', '수동 감정 조작을 종료하고 자동 감정을 재개했습니다.',
+                  category='캐릭터 상태', trace_id=trace,
+                  state=self.get_russell_state(), final_emotion=self.decide_emotion())
+        return True
 
     def get_emotion_explanation(self, limit: int | None = None) -> dict:
         """UI가 바로 표시할 수 있는 현재 판단 근거 스냅샷을 반환한다."""
@@ -1070,6 +1122,7 @@ class MoodSystem:
             "arousal": self.russell.arousal,
             "latest_change": latest,
             "recent_events": recent_events,
+            "manual_emotion_active": self.manual_emotion_active,
             "personality": personality,
             "occ_components": occ_components,
             "recovery_percent": max(0, min(100, recovery_percent)),
@@ -1079,8 +1132,8 @@ class MoodSystem:
             "peak_occ_percent": int(round(peak_occ * 100.0)),
             "decay_status": {
                 "reason": "manual_override" if self._manual_russell_override else
-                          ("emotion_hold" if time.monotonic() < self._emotion_hold_until else "active"),
-                "remaining_seconds": max(0.0, self._emotion_hold_until - time.monotonic()),
+                          ("emotion_hold" if self.emotion_time() < self._emotion_hold_until else "active"),
+                "remaining_seconds": max(0.0, self._emotion_hold_until - self.emotion_time()),
             },
             "history": {"capacity": self._emotion_influences.maxlen,
                         "retained": len(self._emotion_influences), "shown": len(recent_events),
