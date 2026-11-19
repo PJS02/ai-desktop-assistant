@@ -705,7 +705,7 @@ class Renderer{
   }
   let companionDrop=0;
   if(options.highFive){
-   const art=root.CloudyHighFive,{time:clipTime,target}=options.highFive;
+   const art=root.CloudyHighFive,{time:clipTime,target,refusal}=options.highFive;
    const side=cfg.prefix==='left'?-1:cfg.prefix==='right'?1:0;
    pose=Object.assign({},pose,{idleGesture:0,airArms:1,thinkGesture:0,snackGesture:0,
     waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
@@ -714,15 +714,19 @@ class Renderer{
    art.jump.body(pose,clipTime,side,20);
    pose.exprExcited = excited;
    pose.framingZoom=1;
-   const frame=art.jump.layout(cfg,pose,clipTime,this.bodyPoint),reach=frame.reach;
-   const [x,y]=target;
-   const dip=Math.min(15,Math.max(0,y-300))*reach;
-   pose.bodyY+=dip;
-   this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
-    contact:point(-13.3*reach,11),
-    target:point(mix(frame.palm.x,x,reach),mix(frame.palm.y+dip,y,reach))};
-   this.aimHand(cfg,pose,1,this.highFiveGrip);
-   if(side>=0)companionDrop=49*frame.lift;
+   if(typeof refusal==='number'){
+    art.refuse(pose,refusal,side);
+   }else{
+    const frame=art.jump.layout(cfg,pose,clipTime,this.bodyPoint),reach=frame.reach;
+    const [x,y]=target;
+    const dip=Math.min(15,Math.max(0,y-300))*reach;
+    pose.bodyY+=dip;
+    this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
+     contact:point(-13.3*reach,11),
+     target:point(mix(frame.palm.x,x,reach),mix(frame.palm.y+dip,y,reach))};
+    this.aimHand(cfg,pose,1,this.highFiveGrip);
+    if(side>=0)companionDrop=49*frame.lift;
+   }
   }
   // Keep a fixed framing throughout each air-action cycle: the character must
   // not shrink and grow with jump height. Blend only when entering/leaving it.

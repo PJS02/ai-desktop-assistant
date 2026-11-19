@@ -17,7 +17,7 @@ _CONCERN = {'neutral', 'anxious', 'fear', 'scared', 'distressed', 'hurt', 'displ
 _PHYSICAL_EVENTS = {'throw', 'fall_risk', 'impact', 'safe_landing', 'drag_shake'}
 _DIRECT_INTERACTIONS = {'tap', 'pet', 'pet_refused', 'poke_start', 'poke_play', 'poke_discomfort',
                         'contact_ignored', 'palm', 'drag_start', 'drag_held', 'high_five',
-                        'files_returned', 'files_dropped'}
+                        'high_five_refused', 'files_returned', 'files_dropped'}
 
 
 def _strength(result):

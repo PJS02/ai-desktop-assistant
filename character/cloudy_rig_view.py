@@ -357,9 +357,9 @@ class CloudyRigView(QOpenGLWidget):
         self._contact_painter = callback
         self.update()
 
-    def set_high_five(self, clip_time=None, *, side=0, target=None):
+    def set_high_five(self, clip_time=None, *, side=0, target=None, refusal=None):
         self._high_five = None if clip_time is None else (65 * side, {
-            'time': clip_time, 'target': target,
+            'time': clip_time, 'target': target, 'refusal': refusal,
         })
         self.update()
 

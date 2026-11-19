@@ -7,7 +7,7 @@ from collections import OrderedDict, deque
 import math
 import time
 
-from .perception_affect import appraise_perception, contact_refusal_conditions, state_labels, unit
+from .perception_affect import appraise_perception, state_labels, unit
 from .russell_sectors import LOW_MOOD_EMOTIONS, MOOD_REFERENCES
 
 from app_logging import log_event
@@ -31,7 +31,7 @@ SOURCES = {
     'drag_start': '갑자기 들림', 'drag_held': '잡힌 상태가 이어짐',
     'drag_shake': '반복적인 캐릭터 흔들기',
     'high_five_ready': '하이파이브 기대', 'high_five': '하이파이브 접촉',
-    'high_five_cancel': '하이파이브 취소',
+    'high_five_refused': '하이파이브 거부', 'high_five_cancel': '하이파이브 취소',
     'hide_ready': '숨바꼭질 기대', 'hide_found': '숨바꼭질에서 발견됨',
     'hide_cancel': '숨바꼭질 취소',
     'window_covered': '창으로 행동이 가려짐', 'window_escaped': '창 뒤에서 벗어남',
@@ -142,9 +142,8 @@ class InteractionEmotions:
         claim = self.claims.get(session, {})
         surprise = risk = 0.
 
-        unwanted_contact = (
-            event in ('tap', 'high_five_ready', 'high_five')
-            and contact_refusal_conditions(mood_name, mood.occ_intensities[self._key('anger')])[0]
+        unwanted_contact = event == 'high_five_refused' or (
+            event in ('tap', 'high_five_ready', 'high_five') and mood.refuses_brief_contact()
         )
         if unwanted_contact:
             if event == 'high_five_ready':
@@ -153,12 +152,16 @@ class InteractionEmotions:
 
             raw = {'distress': .03, 'anger': .02}
             weight = 1.
-            if event == 'high_five':
+            if event == 'tap':
+                source = source or '원치 않는 클릭'
+                dose = self._dose('tap', weight, now)
+            else:
+                result['reaction'] = 'high_five_refused'
                 raw['hope'] = -claim.get('hope', 0.)
                 self.claims.pop(session, None)
                 weight = _number(context.get('quality'), default=1.)
-            source = source or ('원치 않는 하이파이브' if event == 'high_five' else '원치 않는 클릭')
-            dose = self._dose(event, weight, now)
+                source = source or SOURCES['high_five_refused']
+                dose = self._dose('high_five', weight, now)
             agency, valence, arousal = -.45, -.01, .025
             meaning = '분노가 높은 상태에서 접촉을 불편하게 받아들임'
         elif event == 'tap':

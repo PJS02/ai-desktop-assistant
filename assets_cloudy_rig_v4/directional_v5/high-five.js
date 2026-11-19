@@ -107,6 +107,16 @@
 
   const jump = {impactTime: jumpImpact, duration: 1.85, body: jumpBody, layout: jumpLayout};
 
+  function refuse(pose, progress, side) {
+    const amount = ease(progress / .16) * (1 - ease((progress - .64) / .36));
+    const away = side === 1 ? -1 : 1;
+    pose.bodyX += away * 9 * amount;
+    pose.lean += away * 11 * amount;
+    pose.headAngle += away * (4 + 9 * Math.sin(progress * 4 * Math.PI)) * amount;
+    pose.armNear -= 10 * amount;
+    pose.elbowNear += 22 * amount;
+  }
+
   function paintPalm(ctx, open) {
     const thumb = mix(-8.3, -12.1, open);
     const index = mix(-4.9, -7.2, open);
@@ -159,5 +169,5 @@
     ctx.restore();
   }
 
-  root.CloudyHighFive = {impactTime, duration, bounds, contact, textureName, body, layout, paintPalm, jump};
+  root.CloudyHighFive = {impactTime, duration, bounds, contact, textureName, body, layout, paintPalm, jump, refuse};
 })(window);

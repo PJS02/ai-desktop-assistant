@@ -13,6 +13,7 @@ from .renderer import closest_hand_point
 TAKEOFF_TIME = .46
 IMPACT_TIME = .76
 CLIP_DURATION = 1.85
+REFUSAL_SECONDS = .9
 
 
 def upright_palm(points):
@@ -54,6 +55,7 @@ class _Attempt:
     recovering: bool = False
     withdrawing: bool = False
     resolved: bool = False
+    refused_at: float | None = None
 
 
 class DesktopHighFive:
@@ -200,7 +202,7 @@ class DesktopHighFive:
     def _start(self, rig, track, side, contact, now):
         c = self.character
         session = new_trace_id('high-five')
-        self._attempt = _Attempt(rig, track, side, now, now, contact, now, session)
+        attempt = self._attempt = _Attempt(rig, track, side, now, now, contact, now, session)
         self._latched[track] = None
         self._candidate = None
         c._mark_character_interaction(wake=False)
@@ -213,14 +215,24 @@ class DesktopHighFive:
         c._rig_manual_action = 'high_five'
         c.is_flipped = side > 0
         c.sprite_animator.set_yaw(65 * side)
-        experience(c, 'high_five_ready', session=session, event_id=f'{session}:ready')
+        if c.mood_system.refuses_brief_contact():
+            self._refuse(attempt, now)
+        else:
+            experience(c, 'high_five_ready', session=session, event_id=f'{session}:ready')
 
-    def _resolve(self, attempt, *, contact=False):
+    def _resolve(self, attempt, event='high_five_cancel'):
         if attempt.resolved:
             return
         attempt.resolved = True
-        experience(self.character, 'high_five' if contact else 'high_five_cancel',
-                   session=attempt.session, event_id=f'{attempt.session}:outcome')
+        experience(self.character, event, session=attempt.session, event_id=f'{attempt.session}:outcome')
+
+    def _refuse(self, attempt, now):
+        c = self.character
+        attempt.refused_at = now
+        c.current_action = 'idle'
+        c.sprite_animator.play('idle')
+        attempt.rig.set_walk_rate(1.)
+        self._resolve(attempt, 'high_five_refused')
 
     def _advance(self, attempt, hand, stage, now):
         c = self.character
@@ -228,12 +240,24 @@ class DesktopHighFive:
         attempt.last_tick = now
         scale = stage.width() / 360
         route = None
-        if not (attempt.recovering or attempt.withdrawing) and hand is not None:
+        if attempt.refused_at is None and not (attempt.recovering or attempt.withdrawing) and hand is not None:
             route = self._route(stage, hand, attempt.side)
             if attempt.clip is not None and route and abs(route[1] - c.x()) > 20 * scale:
                 route = None  # The hand moved out of reach during the strike.
             if route:
                 attempt.target, attempt.last_seen = route[2], now
+                if not attempt.resolved and c.mood_system.refuses_brief_contact():
+                    self._refuse(attempt, now)
+
+        if attempt.refused_at is not None:
+            elapsed = now - attempt.refused_at
+            if elapsed >= REFUSAL_SECONDS:
+                self.cancel()
+            else:
+                # Preserve the rest of the jump if the refusal starts after takeoff.
+                flight = attempt.clip + elapsed if (attempt.clip or 0.) >= TAKEOFF_TIME else 0.
+                attempt.rig.set_high_five(flight, side=attempt.side, refusal=elapsed / REFUSAL_SECONDS)
+            return
 
         if attempt.clip is None:
             if now - attempt.started > 2.1 or now - attempt.last_seen > .20:
@@ -281,7 +305,7 @@ class DesktopHighFive:
             contact = drawn.x() + origin_x, drawn.y() + origin_y
             if math.dist(contact, attempt.target) <= max(5., 10 * scale):
                 attempt.recovering = True
-                self._resolve(attempt, contact=True)
+                self._resolve(attempt, 'high_five')
                 self.actions.feedback.pulse('high_five', attempt.target)
                 log_event('hand_interaction.high_five', '바탕화면 손과 하이파이브',
                           category='캐릭터 상태')

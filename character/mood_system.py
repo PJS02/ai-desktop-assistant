@@ -297,6 +297,11 @@ class MoodSystem:
                                      source=source, event_id=event_id)
         return result if return_result else result['dose']
 
+    def refuses_brief_contact(self) -> bool:
+        anger = self.occ_intensities[OccEmotionToMood.ANGER]
+        enter, _ = contact_refusal_conditions(self.get_display_emotion(), anger)
+        return enter
+
     def should_refuse_pet(self) -> bool:
         """Sustained hostility can refuse contact; fear alone accepts comfort."""
         anger = self.occ_intensities[OccEmotionToMood.ANGER]
