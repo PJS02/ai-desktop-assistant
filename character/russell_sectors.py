@@ -23,6 +23,19 @@ SECTORS = (
 )
 SECTOR_ANGLE = 360 / len(SECTORS)
 SECTOR_NAMES = {**dict(SECTORS), "neutral": "중립"}
+SECTOR_DIRECTIONS = {
+    name: (math.cos(math.radians(index * SECTOR_ANGLE)),
+           math.sin(math.radians(index * SECTOR_ANGLE)))
+    for index, (name, _) in enumerate(SECTORS)
+}
+# A sector has one reference point regardless of the input position inside it.
+MOOD_REFERENCES = {
+    "neutral": (0., 0.),
+    **{name: (.5 * x, .5 * y) for name, (x, y) in SECTOR_DIRECTIONS.items()},
+}
+LOW_MOOD_EMOTIONS = frozenset({"anxious", "hurt", "distressed", "displeased", "sad", "depressed", "tired"})
+CONTACT_REFUSAL_MOODS = LOW_MOOD_EMOTIONS - {"anxious", "tired"}
+
 # Include the mood system's resting arousal of -0.30 in the neutral center.
 NEUTRAL_RADIUS = 0.30
 

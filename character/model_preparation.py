@@ -15,6 +15,8 @@ class ModelPreparation:
         self._memory_pending = True
         self._screen_enabled = bool(screen_enabled)
         self._screen_pending = self._screen_enabled
+        self._screen_failed = False
+        self._screen_retry = False
         log_event('screen.models.configuration', '화면 분석 사전 준비 설정',
                   category='대화·AI', enabled=self._screen_enabled)
 
@@ -33,10 +35,21 @@ class ModelPreparation:
                 return
             self._screen_enabled = enabled
             self._screen_pending = enabled
+            self._screen_failed = False
+            self._screen_retry = False
         log_event('screen.models.configuration', '화면 분석 사전 준비 설정',
                   category='대화·AI', enabled=enabled)
         if enabled:
             self.start()
+
+    def retry_screen(self):
+        with self._lock:
+            if self._closed or not self._screen_enabled or not self._screen_failed:
+                return False
+            self._screen_failed = False
+            self._screen_pending = self._screen_retry = True
+        self.start()
+        return True
 
     def close(self):
         # Model imports cannot be interrupted safely; skip subsequent work without joining on Qt.
@@ -55,6 +68,7 @@ class ModelPreparation:
                     prefix, label = 'memory.model', '장기기억'
                 elif not self._closed and self._screen_pending and self._screen_enabled:
                     self._screen_pending = False
+                    retry, self._screen_retry = self._screen_retry, False
                     prefix, label = 'screen.models', '화면 분석'
                 else:
                     self._thread = None
@@ -65,10 +79,18 @@ class ModelPreparation:
                     self.memory.prepare()
                     ready = True
                 else:
-                    ready = prepare_screen(cancelled=self._screen_cancelled)
+                    ready = prepare_screen(cancelled=self._screen_cancelled, reset_worker=retry)
             except Exception as exc:
-                log_event(prefix + '.failed', label + ' 모델 준비 실패', category='오류',
-                          level='ERROR', error=str(exc))
+                if prefix == 'screen.models':
+                    with self._lock:
+                        if self._closed or not self._screen_enabled or self._screen_pending:
+                            continue
+                        self._screen_failed = True
+                    log_event(prefix + '.failed', label + ' 모델 준비 실패', category='오류',
+                              level='ERROR', error_type=type(exc).__name__)
+                else:
+                    log_event(prefix + '.failed', label + ' 모델 준비 실패', category='오류',
+                              level='ERROR', error=str(exc))
             else:
                 if ready:
                     log_event(prefix + '.ready', label + ' 모델 준비 완료', category='대화·AI')

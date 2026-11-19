@@ -1,5 +1,7 @@
 from app_logging import log_event, new_trace_id
+from context.igdb import IGDBLookup, load_igdb_config, save_igdb_config
 from inspect import signature
+from inference_device import load_inference_device
 
 from PyQt6.QtCore import QObject, QTimer
 
@@ -32,6 +34,9 @@ class SettingsController(QObject):
         self.dialogue_timer.timeout.connect(self._refresh_dialogue_generation)
         manager.settings_message.connect(self.handle_message)
         manager.process_started.connect(self._restore_preview)
+        model_switched = getattr(getattr(character, 'dialogue_system', None), 'dialogue_model_switched', None)
+        if model_switched is not None:
+            model_switched.connect(self._refresh_dialogue_model)
         self.load_timeout = QTimer(self)
         self.load_timeout.setSingleShot(True)
         self.load_timeout.timeout.connect(self.connection_timeout)
@@ -63,17 +68,21 @@ class SettingsController(QObject):
                       category='오류', level='ERROR', error=str(exc))
             ai = self.character.gemini_config
             ai_error = 'AI 설정 파일을 읽을 수 없습니다. 파일을 확인한 뒤 다시 열어 주세요.'
-        local = {'character': {'width': width, 'height': height, 'personality': personality,
+        local = {'inference_device': load_inference_device(),
+                 'character': {'width': width, 'height': height, 'personality': personality,
                                'personality_traits': personality_traits},
                  'voice': {'enabled': tts.enabled, 'voice_id': tts.voice_id,
                            'sync_bubble': tts.sync_bubble},
-                 'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', '')}}
+                 'ai': {'api_key': ai.get('api_key', ''), 'model': ai.get('model', ''),
+                        'automatic_model': ai.get('automatic_model', ''),
+                        'screen_privacy_enabled': ai.get('screen_privacy_enabled', True)}}
         local['character'].update(load_character_options())
         local['dialogue'] = {'style': load_dialogue_style(), **load_dialogue_options()}
         local['game_rules'] = load_game_rules()
+        local['igdb'] = load_igdb_config()
         local['hand_overlay'] = (dict(self.hand_overlay.options) if self.hand_overlay is not None
                                  else load_hand_overlay_options())
-        self.dialog = SettingsDialog(local, self.character,
+        self.dialog = SettingsDialog(local, None,
                                      long_term_memory=self.character.dialogue_system.long_term_memory)
         self.dialog.dialogue_generation_requested.connect(self._generate_dialogue)
         self.dialog.manual_dialogue_requested.connect(self._show_manual_dialogue)
@@ -99,6 +108,17 @@ class SettingsController(QObject):
         self._refresh_dialogue_generation()
         self.dialogue_timer.start()
         self.refresh()
+
+    def _refresh_dialogue_model(self, previous, model):
+        if self.dialog is None:
+            return
+        combo = self.dialog.model
+        if combo.currentText().strip() == previous:
+            combo.setCurrentIndex(combo.findText(model))
+            combo.setEditText(model)
+        self.dialog.local_baseline['ai']['model'] = model
+        if 'ai' in self.applied_local:
+            self.applied_local['ai']['model'] = model
 
     def _refresh_dialogue_generation(self):
         if self.dialog is None:
@@ -241,6 +261,8 @@ class SettingsController(QObject):
                         tts.set_enabled(True)
                     tts.set_sync_bubble(value.get('sync_bubble', False))
                     tts.sync_settings()
+                elif section == 'inference_device':
+                    save_config(*load_config(), inference_device=value, trace_id=self.operation_id)
                 elif section == 'dialogue':
                     width, height, personality = load_config()
                     save_config(width, height, personality, dialogue_style=value['style'],
@@ -251,8 +273,17 @@ class SettingsController(QObject):
                 elif section == 'game_rules':
                     value = save_game_rules(value, trace_id=self.operation_id)
                     self.character.game_spectator.poll()
+                elif section == 'igdb':
+                    value = save_igdb_config(value)
+                    if (previous := getattr(self.character, 'igdb_lookup', None)) is not None:
+                        previous.close()
+                    self.character.igdb_lookup = IGDBLookup(value)
+                    self.character.game_spectator.poll()
                 elif section == 'ai':
-                    save_ai_settings(value['api_key'], value['model'], trace_id=self.operation_id)
+                    save_ai_settings(value['api_key'], value['model'],
+                                     automatic_model=value.get('automatic_model'),
+                                     screen_privacy_enabled=value.get('screen_privacy_enabled'),
+                                     trace_id=self.operation_id)
                     self.character._load_gemini_config()
                     self.character.dialogue_system._load_gemini_config()
                 elif section == 'hand_overlay':

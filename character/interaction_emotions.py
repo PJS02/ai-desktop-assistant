@@ -8,8 +8,13 @@ import math
 import time
 
 from .perception_affect import appraise_perception, state_labels, unit
+from .russell_sectors import LOW_MOOD_EMOTIONS, MOOD_REFERENCES
 
 from app_logging import log_event
+
+
+OCC_RESPONSE_GAIN = 1.15
+FALL_EMOTION_MIN_HEIGHT = .34
 
 
 SOURCES = {
@@ -20,9 +25,24 @@ SOURCES = {
     'fall_risk': '낙하 위험', 'safe_landing': '안전하게 착지',
     'impact': '강한 충돌',
     'ball_ready': '공놀이 준비', 'ball_kicked': '공 차기', 'ball_removed': '공놀이 중단',
+    'ball_cancel': '공놀이 취소',
     'file_received': '파일 전달받음', 'files_returned': '파일 반환 완료',
     'files_dropped': '거친 드래그로 파일 놓침', 'wake': '잠에서 깨어남',
+    'drag_start': '갑자기 들림', 'drag_held': '잡힌 상태가 이어짐',
+    'drag_shake': '반복적인 캐릭터 흔들기',
+    'high_five_ready': '하이파이브 기대', 'high_five': '하이파이브 접촉',
+    'high_five_refused': '하이파이브 거부', 'high_five_cancel': '하이파이브 취소',
+    'hide_ready': '숨바꼭질 기대', 'hide_found': '숨바꼭질에서 발견됨',
+    'hide_cancel': '숨바꼭질 취소',
+    'window_covered': '창으로 행동이 가려짐', 'window_escaped': '창 뒤에서 벗어남',
+    'window_revealed': '가리던 창에서 다시 드러남', 'window_cancel': '창 가림 종료',
+    'game_start': '게임 시작', 'game_win': '게임 승리', 'game_earned_win': '게임 승리',
+    'game_loss': '게임 패배', 'game_disappointed': '게임 역전패',
+    'game_draw': '게임 무승부', 'game_cancel': '게임 종료',
+    'tap': '캐릭터 클릭',
 }
+EXTERNAL_GAME_SOURCES = {'win': '외부 게임 승리', 'loss': '외부 게임 패배',
+                         'draw': '외부 게임 무승부', 'score': '외부 게임 득점'}
 FACE_SOURCES = {
     'happy': '사용자 웃음 감지', 'anger': '사용자 분노 표정 감지',
     'contempt': '사용자 경멸 표정 감지', 'disgust': '사용자 불쾌 표정 감지',
@@ -75,7 +95,7 @@ class InteractionEmotions:
         if continuous:
             dose = 8. * math.exp(-prior / 8.) * -math.expm1(-amount / 8.)
         else:
-            dose = amount / (1. + .5 * prior)
+            dose = amount / (1. + .4 * prior)
         self.exposure[family] = now, prior + amount
         return dose
 
@@ -93,13 +113,16 @@ class InteractionEmotions:
     def apply(self, event, *, event_id=None, source=None, **context):
         if event.startswith('user_'):
             return self._apply_perception(event[5:], event_id=event_id, source=source, **context)
-        mood, now = self.mood, time.monotonic()
+        mood = self.mood
+        now = mood.emotion_time(time.monotonic())
         before = (mood.russell.valence, mood.russell.arousal)
-        result = {'before': before, 'reaction': event, 'applied': False, 'dose': 0.}
-        for name in ('strength', 'elapsed', 'speed', 'distance'):
+        result = {'before': before, 'reaction': None, 'applied': False, 'dose': 0.}
+        for name in ('strength', 'elapsed', 'speed', 'distance', 'control', 'impact_speed', 'contact_at', 'quality'):
             if context.get(name) is not None:
                 _number(context[name])
         if event in ('file_received', 'files_returned', 'files_dropped') and not context.get('success', True):
+            return result
+        if event in ('high_five', 'hide_found') and _number(context.get('quality'), default=1.) <= 0:
             return result
         if not self._distinct(event_id, event):
             result['duplicate'] = True
@@ -107,14 +130,52 @@ class InteractionEmotions:
                       category='캐릭터 상태', event_name=event, event_id=event_id)
             return result
         self._sync_claims()
+        result['reaction'] = event
+        mood_name = mood.get_display_emotion()
+        mood_valence, mood_arousal = MOOD_REFERENCES[mood_name]
+        has_distress = mood.occ_intensities[self._key('distress')] >= .25
         raw, recovery = {}, {}
         valence = arousal = 0.
         dose = _number(context.get('strength'), 0., 2., 1.)
         meaning, agency = '', 0.
         session = str(context.get('session', ''))
         claim = self.claims.get(session, {})
+        surprise = risk = 0.
 
-        if event in ('pet', 'pet_refused'):
+        unwanted_contact = event == 'high_five_refused' or (
+            event in ('tap', 'high_five_ready', 'high_five') and mood.refuses_brief_contact()
+        )
+        if unwanted_contact:
+            if event == 'high_five_ready':
+                result['reaction'] = None
+                return result
+
+            raw = {'distress': .03, 'anger': .02}
+            weight = 1.
+            if event == 'tap':
+                source = source or '원치 않는 클릭'
+                dose = self._dose('tap', weight, now)
+            else:
+                result['reaction'] = 'high_five_refused'
+                raw['hope'] = -claim.get('hope', 0.)
+                self.claims.pop(session, None)
+                weight = _number(context.get('quality'), default=1.)
+                source = source or SOURCES['high_five_refused']
+                dose = self._dose('high_five', weight, now)
+            agency, valence, arousal = -.45, -.01, .025
+            meaning = '분노가 높은 상태에서 접촉을 불편하게 받아들임'
+        elif event == 'tap':
+            dose = self._dose('tap', 1., now)
+            engagement = _number(.65 + mood_valence * .35 + mood_arousal * .15)
+            context['goal_relevance'] = engagement
+            raw, agency = {'joy': .04 * engagement, 'gratitude': .015}, .45
+            meaning = '짧고 분명한 접촉을 직전 기분에 따라 평가'
+            if (mood_name in LOW_MOOD_EMOTIONS or has_distress
+                    or mood.occ_intensities[self._key('fear')] >= .30):
+                source = source or '캐릭터 클릭 (위로)'
+                recovery = {'distress': .025, 'fear': .018}
+                arousal = -.008
+        elif event in ('pet', 'pet_refused'):
             elapsed = _number(context.get('elapsed'), 0., 1., .15)
             speed = _number(context.get('speed'), 0., 2000., 140.)
             contact = self.contacts.get('pet')
@@ -130,7 +191,7 @@ class InteractionEmotions:
                     contact['refused'] = True
                     raw = {'distress': .01}
                     meaning = '원하지 않는 접촉을 거절함'
-                elif contact['elapsed'] >= .8 and not contact['ignored']:
+                elif contact['elapsed'] >= .7 and not contact['ignored']:
                     contact['ignored'] = True
                     raw = {'distress': .01, 'anger': .02}
                     agency, meaning = -.6, '거절한 뒤에도 접촉이 지속됨'
@@ -140,58 +201,95 @@ class InteractionEmotions:
                     return result
                 dose = self._dose('refusal', 1., now)
             else:
-                quality = math.exp(-((speed - 140.) / 180.) ** 2)
+                quality = math.exp(-((speed - 140.) / 200.) ** 2)
                 dose = self._dose('pet', elapsed * quality, now, continuous=True, elapsed=elapsed)
                 raw = {'joy': .02, 'gratitude': .01, 'satisfaction': .01}
                 recovery = {'distress': .025, 'fear': .035}
-                if mood.occ_intensities[self._key('distress')] > .3:
+                if has_distress:
                     raw['joy'] *= .5
                 agency, arousal = .6, -.02
                 meaning = '편안한 접촉의 시간과 품질에 따라 위로와 친밀감을 누적'
                 result['dose'] = elapsed * quality
         elif event == 'poke_start':
             dose = self._dose('poke', 1., now)
-            arousal, meaning = .025, '갑작스러운 접촉에 흥분도가 잠깐 상승'
+            familiar = context.get('familiar', False) and not mood.should_refuse_pet()
+            surprise = .45 if familiar else 1.
+            arousal, meaning = .025 * surprise, '접촉의 갑작스러움에 따라 각성 변화'
+            if familiar and mood_valence > .1:
+                raw['joy'] = .012 * min(1., mood_valence + .3)
         elif event in ('poke_play', 'poke_discomfort', 'contact_ignored'):
             dose = self._dose('poke', 1., now)
             if event == 'contact_ignored' or mood.should_refuse_pet():
                 raw, agency = {'distress': .02, 'anger': .02}, -.6
                 result['reaction'] = 'contact_ignored'
-            elif event == 'poke_discomfort' or before[0] < -.24:
+            elif event == 'poke_discomfort' or mood_name in LOW_MOOD_EMOTIONS or has_distress:
                 raw = {'distress': .02}
                 result['reaction'] = 'poke_discomfort'
             else:
                 raw = {'joy': .015}
             arousal, meaning = .01, '현재 감정과 반복 접촉 여부로 장난과 불편함을 구분'
+        elif event in ('drag_start', 'drag_held', 'drag_shake'):
+            if event == 'drag_start':
+                speed = _number(context.get('speed'), 0., 20.)
+                dose = _number((speed - 1.3) / 4.)
+                surprise = dose
+            elif event == 'drag_held':
+                dose = .45
+            else:
+                dose, surprise = 1., .7
+            dose = self._dose('drag', dose, now) if dose else 0.
+            raw = {'distress': .04 if event == 'drag_shake' else .022}
+            arousal = .025 + .035 * surprise
+            meaning = '이동 속도와 제어를 잃은 시간 또는 실제 반복 흔들림'
         elif event in ('throw', 'fall_risk'):
-            risk = (_number(context.get('distance'), 0., 8., 1.) if event == 'fall_risk'
-                    else _number(context.get('speed'), 0., 20., 3.) / 3.)
+            height = (_number(context.get('distance'), 0., 8., 1.) if event == 'fall_risk'
+                      else _number(context.get('speed'), 0., 20., 3.) / 3.)
             if self.fall is None:
                 self.fall = {'peak': 0., 'claim': 'fall:' + str(now)}
             session = self.fall['claim']
-            severity = _number((risk - .38) / 1.5)
+            control = _number(context.get('control'))
+            risk = _number((height - FALL_EMOTION_MIN_HEIGHT) / 1.5) * (1. - .65 * control)
             previous = self.fall['peak']
-            self.fall['peak'] = max(previous, severity)
-            dose = max(0., severity - previous)
+            self.fall['peak'] = max(previous, risk)
+            dose = max(0., risk - previous)
+            surprise = min(1., dose * 2.) if event == 'throw' or context.get('sudden') else 0.
             raw, valence, arousal = {'fear': .10}, -.025, .08
             meaning = '아직 발생하지 않은 충돌 위험과 통제 불가능성을 평가'
-            result['reaction'] = None if event == 'throw' else 'fall_risk'
         elif event == 'impact':
-            if self.fall is None or self.fall.get('impact'):
-                return result
-            self.fall['impact'] = True
+            if self.fall is None:
+                self.fall = {'peak': 0., 'claim': 'fall:' + str(now)}
+            speed = _number(context.get('impact_speed'), 0., 180., 36.)
+            severity = _number(speed / 36.)
+            peak = self.fall.get('impact', 0.)
+            contact_at = context.get('contact_at')
+            if contact_at is None:
+                dose = max(0., severity - peak)
+            else:
+                # Two axes of the same corner can register in adjacent physics steps.
+                started, contact_peak, count = self.fall.get('contact', (-math.inf, 0., 0))
+                if contact_at < started:
+                    return result
+                if contact_at - started > .08:
+                    started, contact_peak, count = contact_at, 0., count + 1
+                dose = max(0., severity - contact_peak) * .65 ** (count - 1)
+                self.fall['contact'] = (started, max(severity, contact_peak), count)
+            self.fall['impact'] = max(peak, severity)
+            used = self.fall.get('impact_dose', 0.)
+            dose = min(dose, max(0., 1.6 - used))
+            self.fall['impact_dose'] = used + dose
+            surprise = severity
             raw, valence, arousal = {'distress': .025}, -.015, .02
-            meaning = '예상했던 충돌이 실제로 발생해 고통을 느낌'
-            result['reaction'] = None
+            meaning = '실제 접촉별 충격을 평가하고 같은 충돌의 중복과 연속 충격의 누적을 제한'
         elif event == 'safe_landing':
             if self.fall is None:
                 return result
             session = self.fall['claim']
             claim = self.claims.pop(session, {})
-            impacted = self.fall.get('impact', False)
+            impacted = bool(self.fall.get('impact'))
             self.fall = None
             owned_fear = min(claim.get('fear', 0.), mood.occ_intensities[self._key('fear')])
             if owned_fear <= 0:
+                result['reaction'] = None
                 return result
             raw = {'fear': -owned_fear, 'relief': min(.06, owned_fear * .6)}
             if impacted:
@@ -209,9 +307,48 @@ class InteractionEmotions:
             dose = self._dose('palm', 1., now)
             raw, agency, arousal = {'gratitude': .015, 'satisfaction': .01}, .6, -.015
             meaning = '안정적인 지지와 호의를 받음'
-        elif event == 'ball_ready':
-            raw, dose = {'hope': .015}, self._dose('ball_ready', 1., now)
-            meaning = '곧 함께 놀 수 있다는 긍정적인 기대'
+        elif event in ('high_five_ready', 'hide_ready', 'ball_ready'):
+            engagement = _number(.65 + mood_valence * .35 + mood_arousal * .15)
+            amount = .015 if event == 'ball_ready' else .02
+            raw, dose = {'hope': amount * engagement}, self._dose(event, 1., now)
+            meaning = '확인된 놀이 기회와 현재의 참여 의욕'
+        elif event in ('high_five', 'hide_found', 'high_five_cancel', 'hide_cancel'):
+            owned_hope = claim.get('hope', 0.)
+            raw = {'hope': -owned_hope}
+            self.claims.pop(session, None)
+            if event.endswith('_cancel'):
+                result['reaction'] = None
+                meaning = '진행을 멈춘 놀이의 기대만 정리'
+            else:
+                confidence = _number(context.get('quality'), default=1.)
+                engagement = _number(.60 + mood_valence * .35 + mood_arousal * .15)
+                dose = self._dose(event, confidence, now)
+                raw.update(joy=.04 * engagement, satisfaction=min(.025, owned_hope * .8),
+                           gratitude=.03 * engagement * (.65 if event == 'high_five' else .3))
+                recovery = {'fear': .025, 'distress': .022} if event == 'high_five' else {}
+                agency = .65 if event == 'high_five' else .3
+                arousal = .02 * engagement - .035 * mood.occ_intensities[self._key('fear')]
+                meaning = '실제로 확인된 놀이 결과와 호의, 기대 및 직전 긴장'
+        elif event in ('window_covered', 'window_escaped', 'window_revealed', 'window_cancel'):
+            if event == 'window_covered':
+                risk = _number(context.get('strength'), default=.6) * .45
+                raw, arousal = {'fear': .10 * risk}, .025 * risk
+                meaning = '가려진 상태가 지속되어 움직임과 지지의 불확실성이 생김'
+            else:
+                owned_fear = min(claim.get('fear', 0.), mood.occ_intensities[self._key('fear')])
+                raw = {'fear': -owned_fear}
+                self.claims.pop(session, None)
+                if event in ('window_escaped', 'window_revealed'):
+                    raw['relief'] = min(.06, owned_fear * .6)
+                    arousal = -.03 * min(1., owned_fear / .04)
+                    if event == 'window_escaped':
+                        raw['satisfaction'] = .012
+                        meaning = '탈출을 완료해 안전과 제어를 되찾음'
+                    else:
+                        meaning = '가리던 창이 없어지거나 비켜나 다시 드러남'
+                else:
+                    result['reaction'] = None
+                    meaning = '가림이 중단되어 해당 위험 기여분만 정리'
         elif event in ('ball_kicked', 'ball_removed', 'ball_cancel'):
             raw = {'hope': -claim.get('hope', 0.)}
             if event == 'ball_kicked':
@@ -226,12 +363,31 @@ class InteractionEmotions:
                 valence, arousal = -.005, -.01
                 meaning = '진행 중이던 놀이가 끝나 기대가 무산됨'
             else:
+                result['reaction'] = None
                 meaning = '종료한 공의 기대만 정리'
             self.claims.pop(session, None)
+        elif event == 'game_external_result':
+            outcome = context.get('outcome')
+            if outcome not in EXTERNAL_GAME_SOURCES:
+                raise ValueError('Unknown external game outcome')
+            quality = _number(context.get('quality'), default=1.)
+            engagement = _number(.7 + mood_valence * .18 + mood_arousal * .12)
+            family = 'external_game_score' if outcome == 'score' else 'external_game_result'
+            dose = self._dose(family, quality * engagement, now)
+            source = source or EXTERNAL_GAME_SOURCES[outcome]
+            if outcome == 'win':
+                raw, valence, arousal = {'joy': .05}, .02, .024
+            elif outcome == 'loss':
+                raw, valence, arousal = {'distress': .044}, -.018, .012 * mood_arousal
+            elif outcome == 'score':
+                raw, valence, arousal = {'joy': .026}, .01, .018
+            else:
+                raw, arousal = {'joy': .007}, -.008
+            meaning = '사용자의 게임 화면에 확인된 결과를 관전 중인 캐릭터의 관점으로 평가'
         elif event.startswith('game_'):
             if event == 'game_start':
-                raw = {'hope': .008 if context.get('round') else .015}
-                result['reaction'] = None
+                engagement = _number(.7 + mood_valence * .3 + mood_arousal * .18)
+                raw = {'hope': (.008 if context.get('round') else .015) * engagement}
                 meaning = '게임 결과에 대한 기대'
             else:
                 raw = {'hope': -claim.get('hope', 0.)}
@@ -248,7 +404,9 @@ class InteractionEmotions:
                     valence, arousal = -.01, -.005
                 elif event == 'game_draw':
                     raw['joy'] = .005
-                elif event != 'game_cancel':
+                elif event == 'game_cancel':
+                    result['reaction'] = None
+                else:
                     raise ValueError('Unknown game event: ' + event)
                 if context.get('round'):
                     dose *= .4
@@ -263,6 +421,7 @@ class InteractionEmotions:
             elif event == 'files_dropped' or context.get('forced'):
                 raw, valence = {'distress': .025}, -.01
                 result['reaction'] = 'files_dropped'
+                source = source or SOURCES['files_dropped']
                 meaning = '거친 다루기로 보관하던 파일을 놓침'
             else:
                 raw = {'satisfaction': .015}
@@ -276,53 +435,66 @@ class InteractionEmotions:
         else:
             raise ValueError('Unknown interaction event: ' + event)
 
-        if dose <= 0:
+        if dose <= 0 and not any(amount < 0 for amount in raw.values()):
             return result
         state = mood._capture_emotion_state()
         factor, factors = 1., []
+        negative = ('distress', 'fear', 'anger', 'shame')
+        weights = {}
         if mood.personality_system is not None:
-            sign = sum((-v if k in ('distress', 'fear', 'anger', 'shame') else v)
-                       for k, v in raw.items())
-            factor, factors = mood.personality_system.get_event_weight_multiplier(
-                valence=sign, self_attribution=.6 if context.get('earned') else 0.,
-                agent_benevolence=agency, novelty=.7 if event in ('throw', 'poke_start') else 0.)
+            signs = {(-1 if name in negative else 1) for name, amount in raw.items() if amount > 0}
+            for sign in sorted(signs or {0}):
+                weights[sign], labels = mood.personality_system.get_event_weight_multiplier(
+                    valence=sign, self_attribution=.6 if sign > 0 and context.get('earned') else 0.,
+                    agent_benevolence=agency if agency * sign > 0 else 0., novelty=surprise)
+                factors.extend(label for label in labels if label not in factors)
+            factor = sum(weights.values()) / len(weights)
         applied_dose = dose * factor
+        increases = {name: amount * dose * OCC_RESPONSE_GAIN * weights.get(-1 if name in negative else 1, 1.)
+                     for name, amount in raw.items() if amount > 0}
+        physical_risk = event in ('throw', 'fall_risk')
+        increases = {name: min(.10 if name == 'fear' and physical_risk else
+                               .06 if name == 'relief' else .05, amount)
+                     for name, amount in increases.items()}
+        total = sum(increases.values())
+        limit = .12 if physical_risk else .09
+        scale = min(1., limit / total) if total else 1.
         for name, amount in raw.items():
             key, current = self._key(name), mood.occ_intensities[self._key(name)]
             if amount > 0:
                 # Exact integration of dI/dDose=(1-I)^1.5 is invariant to frame rate.
                 remaining = max(0., 1. - current)
-                mood.occ_intensities[key] = (1. - (remaining ** -.5 + amount * applied_dose / 2.) ** -2
+                added = increases[name] * scale
+                mood.occ_intensities[key] = (1. - (remaining ** -.5 + added / 2.) ** -2
                                              if remaining > 1e-12 else current)
             else:
                 # An episode's outstanding expectation/fear is resolved once.
                 mood.occ_intensities[key] = max(0., current + amount)
         for name, rate in recovery.items():
             key = self._key(name)
-            mood.occ_intensities[key] *= math.exp(-rate * applied_dose)
-        changes = {key.value: mood.occ_intensities[key] - value for key, value in state['occ'].items()
-                   if abs(mood.occ_intensities[key] - value) > 1e-12}
-        if not changes and not valence and not arousal:
-            return result
+            mood.occ_intensities[key] *= math.exp(-rate * applied_dose * OCC_RESPONSE_GAIN)
         mood._event_valence_bias = max(-1., min(1., mood._event_valence_bias + valence * applied_dose))
         mood._event_arousal_bias = max(-1., min(1., mood._event_arousal_bias + arousal * applied_dose))
+        if (mood.occ_intensities == state['occ'] and
+                (mood._event_valence_bias, mood._event_arousal_bias) == state['bias']):
+            return result
         continuous = event in ('pet', 'pet_refused')
         if continuous:
             mood._update_russell_from_occ()
         else:
             mood._apply_occ_to_mood()
         self._sync_claims({name: -amount for name, amount in raw.items() if amount < 0})
-        changes = {key.value: mood.occ_intensities[key] - value for key, value in state['occ'].items()
-                   if abs(mood.occ_intensities[key] - value) > 1e-12}
-        if session and event in ('throw', 'fall_risk', 'ball_ready', 'game_start'):
+        result.update(mood._event_changes(state), risk=risk, surprise=surprise)
+        changes = result['changes']
+        if session and event in ('throw', 'fall_risk', 'ball_ready', 'game_start', 'high_five_ready',
+                                 'hide_ready', 'window_covered'):
             credits = self.claims.setdefault(session, {})
             for name in ('fear', 'hope'):
                 credits[name] = credits.get(name, 0.) + max(0., changes.get(name, 0.))
             while len(self.claims) > 32:
                 del self.claims[next(iter(self.claims))]
-        if changes or valence or arousal:
-            goodness = sum((-amount if name in ('distress', 'fear', 'anger', 'shame') else amount)
-                           for name, amount in changes.items())
+        if result['applied']:
+            goodness = sum((-amount if name in negative else amount) for name, amount in changes.items())
             category = 'positive' if goodness > 0 else 'negative' if goodness < 0 else 'neutral'
             mood._record_influence(
                 source=source or SOURCES.get(event, event), category=category,
@@ -332,20 +504,20 @@ class InteractionEmotions:
                 weight_applied=mood.personality_system is not None,
                 event_input={'event': event, 'event_id': event_id, 'session': session,
                              'requested_occ': raw, 'actual_occ': changes, 'dose': dose,
+                             'bias_change': result['bias_change'],
+                             'arousal_change': result['bias_change'][1] if not changes else 0.,
                              **context})
-            result['applied'] = True
-        result['changes'] = changes
         return result
 
     def _apply_perception(self, signal, *, event_id=None, source=None, actor_state=None,
                           label=None, quality=1., maintenance=1., **context):
-        mood, now = self.mood, time.monotonic()
+        mood = self.mood
+        now = mood.emotion_time(time.monotonic())
         quality, maintenance = unit(quality), unit(maintenance)
         state = mood._capture_emotion_state()
         before = (mood.russell.valence, mood.russell.arousal)
         occ = {key.value: value for key, value in mood.occ_intensities.items()}
         actor = dict(actor_state or {})
-        actor['manual_emotion'] = bool(actor.get('manual_emotion') or mood._manual_russell_override)
         appraisal = appraise_perception(signal, occ, before, actor, label=label)
         appraisal['state_labels'] = state_labels(
             occ, before, unit(actor.get('rest', 0.)), self.perception_states,
@@ -376,7 +548,7 @@ class InteractionEmotions:
                 novelty=.2 if label == 'surprise' else 0.)
         factor = _number(factor, .25, 2., 1.)
         dose = quality * maintenance * repeat * factor * appraisal['multiplier']
-        requested = {name: max(-.04, min(.04, value * dose)) for name, value in raw.items()}
+        requested = {name: max(-.04, min(.04, value * dose * OCC_RESPONSE_GAIN)) for name, value in raw.items()}
         total = sum(abs(value) for value in requested.values())
         if total > .06:
             requested = {name: value * .06 / total for name, value in requested.items()}
@@ -413,12 +585,11 @@ class InteractionEmotions:
             mood._apply_occ_to_mood()
             self._sync_claims()
         changes = {key: value for key, value in changes.items() if abs(value) > 1e-12}
-        appraisal.update(expression_strength=unit(appraisal['strength'] * dose),
-                         applied_occ=changes, budget_scale=scale, quality=quality,
+        appraisal.update(applied_occ=changes, budget_scale=scale, quality=quality,
                          applied_arousal=arousal,
                          personality_multiplier=factor, repetition_multiplier=repeat)
-        result.update(reaction='user_' + signal, applied=bool(changes or arousal),
-                      changes=changes, dose=dose)
+        result.update(mood._event_changes(state), reaction='user_' + signal, dose=dose,
+                      surprise=quality if signal == 'face' and label == 'surprise' else 0.)
         if not result['applied']:
             limited = (amount > 0 and scale == 0 or
                        appraisal['arousal'] * dose != 0 and arousal_used >= .06)

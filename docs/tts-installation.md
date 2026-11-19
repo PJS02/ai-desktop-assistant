@@ -1,13 +1,18 @@
 # GPT-SoVITS / OpenVoice V2
 
-## Collaborator setup
+## Windows installer
 
-1. Install the application normally, using Windows Python 3.10 and a supported
-   NVIDIA GPU/driver. The pinned inference environment uses PyTorch 2.0 / CUDA
-   11.8; newer GPU architectures need separate compatibility validation.
+The full installer ships both models, their private Python runtime, and the Korean text-processing data.
+Select a voice under **설정 → 대화·음성 → 목소리**.
+Under **설정 → 실행 환경**, select **자동**, **CPU** or **CUDA**, apply, and restart Cloudy.
+The two voices use CPU when selected or when the bundled CUDA runtime cannot use the installed GPU.
+CUDA inference uses PyTorch 2.0 with CUDA 11.8 and needs a compatible NVIDIA GPU and driver.
+
+## Source checkout setup
+
+1. Use Windows Python 3.10.
 2. With the app closed, run `setup_tts_runtime.cmd` once. It creates `.tts-runtime/env`, installs the
-   pinned inference libraries and Korean text-processing resources, and checks
-   CUDA availability. It does not replace the application's Python environment.
+   pinned inference libraries and Korean text-processing resources, and checks CPU inference.
 3. Open **설정 → 대화·음성 → 음성 모델 다운로드**. Download the desired engine, then select its voice and apply.
    This step downloads model files only; it does not run pip or modify drivers.
 
@@ -17,10 +22,10 @@ written only after every required file is verified. Previously completed files
 are verified and reused on retry; partial files are removed. Downloads continue
 when the settings dialog closes, and reopening it shows the current job.
 
-Models default to the current user's application-data directory under
-`PJS02/AIDesktopAssistant/tts-models`. `CAPSTONE_TTS_MODEL_DIR` can override this
-location. Nothing depends on the original author's desktop path. The selected
-voice and enabled state use the existing QSettings storage.
+Source runs save downloaded models in the user's application-data directory under
+`PJS02/AIDesktopAssistant/tts-models`. The full Windows installer loads them from `app/models/tts`.
+`CAPSTONE_TTS_MODEL_DIR` can override the model location.
+The selected voice and enabled state use QSettings.
 
 Supertonic remains available. Additional voices become selectable only after
 their models and runtime are ready. Inference runs in a persistent subprocess;
@@ -29,10 +34,10 @@ existing application service. Switching voices or cancelling speech discards old
 results. App shutdown terminates the owned inference process.
 
 When voice output is enabled, startup prepares the selected model on the existing
-background worker, without generating or playing speech. The first utterance
+background worker. The first utterance
 reuses that model; selecting another voice or enabling output prepares it again.
 Disabled voice output does not preload a model. Missing custom models still need
-to be installed from settings.
+to be installed from settings in source runs.
 
 Startup readiness appears as one bar above the character with a percentage beside
 it. Hover over the bar for each model/device's status. The percentage averages

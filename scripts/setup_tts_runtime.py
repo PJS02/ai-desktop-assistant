@@ -7,7 +7,10 @@ import sys
 import venv
 
 ROOT = Path(__file__).resolve().parents[1]
-HOME = ROOT / '.tts-runtime'
+sys.path.insert(0, str(ROOT))
+from app_paths import USER_DATA_ROOT
+
+HOME = USER_DATA_ROOT / '.tts-runtime'
 
 
 def run(python, *args):
@@ -35,7 +38,7 @@ def main():
         'cmudict', 'averaged_perceptron_tagger')
     run(python, '-c', 'import torch, torchaudio, transformers, peft, librosa, soundfile, g2pk2; '
         'print("CUDA available:", torch.cuda.is_available()); '
-        'assert torch.cuda.is_available(), "A supported NVIDIA GPU/driver is required"')
+        'assert torch.ones(1, device="cpu").item() == 1')
     vendor = ROOT / 'tts_runtime/vendor'
     run(python, '-c', 'import sys;sys.path[:0]=' + repr([str(vendor), str(vendor / 'GPT_SoVITS'),
         str(vendor / 'GPT_SoVITS/eres2net'), str(vendor / 'MeloTTS'), str(vendor / 'OpenVoice')])

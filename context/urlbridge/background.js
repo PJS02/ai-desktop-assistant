@@ -1,43 +1,74 @@
+const browser = /\bEdg\//.test(navigator.userAgent) ? "msedge.exe" : "chrome.exe";
+const lastVideo = new Map();
 let lastUrl = "";
-const endpoint = "http://127.0.0.1:8765/url";
+let revision = 0;
+let deliveries = Promise.resolve();
 
-function sendUrlToLocalhost(url) {
-    fetch(endpoint, {
+function post(port, path, body) {
+    return fetch(`http://127.0.0.1:${port}/${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-    }).catch(() => {
-        // Ignore errors when the local server is not running.
-    });
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(1500),
+    }).catch(() => {});
 }
 
-function sendActiveTabUrl() {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (!tabs || !tabs.length) {
-            return;
-        }
-
-        const url = tabs[0].url || "";
-        if (!url || url === lastUrl) {
-            return;
-        }
-
-        lastUrl = url;
-        sendUrlToLocalhost(url);
-    });
-}
-
-chrome.tabs.onActivated.addListener(sendActiveTabUrl);
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.url) {
-        sendActiveTabUrl();
+async function sendActiveTab() {
+    const version = ++revision;
+    let window;
+    try {
+        window = await chrome.windows.getLastFocused({ populate: true });
+    } catch {
+        return;
     }
+    const active = window.focused ? window.tabs?.find(tab => tab.active) : null;
+    if (version !== revision) return;
+
+    const report = { browser, tab: active?.id ?? -1, title: (active?.title || "").slice(0, 1024), activity: "" };
+    if (active?.url) {
+        if (active.url !== lastUrl) {
+            lastUrl = active.url;
+            post(8765, "url", { url: active.url });
+        }
+        const path = new URL(active.url).pathname;
+        const video = lastVideo.get(active.id);
+        if (active.status === "complete" && /\.pdf$/i.test(path)) {
+            report.activity = "pdf";
+        } else if (video && video.url === active.url && Date.now() - video.at < 2500) {
+            report.activity = video.activity;
+        }
+    }
+    deliveries = deliveries.then(() => {
+        if (version === revision) return post(8766, "activity", report);
+    });
+}
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message?.type !== "video-playback" || sender.frameId !== 0 || !sender.tab?.id
+        || !["", "playing", "paused", "buffering", "ended"].includes(message.activity)) return;
+    lastVideo.set(sender.tab.id, { url: sender.url, activity: message.activity, at: Date.now() });
+    if (sender.tab.active) sendActiveTab();
+});
+chrome.tabs.onActivated.addListener(sendActiveTab);
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+    if (change.url) lastVideo.delete(tabId);
+    if (tab.active && (change.url || change.title || change.status)) sendActiveTab();
+});
+chrome.tabs.onRemoved.addListener(tabId => {
+    lastVideo.delete(tabId);
+    sendActiveTab();
+});
+chrome.windows.onFocusChanged.addListener(sendActiveTab);
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === "foreground-tab") sendActiveTab();
 });
 
-chrome.windows.onFocusChanged.addListener(() => {
-    sendActiveTabUrl();
-});
-
-chrome.runtime.onInstalled.addListener(() => {
-    sendActiveTabUrl();
-});
+async function start() {
+    if (!(await chrome.alarms.get("foreground-tab"))) {
+        await chrome.alarms.create("foreground-tab", { periodInMinutes: 0.5 });
+    }
+    sendActiveTab();
+}
+chrome.runtime.onInstalled.addListener(start);
+chrome.runtime.onStartup.addListener(start);
+start();

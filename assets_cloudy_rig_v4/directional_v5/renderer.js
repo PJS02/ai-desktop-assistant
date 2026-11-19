@@ -3,6 +3,7 @@
 'use strict';
 const M=root.CloudyMotion, P=root.CLOUDY_PARTS;
 const mix=(a,b,t)=>a+(b-a)*t, point=(x,y)=>({x,y});
+const shortest=degrees=>(degrees+540)%360-180;
 const sectorMouths={
  pleasant:{family:'gentle',width:.83,height:.87,restOpening:0},
  thrilled:{family:'cheerful',width:1.05,height:.88,restOpening:.30},
@@ -151,8 +152,59 @@ class Renderer{
  }
  drawSprite(name,pivot,location,scale,angle,opacity=1){this.mesh(name,p=>rotate({x:location.x+(p.x-pivot.x)*scale,y:location.y+(p.y-pivot.y)*scale},angle,location),opacity);}
  bodyPoint(p,pose){return rotate({x:p.x+pose.bodyX,y:p.y+pose.bodyY},pose.lean,{x:180+pose.bodyX,y:357+pose.bodyY});}
+ aimHand(cfg, pose, index, grip) {
+   const near = index === 0;
+   const suffix = near ? 'Near' : 'Far';
+   const [x, y] = cfg.shoulders[index];
+   const shoulder = this.bodyPoint({x, y}, pose);
+   const sourcePoint = ([x, y]) => ({x: x * .34, y: y * .34});
+   const arm = cfg.arms[index];
+   const joints = arm.j.map(sourcePoint);
+   const cuff = sourcePoint(arm.cuff);
+   const girth = root.CloudyGirth && root.CloudyGirth.scale(cfg.prefix, 'arm', near);
+   const normalScale = !near && cfg.prefix !== 'front'
+     ? (bone, fraction) => -(girth ? girth(bone, fraction) : 1)
+     : girth;
+   const bend = cfg.prefix === 'left' ? -1 : cfg.prefix === 'right' ? 1 : near ? -1 : 1;
+   const contact = grip.contact || grip.art.contact(grip.amount);
+   const finger = {x: contact.x * grip.mirror * grip.size, y: contact.y * grip.size};
+
+   function fitCuff(angle) {
+     const offset = rotate(finger, angle);
+     const opening = {x: grip.target.x - offset.x, y: grip.target.y - offset.y};
+     const wrist = {x: opening.x, y: opening.y};
+     let solved;
+     // Correct for the distance from the rig's wrist joint to the cuff opening.
+     for (let i = 0; i < 4; i++) {
+       solved = M.solveIK(shoulder, wrist, 38, 46, bend);
+       const mapped = M.deformPoint(cuff, joints, [shoulder, solved.knee, solved.ankle], normalScale);
+       const dx = opening.x - mapped.x;
+       const dy = opening.y - mapped.y;
+       if (Math.hypot(dx, dy) < .04) break;
+       wrist.x += dx;
+       wrist.y += dy;
+     }
+     return solved;
+   }
+
+   let angle = grip.angle;
+   let solved = fitCuff(angle);
+   let flex = shortest(angle - solved.lowerAngle);
+   // Rotate toward the forearm when needed, keeping the contact point fixed.
+   for (let i = 0; i < 8 && Math.abs(flex) > 61; i++) {
+     angle += Math.sign(flex) * (60 - Math.abs(flex)) * .8;
+     solved = fitCuff(angle);
+     flex = shortest(angle - solved.lowerAngle);
+   }
+   const {upperAngle, lowerAngle} = solved;
+   const projection = cfg.prefix === 'right' ? -1 : 1;
+   pose['arm' + suffix] = (upperAngle - pose.lean) / projection;
+   pose['elbow' + suffix] = shortest(lowerAngle - upperAngle) / (projection * (!near && cfg.prefix === 'front' ? -1 : 1));
+   pose['wrist' + suffix] = flex / projection;
+ }
  limb(cfg,index,type,pose,opacity,surface='all'){
   const part=(type==='leg'?cfg.legs:cfg.arms)[index],name=key(cfg.prefix,part.i),near=index===0,suffix=near?'Near':'Far',scale=type==='leg'?.48:.34;
+  const highFiveHand=!near&&type==='arm'?this.highFiveGrip:null;
   const src=part.j.map(([x,y])=>({x:x*scale,y:y*scale}));
   let dest,hand;
   if(type==='leg'){
@@ -257,7 +309,7 @@ class Renderer{
   };
   const segmentMap=segment=>p=>waveLayers[segment]({x:p.x*scale,y:p.y*scale});
   const forearmMapping=waveLayers?segmentMap('forearmMap'):mapping;
-  if(hand&&this.textures[name+'_connected']){
+  if(hand&&!highFiveHand&&this.textures[name+'_connected']){
    // The forearm, cuff and hand retain a continuous painted attachment. Wrist
    // flex fades in below the cuff; the side elbow uses separate cloth surfaces.
    const opening=forearmMapping(point(...part.cuff));
@@ -426,7 +478,17 @@ class Renderer{
    // The hand starts inside the visible cuff opening. Only its front rim covers
    // the wrist; the dark back wall must not cover the entire attached hand.
    const opening=mapping(point(...part.cuff));
-   this.drawSprite(hand.name,hand.pivot,opening,.29,hand.angle,opacity);
+   if(highFiveHand){
+    const art=root.CloudyHighFive,[x,y]=art.bounds;
+    const {amount,mirror,size}=highFiveHand;
+    const place=(x,y)=>rotate(point(opening.x+x*mirror*size,opening.y+y*size),
+     hand.angle-hand.flex*(1-M.smoothstep((y+1)/10)),opening);
+    this.mesh(art.textureName(amount),p=>place(x+p.x/2,y+p.y/2),opacity,1,12);
+    const contact=highFiveHand.contact;
+    this.highFivePalm=place(contact.x,contact.y);
+   }else{
+    this.drawSprite(hand.name,hand.pivot,opening,.29,hand.angle,opacity);
+   }
    this.mesh(name+'_rim',mapping,opacity,8,26);
   }
  }
@@ -594,13 +656,12 @@ class Renderer{
   // Both frontal arms share this depth. Switch draw order without alpha mixing
   // so a moving hand never becomes translucent as it crosses the face.
   const airInFront=(pose.airArms||0)>.001;
-  // A frontal view has two arms at the same depth. Only side views place the
-  // far arm behind the torso; otherwise one front sleeve disappears in clothes.
-  if(cfg.prefix!=='front')this.limb(cfg,1,'arm',pose,opacity);
+  const farArmBehindBody=cfg.prefix!=='front'||Boolean(this.highFiveGrip);
+  if(farArmBehindBody)this.limb(cfg,1,'arm',pose,opacity);
   this.limb(cfg,1,'leg',pose,opacity);this.limb(cfg,0,'leg',pose,opacity);
   const [i,x,y,s]=cfg.body,location=this.bodyPoint({x:180,y:250},pose);
   this.drawSprite(key(cfg.prefix,i),{x,y},location,s,pose.lean,opacity);
-  if(cfg.prefix==='front'&&!airInFront)this.limb(cfg,1,'arm',pose,opacity);
+  if(!farArmBehindBody&&!airInFront)this.limb(cfg,1,'arm',pose,opacity);
   // A waving arm is one opaque surface throughout lifting and lowering too.
   // Blending two depth orders made the sleeve and palm translucent over hair.
   const waveInFront=(cfg.prefix!=='front'&&pose.waveSideGesture!==undefined?pose.waveSideGesture:pose.waveGesture||0)>.001;
@@ -614,7 +675,7 @@ class Renderer{
   if(handInFront<1)this.limb(cfg,0,'arm',pose,opacity*(1-handInFront));
   if(splitWave)this.limb(cfg,0,'arm',pose,opacity,'upper');
   this.face(cfg,pose,opacity,time);
-  if(cfg.prefix==='front'&&airInFront)this.limb(cfg,1,'arm',pose,opacity);
+  if(!farArmBehindBody&&airInFront)this.limb(cfg,1,'arm',pose,opacity);
   if(handInFront>.001)this.limb(cfg,0,'arm',pose,opacity*handInFront,splitWave?'forearm':'all');
  }
  effects(pose,time){
@@ -629,6 +690,8 @@ class Renderer{
   // An explicit action keeps the same cuff present before the lift begins and
   // after it ends. Gesture thresholds control bone mapping, never asset swaps.
   this.action=options.action||null;
+  this.highFiveGrip=null;
+  this.highFivePalm=null;
   const gl=this.gl;gl.useProgram(this.program);gl.activeTexture(gl.TEXTURE0);gl.enable(gl.BLEND);gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
   // Running is a side-only clip. Direct callers requesting a frontal run use
   // the left artwork; other actions keep their frontal view, including recovery.
@@ -640,13 +703,38 @@ class Renderer{
    const projection=cfg.prefix==='right'?-1:1;
    pose={...pose,lean:pose.lean+(projection-1)*pose.runLean};
   }
+  let companionDrop=0;
+  if(options.highFive){
+   const art=root.CloudyHighFive,{time:clipTime,target,refusal}=options.highFive;
+   const side=cfg.prefix==='left'?-1:cfg.prefix==='right'?1:0;
+   pose=Object.assign({},pose,{idleGesture:0,airArms:1,thinkGesture:0,snackGesture:0,
+    waveGesture:0,waveSideGesture:0,waveArmOffset:0,waveElbowOffset:0,waveWristOffset:0,waveForearmShorten:0});
+   // The desktop viewport needs a shorter hop to leave room for the full-size head.
+   const excited = pose.exprExcited;
+   art.jump.body(pose,clipTime,side,20);
+   pose.exprExcited = excited;
+   pose.framingZoom=1;
+   if(typeof refusal==='number'){
+    art.refuse(pose,refusal,side);
+   }else{
+    const frame=art.jump.layout(cfg,pose,clipTime,this.bodyPoint),reach=frame.reach;
+    const [x,y]=target;
+    const dip=Math.min(15,Math.max(0,y-300))*reach;
+    pose.bodyY+=dip;
+    this.highFiveGrip={art,amount:frame.open,mirror:frame.mirror,size:frame.size,angle:frame.roll,
+     contact:point(-13.3*reach,11),
+     target:point(mix(frame.palm.x,x,reach),mix(frame.palm.y+dip,y,reach))};
+    this.aimHand(cfg,pose,1,this.highFiveGrip);
+    if(side>=0)companionDrop=49*frame.lift;
+   }
+  }
   // Keep a fixed framing throughout each air-action cycle: the character must
   // not shrink and grow with jump height. Blend only when entering/leaving it.
   this.viewZoom=Number.isFinite(pose.framingZoom)?Math.max(.86,Math.min(1,pose.framingZoom)):1-.14*Math.max(0,Math.min(1,pose.airArms||0));
   this.emotionEffects=options.emotionEffects!==false;
   this.renderView(cfg,pose,1,time);
   this.effects(pose,time);
-  if(options.companion!==false)this.drawSprite('front_14',{x:791,y:1100},{x:303+3*Math.sin(time*.8),y:220+5*Math.sin(time*1.6)},.19,3*Math.sin(time),1);
+  if(options.companion!==false)this.drawSprite('front_14',{x:791,y:1100},{x:303+3*Math.sin(time*.8),y:220+5*Math.sin(time*1.6)+companionDrop},.19,3*Math.sin(time),1);
  }
 }
 root.CloudyRenderer=Renderer;

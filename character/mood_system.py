@@ -9,8 +9,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
-from .russell_sectors import russell_face
-from .perception_affect import update_label
+from .russell_sectors import SECTOR_NAMES, russell_face
+from .perception_affect import contact_refusal_conditions, unit, update_label
 
 
 class OccEmotionToMood(Enum):
@@ -149,7 +149,8 @@ class MoodSystem:
     _NEGATIVE_EMOTION_RETENTION = 0.95
     _POSITIVE_EMOTION_RETENTION = 0.94
     
-    def __init__(self, personality_system=None, *, on_occ_change=None, on_arousal_change=None):
+    def __init__(self, personality_system=None, *, on_occ_change=None, on_arousal_change=None,
+                 on_popup_coordinates=None):
         # Russell 감정 좌표 (Valence, Arousal)
         self.russell = RussellState()
         
@@ -160,6 +161,7 @@ class MoodSystem:
         self.occ_intensities = {emotion: 0.0 for emotion in OccEmotionToMood}
         self._on_occ_change = on_occ_change
         self._on_arousal_change = on_arousal_change
+        self._on_popup_coordinates = on_popup_coordinates
         
         # Russell 공간에서 17개 감정의 위치 (Valence, Arousal)
         # 코드 상 감정을 정의하는 구간
@@ -197,10 +199,12 @@ class MoodSystem:
         self._last_drag_displeasure_elapsed = 0.0
         self._last_hard_drag_at = 0.0
         self._manual_russell_override = False
+        self._automatic_state = None
+        self._paused_emotion_time = 0.0
         self._event_valence_bias = 0.0
         self._event_arousal_bias = 0.0
         self._target_valence = 0.0
-        self._target_arousal = 0.0
+        self._target_arousal = -0.3
         self._idle_pressure = 0.0
         
         # 히스테리시스 (감정 전환의 관성)
@@ -234,8 +238,24 @@ class MoodSystem:
         return {
             "coordinates": self.get_russell_state(),
             "target": {"valence": self._target_valence, "arousal": self._target_arousal},
+            "bias": (self._event_valence_bias, self._event_arousal_bias),
             "occ": dict(self.occ_intensities),
             "personality": self._personality_snapshot(),
+        }
+
+    def _event_changes(self, state):
+        changes = {key.value: self.occ_intensities[key] - value
+                   for key, value in state["occ"].items()
+                   if abs(self.occ_intensities[key] - value) > 1e-12}
+        bias = (self._event_valence_bias - state["bias"][0],
+                self._event_arousal_bias - state["bias"][1])
+        return {
+            "applied": bool(changes or any(bias)),
+            "before": (state["coordinates"]["valence"], state["coordinates"]["arousal"]),
+            "changes": changes,
+            "bias_change": bias,
+            "target_change": (self._target_valence - state["target"]["valence"],
+                              self._target_arousal - state["target"]["arousal"]),
         }
 
     def _clamp_russell_to_circle(self) -> None:
@@ -258,39 +278,11 @@ class MoodSystem:
     # 이벤트에 대한 반응
     # ========================
     def on_click(self):
-        """사용자가 캐릭터를 클릭했을 때 - 긍정적 상호작용"""
-        # Russell 좌표 기반으로 부정도 판단
-        if self.russell.valence < -0.2:  # 부정적 상태
-            # 화난 상태: 클릭으로 더 강한 위로 효과 (Negativity Bias)
-            event = EmotionEvent(
-                goal_relevance=0.4,      # 약한 긍정
-                expectedness=0.6,
-                controllability=0.5,
-                self_attribution=0.1,
-                agent_benevolence=0.3,   # 긍정 의도
-            )
-            self.appraise_event(
-                event,
-                weight=1.2,
-                source="캐릭터 클릭 (위로)",
-                category="positive",
-                details="부정 상태에서 클릭 위로 효과를 강화",
-            )
-        else:
-            event = EmotionEvent(
-                goal_relevance=0.95,     # 최대 긍정
-                expectedness=0.85,
-                controllability=0.85,
-                self_attribution=0.5,
-                agent_benevolence=0.8,   # 강한 긍정 의도
-            )
-            self.appraise_event(
-                event,
-                weight=0.8,
-                source="캐릭터 클릭",
-                category="positive",
-                details="사용자의 긍정적인 상호작용",
-            )
+        """Evaluate a confirmed short click with the same contact limits."""
+        result = self.on_interaction('tap')
+        if result['applied']:
+            self._emotion_hold_until = max(self._emotion_hold_until, self.emotion_time() + 4.)
+        return result
 
     def on_positive_gesture(self, label: str, **context):
         """Legacy entry point shares the state-dependent observation policy."""
@@ -298,20 +290,25 @@ class MoodSystem:
         return self.on_interaction('user_' + signal, **context)
 
     def on_pet(self, movement_speed: float, elapsed_seconds: float = 0.15,
-               *, source="쓰다듬기", event_id=None) -> float:
+               *, source="쓰다듬기", event_id=None, return_result=False):
         """Share time/quality-based affection for mouse and camera contacts."""
         result = self.on_interaction('pet', speed=movement_speed, elapsed=elapsed_seconds,
                                      movement_speed=movement_speed, elapsed_seconds=elapsed_seconds,
                                      source=source, event_id=event_id)
-        return result['dose']
+        return result if return_result else result['dose']
+
+    def refuses_brief_contact(self) -> bool:
+        anger = self.occ_intensities[OccEmotionToMood.ANGER]
+        enter, _ = contact_refusal_conditions(self.get_display_emotion(), anger)
+        return enter
 
     def should_refuse_pet(self) -> bool:
         """Sustained hostility can refuse contact; fear alone accepts comfort."""
-        anger, valence = self.occ_intensities[OccEmotionToMood.ANGER], self.russell.valence
-        return update_label('contact_refusal', anger >= .65 and valence <= -.4,
-                            anger > .5 and valence < -.25,
+        anger = self.occ_intensities[OccEmotionToMood.ANGER]
+        enter, remain = contact_refusal_conditions(self.get_display_emotion(), anger)
+        return update_label('contact_refusal', enter, remain,
                             self.interactions.perception_states,
-                            self.interactions.perception_pending, time.monotonic())
+                            self.interactions.perception_pending, self.emotion_time())
 
     def on_idle(self):
         """캐릭터가 오래 방치되었을 때 - 무시당함"""
@@ -341,24 +338,14 @@ class MoodSystem:
             details="시스템 입력이 30초 이상 감지되지 않음",
         )
 
-    def on_drag_hard(self):
+    def on_drag_hard(self, *, return_result=False):
         """빠른 좌우 반복 흔들림에 반응한다. 단순 이동에서는 호출하지 않는다."""
-        now = time.monotonic()
+        now = self.emotion_time()
         if now - self._last_hard_drag_at < 1.8:
             return False
         self._last_hard_drag_at = now
-        event = EmotionEvent(
-            goal_relevance=-0.7,      # 중간 정도 부정적
-            expectedness=0.4,         # 예상 불가
-            controllability=0.3,
-            self_attribution=0.1,
-            agent_benevolence=-0.6,   # 중간 정도 부정적 의도
-        )
-        self.appraise_event(
-            event, weight=0.65, valence_bias=-0.35, arousal_bias=0.65, source="반복적인 캐릭터 흔들기", category="negative",
-            details="일정 거리 이상의 빠른 좌우 방향 전환이 반복됨",
-        )
-        return True
+        result = self.on_interaction('drag_shake')
+        return result if return_result else result['applied']
 
     def on_sudden_move(self):
         """갑작스러운 위치 변화 - 놀람/공포"""
@@ -389,35 +376,40 @@ class MoodSystem:
         )
 
     # ====== 사용자 없이 발생하는 자율 이벤트 ======
-    def on_self_play(self):
+    def on_self_play(self, *, session=None):
         """혼자 놀며 작은 즐거움과 활력을 얻는다."""
+        if session is not None:
+            return self.on_interaction('hide_found', session=session, event_id=f'{session}:outcome')
         event = EmotionEvent(
             goal_relevance=0.45,
             expectedness=0.5,
             controllability=0.8,
-            self_attribution=0.2,
             agent_benevolence=0.2,
         )
-        self.appraise_event(event, weight=0.5, valence_bias=0.04, arousal_bias=0.08,
-                            source="혼자 놀기", details="스스로 놀며 즐거움과 활력을 얻음")
+        return self.appraise_event(event, weight=0.5, valence_bias=0.04, arousal_bias=0.08,
+                                   source="혼자 놀기", details="스스로 놀며 즐거움과 활력을 얻음")
 
-    def on_self_rest(self):
+    def on_self_rest(self, elapsed_seconds=3.0, *, source="스스로 쉬기"):
         """스스로 쉬며 부정 감정을 조금 회복한다."""
+        fraction = unit(elapsed_seconds / 3.)
+        if not fraction:
+            return {}
         state_before = self._capture_emotion_state()
         for emotion, factor in {
             OccEmotionToMood.DISTRESS: 0.9,
             OccEmotionToMood.ANGER: 0.88,
             OccEmotionToMood.FEAR: 0.92,
         }.items():
-            self.occ_intensities[emotion] *= factor
+            self.occ_intensities[emotion] *= factor ** fraction
         event = EmotionEvent(
             goal_relevance=0.2,
             expectedness=0.8,
             controllability=0.7,
         )
-        self.appraise_event(event, weight=0.4, valence_bias=0.05, arousal_bias=-0.1,
-                            source="스스로 쉬기", details="휴식으로 고통·분노·두려움을 완화",
-                            state_before=state_before)
+        return self.appraise_event(event, weight=0.4 * fraction, valence_bias=0.05 * fraction,
+                                   arousal_bias=-0.1 * fraction, source=source,
+                                   details="휴식으로 고통·분노·두려움을 완화",
+                                   state_before=state_before, merge_window=1.5)
 
     def on_self_curiosity(self):
         """혼자 주변을 살피며 관심과 적당한 각성도를 얻는다."""
@@ -425,10 +417,9 @@ class MoodSystem:
             goal_relevance=0.3,
             expectedness=0.3,
             controllability=0.5,
-            self_attribution=0.1,
         )
-        self.appraise_event(event, weight=0.4, valence_bias=0.03, arousal_bias=0.12,
-                            source="주변 살피기", details="주변을 살피며 관심과 흥분도가 높아짐")
+        return self.appraise_event(event, weight=0.4, valence_bias=0.03, arousal_bias=0.12,
+                                   source="주변 살피기", details="주변을 살피며 관심과 흥분도가 높아짐")
 
     def on_task_complex(self):
         """복잡한 작업 감지 - 생각함"""
@@ -509,7 +500,8 @@ class MoodSystem:
         category: str | None = None,
         details: str = "",
         state_before: dict | None = None,
-    ) -> None:
+        merge_window: float = 0.0,
+    ) -> dict:
         """EmotionEvent 평가: OCC 기반 감정 업데이트 (성격 가중치 적용)"""
         state_before = state_before or self._capture_emotion_state()
         before = (state_before["coordinates"]["valence"], state_before["coordinates"]["arousal"])
@@ -585,6 +577,7 @@ class MoodSystem:
             min(1.0, self._event_arousal_bias + arousal_bias),
         )
         self._apply_occ_to_mood()
+        result = self._event_changes(state_before)
         self._record_influence(
             source=source,
             category=category or ("positive" if event.goal_relevance >= 0 else "negative"),
@@ -595,8 +588,9 @@ class MoodSystem:
             before=before,
             before_occ=before_occ,
             details=details,
-            event_input={**asdict(event), "valence_bias": valence_bias, "arousal_bias": arousal_bias},
-            state_before=state_before,
+            event_input={**asdict(event), "valence_bias": valence_bias, "arousal_bias": arousal_bias,
+                         "arousal_change": result["bias_change"][1] if not result["changes"] else 0.},
+            state_before=state_before, merge_window=merge_window,
         )
 
         # 사건 직후에는 감정이 바로 사라지지 않도록 잠시 유지한다.
@@ -607,8 +601,9 @@ class MoodSystem:
                 hold_seconds += 2.0
             self._emotion_hold_until = max(
                 self._emotion_hold_until,
-                time.monotonic() + hold_seconds,
+                self.emotion_time() + hold_seconds,
             )
+        return result
 
     def _record_influence(
         self,
@@ -636,6 +631,7 @@ class MoodSystem:
             "personality": self._personality_snapshot(),
         }
         target_after = {"valence": self._target_valence, "arousal": self._target_arousal}
+        target_changes = {key: target_after[key] - state_before["target"][key] for key in target_after}
         coordinate_changes = {"valence": self.russell.valence - before[0],
                               "arousal": self.russell.arousal - before[1]}
         inputs = deepcopy(event_input or {})
@@ -665,8 +661,7 @@ class MoodSystem:
             occ_before={emotion.value: value for emotion, value in before_occ.items()},
             occ_after={emotion.value: value for emotion, value in self.occ_intensities.items()},
             target_before=dict(state_before["target"]), target_after=target_after,
-            target_changes={key: target_after[key] - state_before["target"][key]
-                            for key in target_after},
+            target_changes=dict(target_changes),
             coordinate_changes=coordinate_changes, final_emotion=self.decide_emotion(),
             weight_applied=weight_applied,
         )
@@ -727,12 +722,20 @@ class MoodSystem:
             log_event('mood.influence', '감정 사건을 평가했습니다.', category='캐릭터 상태',
                       trace_id=self._last_influence_trace_id, **data)
 
+        if category in ('manual', 'recovery'):
+            return
+
         # A continuous input can merge into the history item. Report only this step.
-        if occ_changes and category != "recovery" and self._on_occ_change is not None:
+        if occ_changes and self._on_occ_change is not None:
             self._on_occ_change(source, occ_changes)
         arousal_change = inputs.get('arousal_change', 0.)
-        if arousal_change and category != 'recovery' and self._on_arousal_change is not None:
+        if arousal_change and self._on_arousal_change is not None:
             self._on_arousal_change(source, arousal_change)
+        if self._on_popup_coordinates is not None:
+            names = tuple(occ_changes) + (('arousal',) if arousal_change else ())
+            if names:
+                self._on_popup_coordinates(source, names, target_changes["valence"],
+                                           target_changes["arousal"])
 
 
     def _apply_occ_to_mood(self) -> None:
@@ -761,7 +764,7 @@ class MoodSystem:
         state_before = self._capture_emotion_state()
         previous_pressure = self._idle_pressure
         idle_seconds = max(0.0, float(idle_seconds))
-        self._idle_pressure = max(0.0, min(1.0, (idle_seconds - 10.0) / 90.0))
+        self._idle_pressure = max(0.0, min(1.0, (idle_seconds - 9.0) / 91.0))
         self._update_russell_from_occ()
         if abs(self._idle_pressure - previous_pressure) > 1e-12:
             self._record_influence(
@@ -841,8 +844,9 @@ class MoodSystem:
 
     def decay(self):
         """시간에 따른 감정 자연 감소"""
+        now = self.emotion_time()
         blocked = ('manual_override' if self._manual_russell_override else
-                   'emotion_hold' if time.monotonic() < self._emotion_hold_until else None)
+                   'emotion_hold' if now < self._emotion_hold_until else None)
         if blocked != self._decay_block_reason:
             log_event('mood.recovery.deferred' if blocked else 'mood.recovery.resumed',
                       '감정 자연 회복을 보류합니다.' if blocked else '감정 자연 회복을 재개합니다.',
@@ -852,7 +856,7 @@ class MoodSystem:
         if self._manual_russell_override:
             return
 
-        if time.monotonic() < self._emotion_hold_until:
+        if now < self._emotion_hold_until:
             return
 
         state_before = self._capture_emotion_state()
@@ -997,11 +1001,56 @@ class MoodSystem:
             "arousal": self.russell.arousal
         }
 
+    def emotion_time(self, now=None) -> float:
+        """Elapsed-time checks ignore time spent in the manual session."""
+        return (time.monotonic() if now is None else now) - self._paused_emotion_time
+
+    @property
+    def manual_emotion_active(self) -> bool:
+        return self._automatic_state is not None
+
+    def begin_manual_emotion(self) -> bool:
+        if self.manual_emotion_active:
+            return False
+        started_at = time.monotonic()
+        automatic = self.__dict__
+        # Keep the live host and its callbacks attached to the same MoodSystem.
+        shared = (self, self.personality_system, self._on_occ_change,
+                  self._on_arousal_change, self._on_popup_coordinates)
+        memo = {id(value): value for value in shared}
+        memo[id(self._emotion_influences)] = deque(maxlen=self._emotion_influences.maxlen)
+        self.__dict__ = deepcopy(automatic, memo)
+        self._automatic_state = (automatic, started_at)
+        self._excluded_influence_count = 0
+        self._last_influence_trace_id = None
+        return True
+
+    def set_manual_occ(self, name: str, value: float) -> None:
+        key = OccEmotionToMood(name)
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("OCC intensity must be finite")
+        self.begin_manual_emotion()
+        state_before = self._capture_emotion_state()
+        self.occ_intensities[key] = unit(value)
+        self.interactions._sync_claims()
+        if not self._manual_russell_override:
+            self._update_russell_from_occ()
+        self._record_influence(
+            source="수동 OCC 성분 조정", category="manual", base_weight=0.0,
+            adjusted_weight=0.0, personality_multiplier=1.0, personality_factors=[],
+            before=(self.russell.valence, self.russell.arousal),
+            before_occ=state_before["occ"], state_before=state_before, weight_applied=False,
+            details=f"{OCC_EMOTION_NAMES[name]} {self.occ_intensities[key]:.0%}",
+            event_input={"component": name, "intensity": self.occ_intensities[key]},
+        )
+
     def set_russell_state(self, valence: float, arousal: float, dominant: Optional[str] = None) -> None:
         """Russell 좌표를 직접 설정한다.
 
         디버그 UI에서 감정을 직접 드래그해 조정할 때 사용한다.
         """
+        self.begin_manual_emotion()
         state_before = self._capture_emotion_state()
         before = (self.russell.valence, self.russell.arousal)
         before_occ = dict(self.occ_intensities)
@@ -1026,14 +1075,18 @@ class MoodSystem:
             event_input={"valence": float(valence), "arousal": float(arousal)},
         )
 
-    def clear_manual_russell_state(self) -> None:
-        """수동 Russell 조작을 종료하고 자동 감정 갱신을 재개한다."""
-        was_manual = self._manual_russell_override
-        self._manual_russell_override = False
-        if was_manual:
-            log_event('mood.manual.released', '수동 감정 좌표 조정을 종료했습니다.',
-                      category='캐릭터 상태', trace_id=self._last_influence_trace_id,
-                      state=self.get_russell_state(), final_emotion=self.decide_emotion())
+    def clear_manual_russell_state(self) -> bool:
+        """촬영에 사용한 상태를 버리고 중단했던 자동 상태를 재개한다."""
+        if not self.manual_emotion_active:
+            return False
+        automatic, started_at = self._automatic_state
+        trace = self._last_influence_trace_id
+        self.__dict__ = automatic
+        self._paused_emotion_time += time.monotonic() - started_at
+        log_event('mood.manual.released', '수동 감정 조작을 종료하고 자동 감정을 재개했습니다.',
+                  category='캐릭터 상태', trace_id=trace,
+                  state=self.get_russell_state(), final_emotion=self.decide_emotion())
+        return True
 
     def get_emotion_explanation(self, limit: int | None = None) -> dict:
         """UI가 바로 표시할 수 있는 현재 판단 근거 스냅샷을 반환한다."""
@@ -1077,6 +1130,7 @@ class MoodSystem:
             "arousal": self.russell.arousal,
             "latest_change": latest,
             "recent_events": recent_events,
+            "manual_emotion_active": self.manual_emotion_active,
             "personality": personality,
             "occ_components": occ_components,
             "recovery_percent": max(0, min(100, recovery_percent)),
@@ -1086,8 +1140,8 @@ class MoodSystem:
             "peak_occ_percent": int(round(peak_occ * 100.0)),
             "decay_status": {
                 "reason": "manual_override" if self._manual_russell_override else
-                          ("emotion_hold" if time.monotonic() < self._emotion_hold_until else "active"),
-                "remaining_seconds": max(0.0, self._emotion_hold_until - time.monotonic()),
+                          ("emotion_hold" if self.emotion_time() < self._emotion_hold_until else "active"),
+                "remaining_seconds": max(0.0, self._emotion_hold_until - self.emotion_time()),
             },
             "history": {"capacity": self._emotion_influences.maxlen,
                         "retained": len(self._emotion_influences), "shown": len(recent_events),
@@ -1147,88 +1201,29 @@ class MoodSystem:
         return "\n".join(log_lines)
 
     def get_emotion_description_for_prompt(self) -> str:
-        """AI 프롬프트용 감정 상태 설명 생성"""
-        emotion_info = self.decide_emotion()
-        dominant_emotion = emotion_info["emotion"]
-        intensity = emotion_info["intensity"]
-        
-        descriptions = []
-        
-        # 주요 감정 설명
-        descriptions.append(f"현재 감정: {dominant_emotion} ({int(intensity * 100)}%)")
-        
-        # Russell 좌표 설명
-        valence = self.russell.valence
-        arousal = self.russell.arousal
-        
-        # Valence 설명
-        if valence > 0.5:
-            valence_text = "매우 긍정적"
-        elif valence > 0.2:
-            valence_text = "긍정적"
-        elif valence > -0.2:
-            valence_text = "중립적"
-        elif valence > -0.5:
-            valence_text = "부정적"
-        else:
-            valence_text = "매우 부정적"
-        
-        # Arousal 설명
-        if arousal > 0.5:
-            arousal_text = "매우 흥분되고"
-        elif arousal > 0.2:
-            arousal_text = "흥분되고"
-        elif arousal > -0.2:
-            arousal_text = "보통이고"
-        elif arousal > -0.5:
-            arousal_text = "침착한"
-        else:
-            arousal_text = "매우 침착한"
-        
-        descriptions.append(f"기분: {arousal_text} {valence_text}")
-        
-        return "\n".join(descriptions)
+        """기본 표정과 같은 러셀 구역을 대사 감정으로 전달한다."""
+        emotion = self.get_display_emotion()
+        return f"현재 감정: {emotion} ({SECTOR_NAMES[emotion]})"
 
     def get_emotion_tone_instructions(self) -> str:
-        """AI가 따를 말투 지침 생성 - 17개 감정 기반"""
-        emotion_info = self.decide_emotion()
-        dominant_emotion = emotion_info["emotion"]
-        intensity = emotion_info["intensity"]
-        
-        # 17개 감정별 톤 지침
+        """기본 표정의 러셀 구역에 맞는 말투 지침을 반환한다."""
         tone_instructions = {
-            # 긍정-흥분
-            "joy": "평소 말투에 즐거운 기색을 조금 더하세요.",
-            "delight": "작은 기쁨을 따뜻한 표현으로 드러내세요.",
-            "excitement": "기대감을 한 번 짧게 표현하세요.",
-            "interest": "궁금한 점이 있을 때만 짧게 물어보세요.",
-            "contentment": "만족스럽고 편안한 기색을 담으세요.",
-            
-            # 부정-흥분
-            "anger": "불편함은 한 번 솔직하게 표현하되 날을 세우거나 사용자를 탓하지 마세요.",
-            "disgust": "마음에 들지 않는 점을 담담하게 표현하세요.",
-            "fear": "조심스러움을 살짝 표현하되 과하게 겁내지 마세요.",
-            "anxiety": "작은 걱정을 표현하되 평소의 안정적인 문장 호흡을 유지하세요.",
-            
-            # 긍정-진정
-            "calm": "차분하고 담백하게 표현하세요.",
-            "peaceful": "편안한 기색을 부드럽게 담으세요.",
-            
-            # 부정-진정
-            "sadness": "조금 기운 없는 기색만 담고 대화에는 다정하게 응하세요.",
-            "melancholy": "생각이 잠긴 듯 짧고 차분하게 표현하세요.",
-            "despair": "지친 기색을 살짝 담되 극단적 표현과 자기비하는 피하세요.",
-            
-            # 중립
             "neutral": "설정된 성격과 평소 말투 그대로 표현하세요.",
+            "pleasant": "평소 말투에 즐거운 기색을 조금 더하세요.",
+            "happy": "작은 기쁨을 따뜻한 표현으로 드러내세요.",
+            "proud": "뿌듯한 기색을 짧게 표현하세요.",
+            "excited": "기대감을 한 번 짧게 표현하세요.",
+            "thrilled": "들뜬 기색을 한 번 짧게 표현하세요.",
+            "anxious": "작은 걱정을 표현하되 평소의 안정적인 문장 호흡을 유지하세요.",
+            "hurt": "속상한 기색을 짧게 표현하되 사용자를 탓하지 마세요.",
+            "distressed": "힘든 기색을 짧게 드러내고 극단적 표현과 자기비하는 피하세요.",
+            "displeased": "불편한 기색을 담담하게 표현하되 사용자를 탓하지 마세요.",
+            "sad": "조금 기운 없는 기색만 담고 대화에는 다정하게 응하세요.",
+            "depressed": "가라앉은 기색을 짧고 차분하게 표현하고 자기비하는 피하세요.",
+            "tired": "조금 피곤한 기색을 담아 짧고 담백하게 표현하세요.",
+            "quiet": "말수를 조금 줄이고 담백하게 표현하세요.",
+            "calm": "차분하고 담백하게 표현하세요.",
+            "relieved": "만족스럽고 편안한 기색을 담으세요.",
+            "serene": "편안한 기색을 부드럽게 담으세요.",
         }
-        
-        instruction = tone_instructions.get(dominant_emotion, tone_instructions["neutral"])
-        
-        # 강도에 따라 추가 지침
-        if intensity > 0.8:
-            instruction += " (강한 감정도 한 번만 절제해 드러내고 기본 말투와 성격을 유지하세요)"
-        elif intensity < 0.4:
-            instruction += " (약한 감정 - 완화된 표현을 사용하세요)"
-        
-        return instruction + ' 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요.'
+        return tone_instructions[self.get_display_emotion()]

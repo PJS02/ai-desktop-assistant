@@ -15,12 +15,13 @@ class PerceptionController:
     """공통 인식 이벤트를 중복과 노이즈가 제거된 캐릭터 반응으로 바꾼다."""
 
     AWAY_CONFIRM_SECONDS = 5.0
+    B2_MIN_CONFIDENCE = 0.28
 
     def __init__(
         self,
         mood_system,
         on_dialogue: Callable[[str], None] | None = None,
-        emotion_confidence: float = 0.55,
+        emotion_confidence: float = 0.52,
         emotion_samples: int = 3,
         emotion_cooldown: float = 8.0,
         reaction_cooldown: float = 3.0,
@@ -206,19 +207,23 @@ class PerceptionController:
             state['cursors'].pop('face', None)
         if not self._fresh(state, 'face', event, observation):
             return
-        if observation.confidence < self.emotion_confidence or observation.label == 'neutral':
+        confidence = observation.confidence
+        minimum_confidence = self.emotion_confidence
+        if observation.model == 'emotieff_b2':
+            confidence = observation.scores.get(observation.label, confidence)
+            minimum_confidence = self.B2_MIN_CONFIDENCE
+        if observation.label == 'neutral' or confidence < minimum_confidence:
             state['face'] = state['face_applied'] = None
-            self._reject('face', 'neutral' if observation.label == 'neutral' else 'low_confidence',
-                         event, label=observation.label, confidence=observation.confidence)
+            reason = 'neutral' if observation.label == 'neutral' else 'low_confidence'
+            self._reject('face', reason, event, label=observation.label, confidence=confidence)
             return
-        observed = observation.observed_at if observation.observed_at is not None else event.timestamp
         face = state['face']
         if face is None or face['label'] != observation.label or observed - face['last'] > 1.5:
             face = {'label': observation.label, 'since': observed, 'last': observed, 'samples': 0}
             state['face'] = face
             state['face_applied'] = None
         face['last'], face['samples'] = observed, face['samples'] + 1
-        if face['samples'] < self.emotion_samples or observed - face['since'] < 1.:
+        if face['samples'] < self.emotion_samples or observed - face['since'] < .9:
             return
         if now - self._last_emotion_at < self.emotion_cooldown:
             self._reject('emotion', 'cooldown', event, label=observation.label)
@@ -226,7 +231,7 @@ class PerceptionController:
         maintenance = .25 if state['face_applied'] == observation.label else 1.
         self._last_emotion_at = now
         state['face_applied'] = observation.label
-        self._affect(event, 'face', label=observation.label, quality=observation.confidence,
+        self._affect(event, 'face', label=observation.label, quality=confidence,
                      maintenance=maintenance * scale, observation=observation)
 
     def _handle_gestures(self, event, now, state):
@@ -279,7 +284,7 @@ class PerceptionController:
             episode['last'], episode['samples'] = observed, episode['samples'] + 1
             if episode['latched']:
                 continue
-            if signal != 'greeting' and (episode['samples'] < 2 or observed - episode['since'] < .25):
+            if signal != 'greeting' and (episode['samples'] < 2 or observed - episode['since'] < .22):
                 continue
             episode['latched'] = True
             if signal == 'greeting':

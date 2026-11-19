@@ -9,6 +9,8 @@ import time
 
 from app_logging import (SESSION_ID, configure_logging, ingest_event, log_event,
                          new_trace_id, register_environment_secrets, shutdown_logging)
+from app_paths import APP_ROOT, IS_INSTALLED, USER_DATA_ROOT
+from inference_device import configure_inference_process
 from log_classification import classify_output
 
 _startup_capture = None
@@ -16,7 +18,7 @@ if __name__ == '__main__':
     # Capture native/library diagnostics before importing either GUI or models.
     from native_log_capture import StartupCapture
     register_environment_secrets()
-    configure_logging(Path(__file__).resolve().parent / 'logs')
+    configure_logging(USER_DATA_ROOT / 'logs')
     _startup_capture = StartupCapture()
     def _close_startup_logging():
         _startup_capture.close()
@@ -26,12 +28,13 @@ if __name__ == '__main__':
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtGui import QIcon
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(USER_DATA_ROOT / '.env' if IS_INSTALLED else None)
 register_environment_secrets()
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_ROOT
 MEDIAPIPE_MAIN = PROJECT_ROOT / "medeapipe_capstone" / "main.py"
 
 
@@ -79,10 +82,11 @@ class MediaPipeProcessManager(QObject):
             child_env["PYTHONUNBUFFERED"] = "1"
             child_env['CAPSTONE_LOG_PROTOCOL'] = '1'
             child_env['CAPSTONE_LOG_SESSION'] = SESSION_ID
+            python_args = ['-B', '-X', 'utf8', '-u'] if IS_INSTALLED else []
             self._stopping = False
             self._healthy = False
             self.process = subprocess.Popen(
-                [sys.executable, str(self.script_path), "--background"],
+                [sys.executable, *python_args, str(self.script_path), "--background"],
                 cwd=str(PROJECT_ROOT),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -329,14 +333,18 @@ class MediaPipeProcessManager(QObject):
 
 
 def main():
-    configure_logging(PROJECT_ROOT / 'logs')
+    configure_logging(USER_DATA_ROOT / 'logs')
+    log_event('inference.device.configuration', '로컬 모델 연산 장치 설정', mode=configure_inference_process())
     app = QApplication(sys.argv)
+    if IS_INSTALLED:
+        app.setWindowIcon(QIcon(str(APP_ROOT.parent / 'Cloudy.ico')))
     if _startup_capture is not None:
         _startup_capture.handoff_python()
     # Subscribe before character initialization so its early readiness is retained.
     from character.preparation_status import PreparationOverlay, PreparationStatus
     preparation = PreparationStatus(app)
 
+    from ai.gemini_client import is_screen_privacy_enabled
     from character.character_widget import CharacterWidget, HAS_CONTEXT
     from character.model_preparation import ModelPreparation
     from character.config_manager import (load_config, load_character_options,
@@ -347,6 +355,7 @@ def main():
     from hand_overlay.controller import HandOverlayController
     from hand_overlay.interaction_host import HandInteractionController
     from character.log_console import AppLogManager, LogWindow
+    from context import screen_history
     log_manager = AppLogManager()
     log_manager.install_capture()
     log_event('application.qt_ready', 'Qt 앱 준비 완료')
@@ -373,6 +382,8 @@ def main():
         on_rps_command=mediapipe_manager.send_game_command,
         character_options=load_character_options(),
     )
+    screen_history.set_enabled(is_screen_privacy_enabled(character.gemini_config))
+    log_window.sync_screen_privacy()
     character._startup_choice_pending = True
     character.preparation_status = preparation
     preparation.configure_hands(load_hand_overlay_options()['enabled'])
@@ -383,10 +394,12 @@ def main():
     character.hand_interactions = HandInteractionController(character, hand_overlay)
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
-    character.preparation_overlay = PreparationOverlay(preparation, character)
     model_preparation = ModelPreparation(character.dialogue_system.long_term_memory,
-                                        screen_enabled=HAS_CONTEXT and character.auto_program_detection)
+                                        screen_enabled=(HAS_CONTEXT and character.auto_program_detection
+                                                        and is_screen_privacy_enabled(character.gemini_config)))
     character.model_preparation = model_preparation
+    character.preparation_overlay = PreparationOverlay(preparation, character,
+                                                       retry_screen=model_preparation.retry_screen)
     picker = StartupPersonalityDialog(personality)
 
     def start_character(selected):

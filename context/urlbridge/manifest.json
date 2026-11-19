@@ -1,15 +1,26 @@
 {
     "name": "URL Bridge",
-    "description": "Send active tab URL to localhost HTTP receiver.",
-    "version": "0.1.0",
+    "description": "Send active tab activity to the local desktop character.",
+    "version": "0.2.0",
     "manifest_version": 3,
     "permissions": [
-        "tabs"
+        "tabs",
+        "alarms"
     ],
     "host_permissions": [
         "http://127.0.0.1:8765/*",
-        "http://localhost:8765/*"
+        "http://localhost:8765/*",
+        "http://127.0.0.1:8766/*"
     ],
+    "content_scripts": [{
+        "matches": [
+            "https://*.youtube.com/*",
+            "https://*.netflix.com/*",
+            "https://*.twitch.tv/*",
+            "https://chzzk.naver.com/*"
+        ],
+        "js": ["video.js"]
+    }],
     "background": {
         "service_worker": "background.js"
     },

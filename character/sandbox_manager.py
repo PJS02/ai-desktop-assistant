@@ -210,7 +210,7 @@ class BallWidget(QWidget):
 
     def closeEvent(self, event):
         character = self.manager.character_widget
-        recent_kick = self._last_collision_at > 0 and time.monotonic() - self._last_collision_at < 3.0
+        recent_kick = self._last_collision_at > 0 and time.monotonic() - self._last_collision_at < 3.5
         removed_during_play = (self.manager.ball is self and self.manager.selected_item is None
                                and (getattr(character, '_ball_chasing', False) or recent_kick))
         self._hand_dragging = self.is_dragging = False

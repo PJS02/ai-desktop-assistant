@@ -8,6 +8,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from app_logging import log_event, log_throttled, new_trace_id
+from app_paths import IS_INSTALLED
 
 import cv2
 import numpy as np
@@ -31,6 +32,7 @@ from recognition import holistic_tracker as core
 from recognition.desktop_hands import DesktopHandTracker
 from recognition.emotion_recognizer import EmotionRecognizer
 from recognition.emotieff_recognizer import EmotiEffNetB2Recognizer
+from recognition.head_motion import HeadMotionTracker, face_offset
 from recognition.stt_engine import (
     LANGUAGE_OPTIONS,
     PROVIDER_OPTIONS,
@@ -138,7 +140,7 @@ class RecognitionEngine(SettingsBridge):
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
         self.wave_started_at = None
         self._wave_active = False
-        self.head_history = deque(maxlen=36)
+        self.head_motion = HeadMotionTracker()
         self.away_frame_count = 0
         self.emotion_result = None
         self.last_emotion_inference_ms = -EMOTION_INFERENCE_INTERVAL_MS
@@ -213,6 +215,10 @@ class RecognitionEngine(SettingsBridge):
         # Single-threaded image conversion avoids waking a pool for every frame.
         cv2.setNumThreads(1)
         holistic_options = holistic_configuration()
+        if IS_INSTALLED and holistic_options['model_complexity'] == 2:
+            pose_model = Path(core.mp.__file__).parent / 'modules/pose_landmark/pose_landmark_heavy.tflite'
+            if not pose_model.is_file():
+                raise FileNotFoundError(f'Missing bundled MediaPipe model: {pose_model}')
         log_event('recognition.tracker.loading', 'MediaPipe 모델 불러오기 시작', category='사용자 인식')
         self.holistic = core.mp_holistic.Holistic(**holistic_options)
         # Bound the lightweight trial to 10 FPS so cheaper inference buys CPU
@@ -786,7 +792,7 @@ class RecognitionEngine(SettingsBridge):
         self.wave_histories = {"left": deque(maxlen=30), "right": deque(maxlen=30)}
         self.wave_started_at = None
         self._wave_active = False
-        self.head_history = deque(maxlen=36)
+        self.head_motion = HeadMotionTracker()
         self.away_frame_count = 0
 
 
@@ -1034,6 +1040,7 @@ class RecognitionEngine(SettingsBridge):
         event = self.build_recognition_state_event()
         control = json.dumps({**{key: event.get(key) for key in
                               ('camera_status', 'emotion_model', 'speech')},
+                              'head': event['always']['head']['value'],
                               'mode': (event.get('mode') or {}).get('active')},
                              ensure_ascii=False, sort_keys=True)
         now = time.monotonic()
@@ -1456,8 +1463,10 @@ class RecognitionEngine(SettingsBridge):
 
 
     def update_head_state(self, frame_record):
-        self.update_head_history(frame_record)
-        head_state = self.detect_head_motion()
+        observed_at = self.camera_observed_at
+        if observed_at is None:
+            observed_at = frame_record['timestamp_ms'] / 1000
+        head_state = self.head_motion.update(face_offset(frame_record), observed_at)
         if head_state == "AGREE":
             result_state = "\ub3d9\uc758"
             overlay_state = "AGREE"
@@ -1690,53 +1699,6 @@ class RecognitionEngine(SettingsBridge):
         return scale
 
 
-    def update_head_history(self, frame_record):
-        offset = self.get_head_offset(frame_record)
-        self.head_history.append(offset)
-
-
-    def get_head_offset(self, frame_record):
-        upper_body = frame_record["upper_body_landmarks"]
-        nose = upper_body.get("NOSE")
-        left_eye = upper_body.get("LEFT_EYE")
-        right_eye = upper_body.get("RIGHT_EYE")
-        if nose is None or left_eye is None or right_eye is None:
-            return None
-
-        left_eye_point = core.point_from_record(left_eye)
-        right_eye_point = core.point_from_record(right_eye)
-        nose_point = core.point_from_record(nose)
-        eye_distance = core.distance_between_points(left_eye_point, right_eye_point)
-        if eye_distance is None or eye_distance <= 0:
-            return None
-
-        center_x = (left_eye_point[0] + right_eye_point[0]) / 2
-        center_y = (left_eye_point[1] + right_eye_point[1]) / 2
-        return (
-            (nose_point[0] - center_x) / eye_distance,
-            (nose_point[1] - center_y) / eye_distance,
-        )
-
-
-    def detect_head_motion(self):
-        offsets = [offset for offset in self.head_history if offset is not None]
-        if len(offsets) < 12:
-            return "WAIT"
-
-        xs = [offset[0] for offset in offsets]
-        ys = [offset[1] for offset in offsets]
-        x_amplitude = max(xs) - min(xs)
-        y_amplitude = max(ys) - min(ys)
-        x_changes = self.count_direction_changes(xs, min_delta=0.035)
-        y_changes = self.count_direction_changes(ys, min_delta=0.035)
-
-        if y_amplitude >= 0.23 and y_changes >= 2 and y_amplitude > x_amplitude * 1.12:
-            return "AGREE"
-        if x_amplitude >= 0.2 and x_changes >= 2 and x_amplitude > y_amplitude * 1.12:
-            return "NEGATIVE"
-        return "WAIT"
-
-
     def detect_attention_state(self, frame_record):
         has_face = bool(frame_record["face_landmarks"])
         has_nose = frame_record["upper_body_landmarks"].get("NOSE") is not None
@@ -1756,23 +1718,6 @@ class RecognitionEngine(SettingsBridge):
         if direction in ("LEFT", "RIGHT"):
             return "LOOKING_AWAY"
         return "SEARCHING"
-
-
-    def count_direction_changes(self, values, min_delta):
-        signs = []
-        for previous, current in zip(values, values[1:]):
-            delta = current - previous
-            if abs(delta) < min_delta:
-                continue
-            signs.append(1 if delta > 0 else -1)
-
-        changes = 0
-        previous_sign = None
-        for sign in signs:
-            if previous_sign is not None and sign != previous_sign:
-                changes += 1
-            previous_sign = sign
-        return changes
 
 
     def get_display_hand_states(self, frame_record):

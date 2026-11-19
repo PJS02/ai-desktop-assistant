@@ -7,7 +7,8 @@ const files = ['textures/parts.js', 'skin-tone.js', 'motion.js', 'limb-girth.js'
   'dizzy-fx.js',
   'side-wave-skinning.js', 'side-cuff.js', 'side-cuff-roll.js',
   'side-cuff-attachment.js', 'side-cuff-motion.js', 'side-cuff-art.js',
-  'side-cuff-fit.js', 'renderer.js'];
+  'side-cuff-fit.js', 'high-five.js', 'activity-trip.js', 'renderer.js',
+  'activity-hands.js', 'activity-games.js', 'activity-preview.js'];
 const context = {CLOUDY_BINARY_MESHES: true};
 context.window = context;
 context.globalThis = context;
@@ -49,6 +50,8 @@ input.on('line', line => {
     let result;
     switch (request.op) {
       case 'init': result = {parts: context.CLOUDY_PARTS, hashes,
+        tripDurations: Object.fromEntries(Object.entries(context.CloudyActivityTrip.landings)
+          .map(([action, clip]) => [action, clip.duration])),
         effects: bridge.effectMetadata(), recipes: bridge.effectRecipes()}; break;
       case 'plan': result = bridge.plan(request.state || {}); break;
       case 'sample': result = bridge.sample(request.state || {}); break;

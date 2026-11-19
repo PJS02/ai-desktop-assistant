@@ -6,6 +6,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 import torch
+from inference_device import torch_device
 
 
 MODEL_NAME = "enet_b2_8"
@@ -27,7 +28,7 @@ class EmotiEffNetB2Recognizer:
             return_value=str(self.weight_path),
         ):
             self.model = facial_analysis.EmotiEffLibRecognizer(
-                engine="torch", model_name=MODEL_NAME, device="cpu"
+                engine="torch", model_name=MODEL_NAME, device=torch_device(torch)
             )
 
     def predict(self, face_bgr):

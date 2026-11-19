@@ -1,17 +1,21 @@
 from __future__ import annotations
 from collections import deque
+from datetime import datetime
 import logging
 import re
 import sys
 import threading
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, qInstallMessageHandler
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QPixmap
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QPlainTextEdit, QPushButton, QSplitter, QTabBar, QVBoxLayout, QWidget,
-    QTreeWidget, QTreeWidgetItem, QHeaderView, QTabWidget, QComboBox, QMenu, QFrame, QToolButton)
+    QTreeWidget, QTreeWidgetItem, QHeaderView, QTabWidget, QComboBox, QMenu, QFrame, QToolButton,
+    QScrollArea, QDialog, QMessageBox)
 from app_logging import EventLoggingHandler, LogEvent, file_status, get_events, log_event, subscribe
+from context import screen_history
 from log_classification import classify_output
-from .log_presentation import CATEGORY_TABS, present_event
+from .log_presentation import CATEGORY_TABS, SCREEN_PRIVACY_TOPIC, present_event
+from .floating_panels import configure_floating_panel
 
 LOG_CATEGORIES = ('전체', '사용자 인식', '캐릭터 상태', '대화·AI', '시스템', '오류')
 LogEntry = LogEvent
@@ -182,6 +186,7 @@ class LogWindow(QWidget):
     """One chronological integrated view and domain-specific views of the same records."""
     def __init__(self, manager):
         super().__init__()
+        configure_floating_panel(self)
         self.manager = manager
         self.is_paused = False
         self._allow_close = False
@@ -193,6 +198,8 @@ class LogWindow(QWidget):
         self._previous_source_entry = None
         self._last_source_sequence = -1
         self._saved_topics = {}
+        self._screen_privacy_enabled = screen_history.capture_generation() is not None
+        self._screen_images = ()
         self.setWindowTitle('AI Desktop Assistant 로그')
         self.resize(1150, 750)
         self.setMinimumSize(850, 500)
@@ -336,6 +343,7 @@ class LogWindow(QWidget):
         self.output.currentItemChanged.connect(self.show_entry_details)
         self.output.itemExpanded.connect(self._expand_item)
         self.output.itemDoubleClicked.connect(self.show_details)
+        self.output.itemClicked.connect(self._open_log_image)
         self.splitter.addWidget(self.output)
         self.detail_tabs = QTabWidget()
         self.content_details = QPlainTextEdit()
@@ -355,6 +363,32 @@ class LogWindow(QWidget):
         self.splitter.addWidget(self.detail_tabs)
         self.detail_tabs.hide()
         log_content.addWidget(self.splitter, 1)
+        self.screen_panel = QWidget()
+        screen_controls = QHBoxLayout(self.screen_panel)
+        screen_controls.setContentsMargins(0, 0, 0, 0)
+        self.screen_picker = QComboBox()
+        self.screen_picker.setAccessibleName('보관된 마스킹 이미지')
+        self.screen_picker.setPlaceholderText('보관된 마스킹 이미지 선택')
+        self.screen_picker.activated.connect(self._open_archived_image)
+        screen_controls.addWidget(self.screen_picker, 1)
+        self.clear_screens_button = QPushButton('보관 이미지 모두 지우기')
+        self.clear_screens_button.clicked.connect(self._clear_screen_images)
+        screen_controls.addWidget(self.clear_screens_button)
+        log_content.addWidget(self.screen_panel)
+        self.screen_panel.hide()
+
+        self.screen_dialog = QDialog(self)
+        configure_floating_panel(self.screen_dialog)
+        self.screen_dialog.setWindowTitle('마스킹 이미지')
+        self.screen_dialog.resize(900, 600)
+        preview_layout = QVBoxLayout(self.screen_dialog)
+        self.screen_preview = QLabel()
+        self.screen_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview_scroll = QScrollArea()
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setWidget(self.screen_preview)
+        preview_layout.addWidget(preview_scroll)
+        self.screen_dialog.finished.connect(self.screen_preview.clear)
         self.status_label = QLabel()
         self.status_label.setStyleSheet('color: #65738a;')
         log_content.addWidget(self.status_label)
@@ -402,17 +436,18 @@ class LogWindow(QWidget):
             self._presentations[key] = present_event(entry)
         return self._presentations[key]
 
-    def _category_changed(self, *_args):
+    def _category_changed(self, *_args, force=False):
         category = self.current_category()
         self.subtabs.blockSignals(True)
         self.subtabs.clear()
-        self.subtabs.addItems(CATEGORY_TABS[category])
+        names = [name for name in CATEGORY_TABS[category]
+                 if name != SCREEN_PRIVACY_TOPIC or self._screen_privacy_enabled]
+        self.subtabs.addItems(names)
         remembered = self._saved_topics.get(category, '통합')
-        names = CATEGORY_TABS[category]
         self.subtabs.setCurrentRow(names.index(remembered) if remembered in names else 0)
         self.subtabs.blockSignals(False)
         self._update_hint()
-        self.refresh()
+        self.refresh(force=force)
 
     def _topic_changed(self, *_args):
         self._saved_topics[self.current_category()] = self.current_topic()
@@ -422,13 +457,74 @@ class LogWindow(QWidget):
     def _update_hint(self):
         topic = self.current_topic()
         self.output.raw_mode = topic == '원본'
-        if topic == '원본':
+        self.screen_panel.setVisible(topic == SCREEN_PRIVACY_TOPIC)
+        if topic != SCREEN_PRIVACY_TOPIC:
+            self.screen_dialog.close()
+        if topic == SCREEN_PRIVACY_TOPIC:
+            text = '마스킹 완료 로그를 클릭하면 연결된 이미지가 열립니다.'
+        elif topic == '원본':
             text = '수집한 원문과 이벤트명을 그대로 표시합니다. 각 행의 원본 JSON에서 전체 기록을 확인할 수 있습니다.'
         elif topic == '요청·응답 전문':
             text = '요청·프롬프트·HTTP 응답·가공 단계를 표시합니다. 행을 펼치거나 아래 내용·전문에서 전체 본문을 읽을 수 있습니다.'
         else:
             text = '모든 단계를 수집 순서대로 표시하며 각 행에 발생 시각을 보여줍니다. 행을 펼치면 전문과 상세 내용을 볼 수 있습니다.'
         self.view_hint.setText(text)
+
+    def sync_screen_privacy(self):
+        enabled = screen_history.capture_generation() is not None
+        if enabled != self._screen_privacy_enabled:
+            self._screen_privacy_enabled = enabled
+            self._category_changed(force=True)
+
+    def _refresh_screen_images(self):
+        selected = self.screen_picker.currentData()
+        try:
+            images = screen_history.list_images()
+        except OSError:
+            self.screen_picker.setEnabled(False)
+            self.screen_picker.setToolTip('보관 이미지를 불러올 수 없습니다.')
+            return
+        if images != self._screen_images:
+            self._screen_images = images
+            self.screen_picker.clear()
+            for path in images:
+                captured_at = datetime.fromtimestamp(int(path.stem.split('-')[1]) / 1_000_000_000)
+                self.screen_picker.addItem(captured_at.strftime('%Y-%m-%d %H:%M:%S'), path.stem)
+            index = self.screen_picker.findData(selected) if selected else -1
+            self.screen_picker.setCurrentIndex(index)
+        self.screen_picker.setEnabled(bool(images))
+        self.screen_picker.setToolTip('' if images else '보관된 마스킹 이미지가 없습니다.')
+        self.clear_screens_button.setEnabled(bool(images))
+
+    def _open_log_image(self, item, _column):
+        if self.current_topic() != SCREEN_PRIVACY_TOPIC:
+            return
+        entries = item.data(0, Qt.ItemDataRole.UserRole)
+        if entries and entries[0].event == 'gemini.screen_redacted':
+            image_id = entries[0].data.get('screen_image_id')
+            index = self.screen_picker.findData(image_id) if image_id else -1
+            self._open_archived_image(index)
+
+    def _open_archived_image(self, index):
+        if index < 0:
+            self.screen_preview.setText('이 로그에 연결된 보관 이미지가 없습니다.')
+        else:
+            pixmap = QPixmap(str(self._screen_images[index]))
+            if pixmap.isNull():
+                self.screen_preview.setText('이미지가 삭제되었거나 읽을 수 없습니다.')
+            else:
+                self.screen_preview.setPixmap(pixmap)
+        self.screen_dialog.show()
+        self.screen_dialog.raise_()
+        self.screen_dialog.activateWindow()
+
+    def _clear_screen_images(self):
+        self.screen_dialog.close()
+        try:
+            screen_history.clear()
+        except OSError:
+            QMessageBox.warning(self, '마스킹 이미지', '보관 이미지를 모두 지우지 못했습니다.')
+        self._refresh_screen_images()
 
     def current_category(self):
         return LOG_CATEGORIES[max(0, self.tabs.currentIndex())]
@@ -606,6 +702,8 @@ class LogWindow(QWidget):
         self.search_input.setText(entry.trace_id)
 
     def on_entry_added(self, entry):
+        if entry.event == 'settings.ai.saved':
+            self.sync_screen_privacy()
         if self.is_paused:
             self._update_status()
             return
@@ -621,6 +719,8 @@ class LogWindow(QWidget):
             return
         if self.manager.evicted_count != self._last_evicted_count:
             self._trim_evicted()
+        if self.current_topic() == SCREEN_PRIVACY_TOPIC and entry.data.get('screen_image_id'):
+            self._refresh_screen_images()
         if self.matches_filters(entry):
             self._visible_entries.append(entry)
             self._append_row(entry)
@@ -663,8 +763,10 @@ class LogWindow(QWidget):
         self._refresh_pending = False
         self.refresh()
 
-    def refresh(self, *_args):
-        if self.is_paused:
+    def refresh(self, *_args, force=False):
+        if self.current_topic() == SCREEN_PRIVACY_TOPIC:
+            self._refresh_screen_images()
+        if self.is_paused and not force:
             self._update_status()
             return
         selected = self._selected_entry()
@@ -750,6 +852,7 @@ class LogWindow(QWidget):
         self.close()
 
     def closeEvent(self, event):
+        self.screen_dialog.close()
         if self._allow_close:
             event.accept()
         else:

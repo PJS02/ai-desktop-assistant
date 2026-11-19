@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import threading
+from time import monotonic
 
 from app_logging import log_event
 
@@ -32,6 +33,7 @@ _lock = threading.Lock()
 _analyzer = None
 _ocr = None
 _models_prepared = False
+OCR_PREPARATION_TIMEOUT_SECONDS = 240
 _PRIVATE_MENU = re.compile(
     r"(?:비밀번호|password|아이디|로그인\s*ID|api[_\s-]?key|access[_\s-]?token)\s*"
     r"(?:변경|바꾸기|수정|설정|재설정|찾기|입력|검색|확인|복사)", re.I,
@@ -97,12 +99,16 @@ def _redact_text(text, known_values):
     return text
 
 
-def prepare(*, cancelled=lambda: False) -> bool:
+def prepare(*, cancelled=lambda: False, reset_worker=False) -> bool:
     """합성 입력으로 OCR·이름 인식을 차례로 준비한다. 화면 캡처나 API 호출은 없다."""
     global _ocr, _models_prepared
     with _lock:
         if cancelled():
             return False
+        if reset_worker:
+            _models_prepared = False
+            if _ocr is not None:
+                _ocr.close()
         if _models_prepared:
             return True
         import cv2
@@ -114,10 +120,13 @@ def prepare(*, cancelled=lambda: False) -> bool:
         pixels = np.full((64, 256, 3), 255, dtype=np.uint8)
         cv2.putText(pixels, "warmup", (8, 45), cv2.FONT_HERSHEY_SIMPLEX,
                     0.9, (0, 0, 0), 2, cv2.LINE_AA)
-        if len(list(_ocr.predict(pixels, return_word_box=True))) != 1:
+        started = monotonic()
+        if len(_ocr.predict(pixels, return_word_box=True, timeout=OCR_PREPARATION_TIMEOUT_SECONDS)) != 1:
             raise ScreenPrivacyError("화면 글자 인식 모델을 준비하지 못했어요")
         log_event('screen.models.progress', '글자 인식 준비 완료', category='대화·AI',
-                  completed=1, total=2, detail='글자 인식 완료 · 개인정보 인식을 준비하는 중')
+                  completed=1, total=2, detail='글자 인식 완료 · 개인정보 인식을 준비하는 중',
+                  elapsed_seconds=round(monotonic() - started, 3),
+                  timeout_seconds=OCR_PREPARATION_TIMEOUT_SECONDS)
         if cancelled():
             return False
         _get_analyzer().analyze(text="모델준비확인", language="ko")
@@ -125,13 +134,39 @@ def prepare(*, cancelled=lambda: False) -> bool:
         return True
 
 
-def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None):
+def try_read_screen_text(capture):
+    """Use the warm local OCR worker when idle. Raw results stay with the caller."""
+    if not _lock.acquire(blocking=False):
+        return None
+    try:
+        if _ocr is None:
+            return None
+        import cv2
+        import numpy as np
+
+        if not _ocr.running:
+            if _models_prepared:
+                # A failed read closes the worker. Restart with synthetic input.
+                _ocr.predict(np.full((64, 256, 3), 255, dtype=np.uint8), return_word_box=False)
+            return None
+        image = capture()
+        if image is None:
+            return None
+        pixels = cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+        pages = _ocr.predict(pixels, return_word_box=False, timeout=8.)
+        if len(pages) == 1:
+            return pages[0], image.size
+    finally:
+        _lock.release()
+
+
+def redact_screen(image, prompt: str, system_instruction: str | None = None, *, diagnostics=None, summary=None):
     """Return a masked RGB image and scrubbed request text, or raise safely.
 
     Models are initialized lazily and serialized across request threads. Paddle
     runs in a child process so CPU inference cannot hold the GUI's GIL.
-    No images/text are saved.
-    Optional preview diagnostics stay in caller-owned memory and are never logged.
+    This function does not write to disk. Preview diagnostics can contain raw text.
+    The optional summary provides counts for logging without OCR text.
     """
     global _ocr
     stage = 'imports'
@@ -257,8 +292,11 @@ def redact_screen(image, prompt: str, system_instruction: str | None = None, *, 
             for left, top, right, bottom in masked:
                 cv2.rectangle(pixels, (left, top), (right, bottom), (0, 0, 0), thickness=-1)
             stage = 'prompt_redaction'
-            return (Image.fromarray(pixels), _redact_text(prompt, known_values),
-                    _redact_text(system_instruction, known_values) if system_instruction else system_instruction)
+            result = (Image.fromarray(pixels), _redact_text(prompt, known_values),
+                      _redact_text(system_instruction, known_values) if system_instruction else system_instruction)
+            if summary is not None:
+                summary.update(ocr_lines=len(lines), masked_regions=len(masked))
+            return result
     except Exception as error:
         # Exception messages from OCR can contain input data; never expose them.
         from app_logging import log_event

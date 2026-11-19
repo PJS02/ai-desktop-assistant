@@ -2,10 +2,13 @@ import argparse
 import sys
 from pathlib import Path
 
-# The child process runs from its own directory; share the host's logging API.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Make the recognition packages and the shared application logger importable.
+recognition_root = Path(__file__).resolve().parent
+sys.path.insert(0, str(recognition_root.parent))
+sys.path.insert(0, str(recognition_root))
 
 from app_logging import log_event
+from inference_device import configure_inference_process
 
 def parse_args():
     parser = argparse.ArgumentParser(description="MediaPipe 사용자 인식 GUI")
@@ -22,6 +25,7 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    configure_inference_process()
     log_event('recognition.process.started', '사용자 인식 프로세스 시작',
               category='사용자 인식', background=args.background or args.headless)
     try:

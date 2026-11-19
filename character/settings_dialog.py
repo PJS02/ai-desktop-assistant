@@ -2,7 +2,10 @@
 from copy import deepcopy
 import base64
 import binascii
+from ai.gemini_client import is_screen_privacy_enabled
 from app_logging import log_event
+from context.igdb import normalize_igdb_config
+from inference_device import DEVICE_CHOICES
 
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
@@ -22,8 +25,19 @@ from .dialogue_styles import DIALOGUE_STYLES, normalize_dialogue_style
 from .dialogue_options import DIALOGUE_OPTION_RANGES, normalize_dialogue_options
 from .dialogue_widget import DialogueBubble
 from .hand_overlay_options import HAND_OVERLAY_OPTION_RANGES, normalize_hand_overlay_options
-from .game_rules import DEFAULT_GAME_RULES, normalize_game_rules, running_process_names
+from .game_rules import (DEFAULT_GAME_RULES, GAME_MOTION_LABELS, normalize_game_process,
+                         normalize_game_rules, running_process_names)
+from .gemini_usage_view import GeminiUsageView
 from .memory_view import MemoryView
+from .floating_panels import configure_floating_panel
+
+
+GEMINI_MODEL_IDS = (
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+)
 
 
 class _SettingsComboBox(QComboBox):
@@ -84,9 +98,13 @@ class SettingsDialog(QDialog):
         local = deepcopy(local)
         local['character'].update(normalize_character_options(local['character']))
         local['voice'].setdefault('sync_bubble', False)
+        local['ai'].setdefault('automatic_model', '')
+        local['ai']['screen_privacy_enabled'] = is_screen_privacy_enabled(local['ai'])
         local['game_rules'] = normalize_game_rules(local.get('game_rules'))
+        local['igdb'] = normalize_igdb_config(local.get('igdb'))
         self.setWindowTitle('설정')
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
+        configure_floating_panel(self)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.resize(700, 640)
         self.setMinimumSize(520, 430)
         self.local_baseline = deepcopy(local)
@@ -114,6 +132,7 @@ class SettingsDialog(QDialog):
         self._game_rules_page(local)
         self.memory_view = MemoryView(long_term_memory, self)
         self.tabs.addTab(self.memory_view, '장기기억')
+        self._environment_page(local)
         self._preview_active = False
         self.tabs.currentChanged.connect(self._sync_preview)
         self.status = QLabel('설정을 변경한 뒤 적용을 누르세요.')
@@ -162,6 +181,10 @@ class SettingsDialog(QDialog):
             QPushButton:hover { background: #eef4fd; border-color: #2463b6; }
             QPushButton:pressed, QPushButton:checked { background: #e8f1fd; color: #174b91; border-color: #2463b6; }
             QPushButton:disabled { background: #edf0f5; color: #68778b; border-color: #dce2ea; }
+            QPushButton#deleteMemoryButton:enabled { color: #922e31; border-color: #d8a7a7; }
+            QPushButton#deleteMemoryButton:enabled:hover, QPushButton#deleteMemoryButton:enabled:focus {
+                background: #fff2f2; border-color: #ae4045;
+            }
             QPushButton#emotionButton { background: white; color: #202936; border: 1px solid #dce2ea; border-radius: 5px; }
             QPushButton#emotionButton:checked { background: #e8f1fd; color: #2463b6; border: 2px solid #2463b6; font-weight: 600; }
             QLabel { color: #202936; }
@@ -299,10 +322,15 @@ class SettingsDialog(QDialog):
         self.window_occlusion.setChecked(local['character']['window_occlusion'])
         self.window_occlusion.setToolTip('앞쪽 창에 가려진 채 8초가 지나면 종이를 찢는 효과로 나온 뒤 창이나 작업 표시줄 위를 걷습니다.')
         movement.addRow(self.window_occlusion)
-        self.game_spectator_enabled = QCheckBox('게임 활동에 반응하기 (관람·응원)')
+        self.game_spectator_enabled = QCheckBox('게임 활동에 반응하기')
         self.game_spectator_enabled.setChecked(local['character']['game_spectator'])
-        self.game_spectator_enabled.setToolTip('기존 STEAM/GAME/UNITY 분류를 사용합니다. 평소 이동과 자율활동을 유지하면서 가끔 팝콘을 먹거나 응원합니다.')
+        self.game_spectator_enabled.setToolTip(
+            '활성 게임에 맞춰 게임 조작 모션을 재생합니다. 활성 창 감지와 OCR을 켜면 '
+            '한국어·영어 승패나 득점 안내를 기기에서 확인해 캐릭터 감정에 반영합니다.')
         movement.addRow(self.game_spectator_enabled)
+        self.desk_activity_enabled = QCheckBox('영상·음악·필기·읽기 활동에 반응하기')
+        self.desk_activity_enabled.setChecked(local['character']['desk_activity'])
+        movement.addRow(self.desk_activity_enabled)
         self.resolution_preset = self._combo([
             ('사용자 정의', None), ('720p · 1280 × 720', (1280, 720)),
             ('1080p · 1920 × 1080', (1920, 1080)), ('1440p · 2560 × 1440', (2560, 1440)),
@@ -585,6 +613,14 @@ class SettingsDialog(QDialog):
         for key, control in self.personality_trait_inputs.items():
             control.setValue(round(preset[key] * 100))
 
+    def _environment_page(self, local):
+        _, _, form = self._page('실행 환경')
+        self.inference_device = self._combo(DEVICE_CHOICES, local.get('inference_device', 'auto'))
+        form.addRow('로컬 모델 연산 장치', self.inference_device)
+        hint = QLabel('Cloudy를 다시 실행하면 적용됩니다. CUDA를 사용할 수 없는 모델은 CPU에서 실행됩니다.')
+        hint.setWordWrap(True)
+        form.addRow(hint)
+
     def _dialogue_page(self, local):
         self.dialogue_page, layout, form = self._page('대화·음성', '말풍선 모양과 AI 답변을 읽을 목소리를 설정합니다.')
         self._dialogue_style_fields(form, local)
@@ -597,13 +633,17 @@ class SettingsDialog(QDialog):
         form.addRow('목소리', self.voice)
         self.ai_section, _, ai = self._section(layout, 'AI 연결')
         self._ai_fields(ai, local)
+        _, _, usage = self._section(layout, '모델별 오늘 호출량')
+        self.gemini_usage = GeminiUsageView(lambda: self.local_baseline['ai'], GEMINI_MODEL_IDS)
+        usage.addRow(self.gemini_usage)
         _, _, timing = self._section(layout, '말풍선 표시 시점')
         self.sync_bubble = QCheckBox('음성 재생이 시작될 때 말풍선 표시')
         self.sync_bubble.setChecked(local['voice']['sync_bubble'])
         self.sync_bubble.setToolTip('켜면 음성이 실제로 시작될 때 말풍선을 표시합니다.\n'
                                    '끄면 답변을 먼저 표시합니다. 음성을 재생하지 못하면 텍스트만 표시합니다.')
         timing.addRow(self.sync_bubble)
-        _, _, form = self._section(layout, '음성 모델 다운로드')
+        section_title = '추가 음성 모델' if self.model_manager.store.bundled else '음성 모델 다운로드'
+        _, _, form = self._section(layout, section_title)
         self.voice_runtime_status = QLabel()
         self.voice_runtime_status.setWordWrap(True)
         form.addRow(self.voice_runtime_status)
@@ -653,11 +693,13 @@ class SettingsDialog(QDialog):
             else:
                 progress.hide()
                 button.setText('설치 완료' if installed else '다시 다운로드' if engine in self.model_manager.last_result else '다운로드')
-                button.setEnabled(active is None and not installed and store.published(engine))
+                button.setEnabled(active is None and not installed and not store.bundled and store.published(engine))
                 if engine in self.model_manager.last_result:
                     status.setText(self.model_manager.last_result[engine][1])
                 elif installed:
                     status.setText('설치 완료 — 목소리를 선택하고 적용해 주세요.')
+                elif store.bundled:
+                    status.setText('모델 파일이 빠져 있습니다. Cloudy를 다시 설치해 주세요.')
                 elif not store.published(engine):
                     status.setText('배포 준비 중 — 학습한 목소리가 게시되면 다운로드할 수 있습니다.')
                 else:
@@ -1033,8 +1075,20 @@ class SettingsDialog(QDialog):
         for button in self.device_buttons.values():
             button.setEnabled(False)
 
+    @staticmethod
+    def _model_id_combo(saved_model, placeholder):
+        combo = _SettingsComboBox()
+        combo.addItems(GEMINI_MODEL_IDS)
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.setCurrentIndex(combo.findText(saved_model))
+        combo.setEditText(saved_model)
+        combo.lineEdit().setPlaceholderText(placeholder)
+        return combo
+
     def _ai_fields(self, form, local):
-        self.api_key = QLineEdit(local['ai']['api_key'])
+        ai = local['ai']
+        self.api_key = QLineEdit(ai['api_key'])
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText('API 키 입력')
         self.api_key.setClearButtonEnabled(True)
@@ -1042,9 +1096,12 @@ class SettingsDialog(QDialog):
         reveal = QCheckBox('API 키 표시')
         reveal.toggled.connect(lambda checked: self.api_key.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
         form.addRow(reveal)
-        self.model = QLineEdit(local['ai']['model'])
-        self.model.setPlaceholderText('사용할 모델 ID 입력')
-        form.addRow('모델 ID', self.model)
+        self.model = self._model_id_combo(ai['model'], '사용할 모델 선택 또는 ID 입력')
+        form.addRow('대화용 모델 ID', self.model)
+        self.automatic_model = self._model_id_combo(ai['automatic_model'], '비워 두면 대화용 모델 사용')
+        self.automatic_model.lineEdit().setClearButtonEnabled(True)
+        self.automatic_model.setToolTip('활성 창 이미지를 분석할 수 있는 모델을 선택하거나 ID를 입력하세요.')
+        form.addRow('자동대화용 모델 ID', self.automatic_model)
         options = normalize_dialogue_options(local.get('dialogue'))
         self.auto_program_detection = QCheckBox('활성 창·프로그램 감지로 자동 대화 생성')
         self.auto_program_detection.setChecked(options['auto_program_detection'])
@@ -1052,6 +1109,12 @@ class SettingsDialog(QDialog):
         hint = QLabel('끄면 주기적인 감지와 자동 대화를 중지합니다. 직접 입력·음성 대화와 직접 조작의 대사 생성은 계속 사용할 수 있습니다.')
         hint.setWordWrap(True)
         form.addRow('', hint)
+        self.screen_privacy = QCheckBox('OCR·개인정보 마스킹')
+        self.screen_privacy.setChecked(local['ai']['screen_privacy_enabled'])
+        form.addRow(self.screen_privacy)
+        privacy_hint = QLabel('끄면 활성 창 이미지와 창 제목·주소를 가리지 않고 Gemini에 보냅니다.')
+        privacy_hint.setWordWrap(True)
+        form.addRow('', privacy_hint)
         self.dialogue_inputs = {}
         for key, label in (
             ('activity_monitor_interval', '활성 창 감지 주기'),
@@ -1075,6 +1138,16 @@ class SettingsDialog(QDialog):
     def _game_rules_page(self, local):
         _, _, form = self._page('게임 목록', '게임으로 인식할 프로그램을 편집하세요. 한 줄에 하나씩 입력하고 적용을 눌러 저장합니다.')
         self.game_rules_tab = self.tabs.widget(self.tabs.count()-1)
+        self.igdb_client_id = QLineEdit(local['igdb']['client_id'])
+        self.igdb_client_id.setClearButtonEnabled(True)
+        self.igdb_client_secret = QLineEdit(local['igdb']['client_secret'])
+        self.igdb_client_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.igdb_client_secret.setClearButtonEnabled(True)
+        form.addRow('Twitch Client ID', self.igdb_client_id)
+        form.addRow('Twitch Client Secret', self.igdb_client_secret)
+        igdb_hint = QLabel('활성 게임의 이름과 장르를 IGDB에서 확인합니다. 두 칸을 비워 저장하면 조회를 끕니다.')
+        igdb_hint.setWordWrap(True)
+        form.addRow(igdb_hint)
         self.game_processes = QPlainTextEdit()
         self.game_processes.setPlaceholderText('MyGame.exe\n실행 파일 이름을 정확히 입력하세요.')
         self.game_processes.setPlainText('\n'.join(local['game_rules']['included_processes']))
@@ -1097,6 +1170,29 @@ class SettingsDialog(QDialog):
         self.game_rules_hint = QLabel('게임 실행 파일 이름으로 정확히 일치시킵니다. 삭제하려면 해당 줄을 지우세요.')
         self.game_rules_hint.setWordWrap(True)
         form.addRow('', self.game_rules_hint)
+        self.game_motion_rules = local['game_rules']['motions'].copy()
+        motion_row = QWidget()
+        motion_controls = QHBoxLayout(motion_row)
+        motion_controls.setContentsMargins(0, 0, 0, 0)
+        self.game_motion_process = QLineEdit()
+        self.game_motion_process.setPlaceholderText('게임 실행 파일 이름.exe')
+        self.game_motion_process.setAccessibleName('모션을 지정할 게임 실행 파일')
+        motion_controls.addWidget(self.game_motion_process, 1)
+        self.game_motion_choice = _SettingsComboBox()
+        self.game_motion_choice.setAccessibleName('게임별 모션 선택')
+        self.game_motion_choice.addItem('자동', None)
+        for action, label in GAME_MOTION_LABELS.items():
+            self.game_motion_choice.addItem(label, action)
+        motion_controls.addWidget(self.game_motion_choice)
+        assign = QPushButton('지정')
+        assign.clicked.connect(self._assign_game_motion)
+        motion_controls.addWidget(assign)
+        form.addRow('게임별 모션', motion_row)
+        self.game_motion_list = _SettingsComboBox()
+        self.game_motion_list.setAccessibleName('모션을 지정한 게임')
+        self.game_motion_list.activated.connect(self._select_game_motion)
+        form.addRow('지정한 모션', self.game_motion_list)
+        self._refresh_game_motions()
         self.game_keywords = QPlainTextEdit()
         self.game_keywords.setPlainText('\n'.join(local['game_rules']['keywords']))
         self.game_keywords.setMinimumHeight(75)
@@ -1113,7 +1209,7 @@ class SettingsDialog(QDialog):
         self.game_excluded_processes.setMaximumHeight(110)
         self.game_excluded_processes.setAccessibleName('게임 분류에서 제외할 실행 파일 목록')
         form.addRow('제외할 앱', self.game_excluded_processes)
-        hint = QLabel('제외 목록이 등록 목록·키워드보다 우선합니다. 게임 관람 동작은 캐릭터 탭의 게임 활동 반응 설정을 따릅니다.')
+        hint = QLabel('제외 목록은 등록 목록, 키워드, IGDB 조회보다 우선합니다. 게임 관람 동작은 캐릭터 탭의 게임 활동 반응 설정을 따릅니다.')
         hint.setWordWrap(True)
         form.addRow('', hint)
         self._refresh_game_processes()
@@ -1140,7 +1236,36 @@ class SettingsDialog(QDialog):
         if process not in {name.strip().lower() for name in values}:
             values.append(process)
             self.game_processes.setPlainText('\n'.join(values))
+        self.game_motion_process.setText(process)
         self.game_rules_hint.setText(f'{process}을(를) 추가했습니다. 적용을 눌러 저장하세요.')
+
+    def _refresh_game_motions(self):
+        self.game_motion_list.clear()
+        self.game_motion_list.addItem('지정한 게임 선택', None)
+        for process, action in sorted(self.game_motion_rules.items()):
+            self.game_motion_list.addItem(f'{process} · {GAME_MOTION_LABELS[action]}', process)
+
+    def _select_game_motion(self, index):
+        process = self.game_motion_list.itemData(index)
+        if process:
+            self.game_motion_process.setText(process)
+            self.game_motion_choice.setCurrentIndex(self.game_motion_choice.findData(self.game_motion_rules[process]))
+
+    def _assign_game_motion(self):
+        try:
+            process = normalize_game_process(self.game_motion_process.text())
+        except ValueError as error:
+            self.game_rules_hint.setText(str(error))
+            return
+        action = self.game_motion_choice.currentData()
+        if action is None:
+            self.game_motion_rules.pop(process, None)
+            status = '자동으로 바꿨습니다.'
+        else:
+            self.game_motion_rules[process] = action
+            status = f'{GAME_MOTION_LABELS[action]} 모션을 지정했습니다.'
+        self._refresh_game_motions()
+        self.game_rules_hint.setText(f'{process} · {status} 적용을 눌러 저장하세요.')
 
     def changes(self):
         local = {'character': {'width': self.width.value(), 'height': self.height.value(),
@@ -1149,18 +1274,27 @@ class SettingsDialog(QDialog):
                                                      for key, control in self.personality_trait_inputs.items()}},
                  'voice': {'enabled': self.tts_enabled.isChecked(), 'voice_id': self.voice.currentData(),
                            'sync_bubble': self.sync_bubble.isChecked()},
-                 'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.text().strip()}}
+                 'ai': {'api_key': self.api_key.text().strip(), 'model': self.model.currentText().strip(),
+                        'automatic_model': self.automatic_model.currentText().strip(),
+                         'screen_privacy_enabled': self.screen_privacy.isChecked()},
+                 'igdb': {'client_id': self.igdb_client_id.text().strip(),
+                          'client_secret': self.igdb_client_secret.text().strip()}}
         local['character'].update({key: control.value() for key, control in self.character_inputs.items()})
         local['character']['show_hitboxes'] = self.show_hitboxes.isChecked()
         local['character']['window_occlusion'] = self.window_occlusion.isChecked()
         local['character']['game_spectator'] = self.game_spectator_enabled.isChecked()
+        local['character']['desk_activity'] = self.desk_activity_enabled.isChecked()
         local['character']['emotion_delta_duration_ms'] = round(self.emotion_delta_duration.value() * 1000)
         local['character']['emotion_delta_enabled'] = self.emotion_delta_enabled.isChecked()
         changed = {key: value for key, value in local.items() if value != self.local_baseline[key]}
+        device = self.inference_device.currentData()
+        if device != self.local_baseline.get('inference_device', 'auto'):
+            changed['inference_device'] = device
         game_rules = normalize_game_rules({
             'included_processes': self.game_processes.toPlainText().splitlines(),
             'keywords': self.game_keywords.toPlainText().splitlines(),
             'excluded_processes': self.game_excluded_processes.toPlainText().splitlines(),
+            'motions': self.game_motion_rules,
         })
         if game_rules != self.local_baseline['game_rules']:
             changed['game_rules'] = game_rules
@@ -1195,8 +1329,20 @@ class SettingsDialog(QDialog):
             self.tabs.setCurrentWidget(self.game_rules_tab)
             self.game_processes.setFocus()
             return
-        if 'ai' in changes['local'] and changes['local']['ai']['api_key'] and not changes['local']['ai']['model']:
-            self.status.setText('API 키를 사용하려면 모델 ID를 입력하세요.')
+        igdb = changes['local'].get('igdb')
+        if igdb is not None:
+            try:
+                normalize_igdb_config(igdb, require_pair=True)
+            except ValueError as exc:
+                self.status.setText(str(exc))
+                self.tabs.setCurrentWidget(self.game_rules_tab)
+                missing = self.igdb_client_secret if igdb['client_id'] else self.igdb_client_id
+                missing.setFocus()
+                return
+        ai = changes['local'].get('ai')
+        if ai and ai['api_key'] and not ai['model'] and any(
+                ai[key] != self.local_baseline['ai'][key] for key in ('api_key', 'model')):
+            self.status.setText('API 키를 사용하려면 대화용 모델을 선택하거나 ID를 입력하세요.')
             self.tabs.setCurrentWidget(self.dialogue_page)
             self.ai_section.setChecked(True)
             QTimer.singleShot(0, self._focus_ai_model)
@@ -1224,6 +1370,8 @@ class SettingsDialog(QDialog):
     def complete(self, message, success=True, local=None, remote=None):
         if local:
             self.local_baseline.update(deepcopy(local))
+            if 'inference_device' in local:
+                message += ' 연산 장치는 Cloudy를 다시 실행하면 적용됩니다.'
         if remote:
             self.set_remote(remote, preserve_draft=not success)
         self.set_pending(False)

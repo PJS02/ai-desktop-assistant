@@ -33,7 +33,9 @@ _writer = None
 _file_error = None
 _protocol_stream = sys.stdout
 _protocol_lock = threading.Lock()
-_secret_key = re.compile(r'^(?:api[_-]?key|key|authorization|password|passwd|access[_-]?token|refresh[_-]?token|secret|credential)s?$', re.I)
+_secret_key = re.compile(
+    r'^(?:api[_-]?key|key|authorization|password|passwd|access[_-]?token|refresh[_-]?token'
+    r'|client[_-]?(?:id|secret)|secret|credential)s?$', re.I)
 _credential_text = re.compile(r'(?i)((?:api[_-]?key|access[_-]?token|authorization|password)[\s\"\x27:=]+)([^\s\"\x27,}&]+)')
 _url_key = re.compile(r'(?i)([?&](?:key|api_key|access_token)=)[^&#\s]+')
 

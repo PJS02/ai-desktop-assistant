@@ -12,6 +12,7 @@ import struct
 import subprocess
 import threading
 from app_logging import log_event, new_trace_id
+from app_paths import APP_ROOT, IS_INSTALLED
 
 DEFAULT_RIG_ROOT = Path(__file__).resolve().parents[1] / "assets_cloudy_rig_v4" / "directional_v5"
 
@@ -23,6 +24,8 @@ def find_node() -> str:
         if candidate.is_file():
             return str(candidate)
         raise FileNotFoundError("CLOUDY_NODE does not point to a Node.js executable")
+    if IS_INSTALLED:
+        return str(APP_ROOT.parent / 'runtime' / 'node' / 'node.exe')
     found = shutil.which("node")
     if found:
         return found
@@ -68,6 +71,7 @@ class NodeRigPlanner:
         try:
             init = self._request({"op": "init"}, timeout=10)
             self.parts, self.source_hashes = init["parts"], init["hashes"]
+            self.trip_durations = init["tripDurations"]
             self._recipes, self._effects = init["recipes"], init["effects"]
             log_event('renderer.worker.ready', 'Node 렌더 데이터 준비가 끝났습니다.',
                       trace_id=self.log_trace_id, parts=len(self.parts), source_hashes=self.source_hashes)

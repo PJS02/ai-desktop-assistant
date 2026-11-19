@@ -7,7 +7,8 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from app_logging import log_event, log_throttled, new_trace_id
-from character.reactions import react, reaction_mood, experience
+from character.reactions import react, experience
+from .high_five import DesktopHighFive
 from .interactions import Box, HandInteractionEngine
 
 
@@ -119,6 +120,7 @@ class CharacterHandActions:
                 and not c._manual_control_active()
                 and not getattr(c, '_pointer_interaction_active', lambda: False)()
                 and not getattr(c, '_hand_throw_active', False)
+                and not getattr(c, '_mouse_throw_active', False)
                 and QApplication.activePopupWidget() is None
                 and QApplication.activeModalWidget() is None
                 and not (getattr(c, 'rps_game', None) and c.rps_game.isVisible())
@@ -147,13 +149,12 @@ class CharacterHandActions:
         else:
             if c.is_dragging:
                 return False
-            self.offset = (point[0] - c.x(), point[1] - c.y())
             self.palm_offset = self.body_rect().center[0] - point[0]
             c.is_dragging = True
+            c.floating_panels.raise_character()
             c._hand_control_mode = mode
             c.drag_pos = QPoint(round(point[0]), round(point[1]))
             c.drag_time = 0
-            c._drag_velocity_x = c._drag_velocity_y = 0
             c._drag_trace_id = new_trace_id('hand-hold')
             c._drag_start_position = (c.x(), c.y())
             c._move_timer.stop()
@@ -166,12 +167,19 @@ class CharacterHandActions:
             c.sprite_animator.stop()
             c.current_action = 'idle' if mode == 'palm' else 'hovering'
             c.update_render(c.current_action)
+            self.offset = (point[0] - c.x(), point[1] - c.y())
         self.mode = mode
         c._mark_character_interaction()
         if mode == 'palm':
             reactions = getattr(c, 'reactions', None)
             if reactions is None or not reactions.safe(rescued=True):
                 experience(c, "palm")
+        elif mode == 'grab':
+            self._grab_origin = point
+            self._grab_started = time.monotonic()
+            c._start_drag_shake(*point)
+            if (reactions := getattr(c, 'reactions', None)) is not None:
+                reactions.safe(rescued=True)
         log_event('hand_interaction.hold.started', '손으로 대상 잡기 시작',
                   category='캐릭터 상태', mode=mode)
         self.move_hold(mode, point)
@@ -194,6 +202,15 @@ class CharacterHandActions:
             y = c.y() + point[1] - body.bottom
         else:
             x, y = point[0] - self.offset[0], point[1] - self.offset[1]
+            if self._grab_origin is not None:
+                elapsed = time.monotonic() - self._grab_started
+                distance = math.dist(point, self._grab_origin)
+                if elapsed > .30:
+                    self._grab_origin = None
+                elif distance >= .05 * self.body_rect().height:
+                    self._grab_origin = None
+                    c._appraise_drag_start(distance, elapsed)
+            c._check_drag_shake(*point)
         c.move(round(x), round(y))
         c._clamp_position_to_screen()
         c.animation_controller.update_base_pos(c.pos())
@@ -209,7 +226,6 @@ class CharacterHandActions:
                 ball.end_hand_drag(velocity, reason=reason)
         elif mode is not None:
             c._hand_control_mode = None
-            c._drag_velocity_x = c._drag_velocity_y = 0
             if c._character_closing:
                 c.is_dragging = False
             elif c.is_dragging:
@@ -223,23 +239,23 @@ class CharacterHandActions:
 
     def pet(self, speed, elapsed, point):
         c = self.character
-        before = reaction_mood(c)
-        c._mark_pet_interaction(speed)
-        if c.mood_system.should_refuse_pet():
-            experience(c, 'pet_refused', elapsed=elapsed, source='손 접촉 거절')
-            return
         sample = getattr(self, 'sample_id', None)
-        reward = c.mood_system.on_pet(speed, elapsed, source='손으로 쓰다듬기',
-                                      event_id=None if sample is None else str(sample))
-        if reward > 0:
-            react(c, "pet", before=before, sustain=True)
+        event_id = None if sample is None else str(sample)
+        if c.mood_system.should_refuse_pet():
+            experience(c, 'pet_refused', elapsed=elapsed, source='손 접촉 거절', event_id=event_id)
+            return
+        result = c.mood_system.on_pet(speed, elapsed, source='손으로 쓰다듬기',
+                                      event_id=event_id, return_result=True)
+        if isinstance(result, dict) and result.get('applied'):
+            c._last_pet_time = time.monotonic()
+        react(c, "pet", result, sustain=True)
+        c._mark_pet_interaction(speed)
         if self.feedback.pulse('pet'):
             log_throttled('hand_interaction.head.petted', '손으로 머리 쓰다듬기 인식', interval=2,
                           category='캐릭터 상태')
 
     def poke(self, point):
         c = self.character
-        before = reaction_mood(c)
         now = time.monotonic()
         repeated = now - getattr(self, '_last_poke', -math.inf) <= 3.2
         self._last_poke = now
@@ -259,9 +275,9 @@ class CharacterHandActions:
         c._mark_character_interaction()
         self.feedback.pulse('poke', point)
         if repeated:
-            experience(c, "poke_discomfort" if before[0] < -.24 else "poke_play")
+            experience(c, "poke_play")
         else:
-            experience(c, "poke_start", follow="poke_play" if before[0] >= 0 else None)
+            experience(c, "poke_start", familiar=now - getattr(c, '_last_pet_time', -math.inf) < 2.)
         log_event('hand_interaction.cheek.poked', '손끝으로 볼 콕 찌르기', category='캐릭터 상태')
 
 
@@ -272,23 +288,30 @@ class HandInteractionController(QObject):
         self._clock = clock
         self.actions = CharacterHandActions(character)
         self.engine = HandInteractionEngine(self.actions)
+        self.high_five = DesktopHighFive(self.actions)
         overlay.timer.timeout.connect(self.update)
         overlay.hands_cleared.connect(self.cancel)
         overlay.tracking_interrupted.connect(self.interrupt_tracking)
 
     def interrupt_tracking(self):
         self.engine.interrupt_tracking(self._clock())
+        self.high_five.interrupt_tracking()
 
     def cancel(self, reason='tracking_reset'):
         self.engine.reset(reason, self._clock())
+        self.high_five.cancel()
         self.actions.feedback.clear()
 
     def update(self):
         try:
-            self.actions.sample_id = (self.overlay._session, self.overlay._sequence)
+            source = self.overlay._session, self.overlay._sequence
+            self.actions.sample_id = source
+            now = self._clock()
+            hands = self.overlay.displayed_hands()
             previous = self.engine.active
-            self.engine.update(self.overlay.displayed_hands(), self._clock(),
-                               (self.overlay._session, self.overlay._sequence))
+            if self.high_five.update(hands if previous is None else (), now, source):
+                return
+            self.engine.update(hands, now, source)
             if (previous and self.engine.active and previous != self.engine.active
                     and previous[0] == self.engine.active[0]):
                 log_event('hand_interaction.hold.reconnected', '잠깐 끊긴 손 추적을 잡기에 다시 연결',

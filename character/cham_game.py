@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QWidget
 
 from app_logging import log_event
 from .dialogue_widget import UserDialogueBubble
+from .overlay_geometry import place_beside_character
 from .rps_game import RpsGameOverlay
 
 
@@ -69,14 +70,13 @@ class ChamGameOverlay(RpsGameOverlay):
         super().__init__(send_command, parent)
         self.setWindowTitle("캐릭터 참참참")
         self.pose_callback = pose_callback
-        self.reaction_face = None
-        self._reaction_until = 0.0
         self._best_lead = 0
         self.round_number = 1
         self.player_score = self.character_score = 0
         self._yaw = self._turn_from = self._turn_to = 0.0
         self._turn_at = 0.0
-        self.direction_bubble = UserDialogueBubble(DIRECTION_PENDING, duration=0, parent=self)
+        self.direction_bubble = UserDialogueBubble(
+            DIRECTION_PENDING, duration=0, parent=self, placement=place_beside_character)
         self.direction_bubble.setWindowFlag(Qt.WindowType.WindowTransparentForInput)
         self._direction_last_seen = None
         self._direction_anchor = None
@@ -128,10 +128,10 @@ class ChamGameOverlay(RpsGameOverlay):
         if session:
             self._command(f"cham_end {session}")
 
-    def _pose(self, yaw, emotion=None):
+    def _pose(self, yaw):
         self._yaw = yaw
         if self.pose_callback:
-            self.pose_callback(yaw, emotion)
+            self.pose_callback(yaw, None)
 
     def _turn(self, yaw, now):
         self._turn_from, self._turn_to, self._turn_at = self._yaw, yaw, now
@@ -142,8 +142,7 @@ class ChamGameOverlay(RpsGameOverlay):
             return
         progress = max(0.0, min(1.0, (now - self._turn_at) / self.TURN_SECONDS))
         smooth = progress * progress * (3 - 2 * progress)
-        face = self._reaction if self.reaction_face is None or now < self._reaction_until else None
-        self._pose(self._turn_from + (self._turn_to - self._turn_from) * smooth, face)
+        self._pose(self._turn_from + (self._turn_to - self._turn_from) * smooth)
 
     def start_game(self):
         self._best_lead = 0
@@ -153,7 +152,6 @@ class ChamGameOverlay(RpsGameOverlay):
         self.session = uuid.uuid4().hex
         self.round_number = 1
         self.player_score = self.character_score = 0
-        self._reaction = None
         self._pose(0)
         self._turn(0, time.time())
         self.show()
@@ -175,7 +173,6 @@ class ChamGameOverlay(RpsGameOverlay):
         self.deadline = now + self.READY_SECONDS
         self.tracker = DirectionTracker(self.session, now)
         self.player = self.opponent = self.result = None
-        self._reaction = None
         self._turn(0, now)
         self._show_message('정면 봐줘')
         self._direction_last_seen = None
@@ -187,7 +184,7 @@ class ChamGameOverlay(RpsGameOverlay):
         # Commit before reading any of the player's response frames.
         self.opponent = secrets.choice(tuple(DIRECTIONS))
         self.state = "countdown"
-        self._report_emotion('game_start', 'expect', round=True)
+        self._report_emotion('game_start', 'expect', round=self.ROUNDS > 1)
         self.deadline = now + 2 * self.BEAT_SECONDS
         self._show_message('참')
         self._request_cue('cham_1')
@@ -228,12 +225,7 @@ class ChamGameOverlay(RpsGameOverlay):
         self.player_score += int(not caught)
         self.result = "caught" if caught else "escaped"
         self._best_lead = max(self._best_lead, self.character_score - self.player_score)
-        self._reaction = "happy" if caught else "sad"
-        self._report_emotion('game_win' if caught else 'game_loss', 'result', round=True)
-        if self.reaction_face is not None:
-            event = "game_win" if caught else "game_loss"
-            self._reaction = self.reaction_face(event, 1.0)
-            self._reaction_until = now + 1.15
+        self._report_emotion('game_win' if caught else 'game_loss', 'result', round=self.ROUNDS > 1)
         self.state = "result"
         self.deadline = now + self.RESULT_SECONDS
         self._show_message('잡혔다!' if caught else '피했다!')
@@ -247,7 +239,6 @@ class ChamGameOverlay(RpsGameOverlay):
         self.cue_stopped.emit()
         self.state = "error"
         self.deadline = time.time() + self.ERROR_SECONDS
-        self._reaction = None
         self._turn(0, time.time())
         self._show_message('잠깐만')
         self.direction_bubble.hide()
@@ -293,10 +284,8 @@ class ChamGameOverlay(RpsGameOverlay):
                 won = self.character_score > self.player_score
                 event = ("game_win" if won else "game_disappointed"
                          if self._best_lead >= 2 else "game_loss")
-                self._report_emotion(event, 'final', final=True, expected_win=self._best_lead >= 2)
-                if self.reaction_face is not None:
-                    self._reaction = self.reaction_face(event, 1.25)
-                    self._reaction_until = now + 1.55
+                if self.ROUNDS > 1:
+                    self._report_emotion(event, 'final', final=True, expected_win=self._best_lead >= 2)
                 self._end_recognition()
                 self.result_revealed.emit(event)
         elif self.state in {"finished", "error"} and now >= self.deadline:

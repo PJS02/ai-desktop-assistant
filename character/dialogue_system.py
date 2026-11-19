@@ -1,5 +1,7 @@
 # 캐릭터 대화 시스템
-from PyQt6.QtCore import QTimer, pyqtSignal, pyqtSlot, QObject, Qt
+from PyQt6.QtCore import QDateTime, QTimer, pyqtSignal, pyqtSlot, QObject, Qt
+from PyQt6.QtGui import QCursor
+from PyQt6.QtWidgets import QToolTip
 from .dialogue_widget import DialogueBubble, UserDialogueBubble, DialogueNarrationBox, DialogueInputWidget
 from .tts_service import SupertonicTTS
 from .config_manager import load_dialogue_style
@@ -16,13 +18,21 @@ import time
 import re
 from collections import deque
 from app_logging import log_event, new_trace_id, register_secret
-from ai.gemini_client import request_gemini
+from ai.gemini_client import DAILY_REQUEST_QUOTA_EXHAUSTED, request_gemini
 from memory.short_term_memory import ConversationMemory
 from memory.long_term_memory import LongTermMemory
 from memory.long_term_memory.dialogue_memory import (
     DIALOGUE_RESPONSE_SCHEMA, DIALOGUE_SYSTEM_INSTRUCTION,
     parse_dialogue_response, apply_dialogue_memory, build_memory_context, validate_memory_references,
 )
+from memory.long_term_memory.importance import MIN_NEW_FACT_IMPORTANCE
+
+
+FLASH_LITE_FALLBACK = {
+    'gemini-3.5-flash-lite': 'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite': 'gemini-3.5-flash-lite',
+}
+FLASH_LITE_QUOTAS_EXHAUSTED = '[gemini error] Both Flash Lite daily request quotas exhausted'
 
 
 class DialogueSystem(QObject):
@@ -33,6 +43,7 @@ class DialogueSystem(QObject):
     user_input_received = pyqtSignal(str, str)  # text, text/voice
     ai_response_ready = pyqtSignal(object)
     ai_motion_changed = pyqtSignal(str)
+    dialogue_model_switched = pyqtSignal(str, str)
     
     def __init__(self, character_widget, *, tts=None, response_provider=None,
                  time_provider=time.monotonic):
@@ -56,7 +67,7 @@ class DialogueSystem(QObject):
         self.manual_dialogue_active = False
         self._request_generation = 0
         self._active_input = None
-        self._last_failed_input = None
+        self._failed_inputs = {}
         self.user_input_epoch = 0
         self.pending_inputs = deque()
         self.conversation_history = []
@@ -420,7 +431,7 @@ class DialogueSystem(QObject):
         """Optional perception bridge; legacy callbacks still receive only text."""
         return self.submit_speech(text, log_context=context)
 
-    def _submit_input(self, text: str, source: str, *, log_context=None, retry_of=None) -> bool:
+    def _submit_input(self, text: str, source: str, *, log_context=None, retry=None) -> bool:
         context = dict(log_context or {})
         trace_id = context.get('trace_id') or new_trace_id('turn')
         register_secret(self.gemini_config.get('api_key', ''))
@@ -435,12 +446,16 @@ class DialogueSystem(QObject):
         self.user_input_epoch += 1
         # A direct user turn takes priority over a delayed ambient script.
         self.clear_queue(reason='user_input_priority')
+        turn_id = len(self.conversation_history)
+        chat_id = retry['chat_id'] if retry is not None else turn_id
+        retry_of = retry['trace_id'] if retry is not None else None
         turn = {'role': 'user', 'text': text, 'source': source,
-                'state': 'queued', 'turn_id': len(self.conversation_history),
+                'state': 'queued', 'turn_id': turn_id, 'chat_id': chat_id,
                 'trace_id': trace_id, 'log_context': {**context, 'trace_id': trace_id, 'source': source},
                 'queued_at': self._time_provider(), 'retry_of': retry_of}
-        self._append_chat_turn(turn)
+        self.conversation_history.append(turn)
         self.pending_inputs.append(turn)
+        self._display_chat_message(turn)
         log_event('dialogue.input_accepted', '사용자 입력 접수', category='대화·AI',
                   trace_id=trace_id, source=source, raw_text=raw_text, text=text,
                   turn_id=turn['turn_id'], queue_size=len(self.pending_inputs),
@@ -476,8 +491,8 @@ class DialogueSystem(QObject):
         self._input_wait_signature = None
         turn = self.pending_inputs.popleft()
         self._active_input = turn
-        turn['state'] = 'responding'
         self.is_ai_responding = True
+        self._set_input_state(turn, 'responding')
         self.ai_motion_changed.emit('waiting')
         self.last_request_time = now
         self._request_generation += 1
@@ -505,7 +520,8 @@ class DialogueSystem(QObject):
             config['character_voice'] = character_voice(self.character_widget.personality_system)
             register_secret(config.get('api_key', ''))
             completed = sorted(
-                (item for item in self.conversation_history if item['state'] == 'completed'),
+                (item for item in self.conversation_history
+                 if item['state'] == 'completed' and item['source'] != 'automatic'),
                 key=lambda item: (item['turn_id'], item['role'] != 'user'))[-12:]
             log_event('dialogue.prompt_built', '직접 대화 프롬프트 전체', category='대화·AI',
                       trace_id=turn['trace_id'], prompt=prompt, model=config.get('model'),
@@ -520,6 +536,7 @@ class DialogueSystem(QObject):
 
         def get_ai_response():
             failed = False
+            model_switch = None
             try:
                 # E5 로딩·검색·저장은 Qt 스레드를 막지 않도록 이 작업 스레드에서 실행한다.
                 candidates = []
@@ -531,6 +548,15 @@ class DialogueSystem(QObject):
 
 {long_term_context}"""
                 raw_response = self._call_ai(memory_prompt, config, log_context=context)
+                fallback_model = FLASH_LITE_FALLBACK.get(config.get('model'))
+                if (fallback_model and raw_response == DAILY_REQUEST_QUOTA_EXHAUSTED
+                        and not self._closed and generation == self._request_generation):
+                    raw_response = self._call_ai(
+                        memory_prompt, {**config, 'model': fallback_model}, log_context=context)
+                    if raw_response == DAILY_REQUEST_QUOTA_EXHAUSTED:
+                        raw_response = FLASH_LITE_QUOTAS_EXHAUSTED
+                    else:
+                        model_switch = (config.get('api_key', ''), config['model'], fallback_model)
                 failed = self._is_error_response(raw_response)
                 log_event('dialogue.model_text_received', '대화 모델 텍스트 전체', category='대화·AI',
                           level='ERROR' if failed else 'INFO', trace_id=turn['trace_id'],
@@ -556,7 +582,7 @@ class DialogueSystem(QObject):
                 failed = True
                 response_text = "미안해요, 지금은 대화할 수 없어요. 다시 시도해 주세요."
             if not self._closed:
-                self.ai_response_ready.emit((generation, response_text, failed))
+                self.ai_response_ready.emit((generation, response_text, failed, model_switch if not failed else None))
             else:
                 log_event('dialogue.response_discarded', '종료 후 늦은 응답 폐기', category='대화·AI',
                           trace_id=turn['trace_id'], reason='shutdown', generation=generation,
@@ -592,7 +618,7 @@ class DialogueSystem(QObject):
 현재 감정 상태:
 {mood.get_emotion_description_for_prompt()}
 감정별 말투 지침:
-{mood.get_emotion_tone_instructions()}
+{mood.get_emotion_tone_instructions()} 감정은 어휘와 문장 호흡에만 약하게 반영하세요. 기본 반말·호칭과 설정된 성격을 유지하세요.
 
 이전 대화:
 {history}
@@ -621,11 +647,20 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
 4. 약속이나 계획인가?
 5. 새롭게 알게 된 사실인가?
 6. 사용자가 명시적으로 기억해달라고 했는가?
+7. 평범한 취향이나 일상 습관이어도 이후 대화나 반응에 꾸준히 활용할 수 있는가?
+8. 사용자가 원하는 대화 방식, 캐릭터의 반응이나 도움 방식이 분명한가?
+9. 사용자가 선택할 때 중요하게 보는 이유나 조건이 드러났는가?
+10. 진행 상황, 막힌 부분, 남은 일이 다음 대화나 작업을 이어가는 데 필요한가?
+11. 취향·습관·목표 등이 최근에 바뀌었고 무엇이 언제 달라졌는지 알 수 있는가?
+12. 곧 실행하거나 결과를 확인할 구체적인 계획이나 단기 목표인가?
+13. 사용자가 여러 문답에서 같은 어려움이나 고민을 되풀이해서 언급했는가?
+14. 사용자가 그 경험이나 결과에 직접 의미를 부여했는가?
 
 기준의 충족 정도와 향후 대화에서의 가치를 종합해 importance를 0~10 정수로 평가하세요.
-7점 이상은 장기기억에 저장할 가치가 있는 정보에 부여하세요.
+{MIN_NEW_FACT_IMPORTANCE}점 이상은 장기기억에 저장할 가치가 있는 정보에 부여하세요.
+한 가지 근거라도 분명하고 이후 대화에 구체적으로 쓸 수 있으면 {MIN_NEW_FACT_IMPORTANCE}점 이상을 줄 수 있습니다.
 명시적인 기억 요청은 높은 중요도로 평가하세요.
-가벼운 인사, 일시적 잡담, 새로운 정보가 없는 반복은 낮게 평가하세요."""
+가벼운 인사, 일시적 잡담, 새 정보나 반복되는 고민의 근거가 없는 단순 반복은 낮게 평가하세요."""
 
     def _call_ai(self, prompt, config, *, log_context=None):
         if self._response_provider is not None:
@@ -646,9 +681,27 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                 marker in text for marker in ('429', '401', '403', '500',
                     'too many requests', 'unauthorized', 'forbidden', 'internal server error'))
 
+    def _save_dialogue_model_switch(self, api_key, previous, model, *, trace_id):
+        from .ai_settings import load_ai_settings, save_ai_settings
+
+        try:
+            config = load_ai_settings()
+            if (config.get('api_key'), config.get('model')) != (api_key, previous):
+                return  # A newer choice in Settings takes precedence.
+            save_ai_settings(api_key, model, trace_id=trace_id)
+        except (OSError, ValueError) as exc:
+            log_event('dialogue.model_switch_save_failed', '대화용 모델 전환 저장 실패',
+                      category='대화·AI', level='ERROR', trace_id=trace_id, error=str(exc))
+            return
+        self.gemini_config = {**config, 'model': model}
+        log_event('dialogue.model_switched', '일일 요청 한도 초과로 대화용 모델 전환',
+                  category='대화·AI', trace_id=trace_id, previous_model=previous, model=model)
+        self.dialogue_model_switched.emit(previous, model)
+
     @pyqtSlot(object)
     def _finish_ai_request(self, result):
-        generation, response_text, failed = result
+        generation, response_text, failed, *extra = result
+        model_switch = extra[0] if extra else None
         trace_id = self._request_traces.pop(generation, None)
         if self._closed or generation != self._request_generation:
             log_event('dialogue.response_discarded', '만료된 대화 응답 폐기', category='대화·AI',
@@ -660,12 +713,16 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             log_event('dialogue.response_discarded', '대상 입력 없는 응답 폐기', category='대화·AI',
                       trace_id=trace_id, reason='no_active_input', generation=generation)
             return
+        if model_switch:
+            self._save_dialogue_model_switch(*model_switch, trace_id=trace_id)
         turn['state'] = 'failed' if failed else 'completed'
-        self._last_failed_input = dict(turn) if failed else None
-        self._append_chat_turn({
+        if failed:
+            self._failed_inputs[turn['chat_id']] = turn
+        reply_index = len(self.conversation_history)
+        self.conversation_history.append({
             'role': 'assistant', 'text': response_text,
             'source': turn['source'], 'state': turn['state'],
-            'turn_id': turn['turn_id'], 'trace_id': turn['trace_id']})
+            'turn_id': turn['turn_id'], 'chat_id': turn['chat_id'], 'trace_id': turn['trace_id']})
         log_event('dialogue.turn_failed' if failed else 'dialogue.turn_completed',
                   '대화 요청 실패' if failed else '대화 요청 완료', category='대화·AI',
                   level='ERROR' if failed else 'INFO', trace_id=turn['trace_id'],
@@ -674,19 +731,46 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         self._active_input = None
         self.is_ai_responding = False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(response_text, log_context=turn['log_context'], failed=failed)
+        context = {**turn['log_context'], 'chat_reply_index': reply_index}
+        self.show_ai_response(response_text, log_context=context, failed=failed)
         self._process_next_input()
 
+    @property
+    def _last_failed_input(self):
+        return next(reversed(self._failed_inputs.values()), None)
+
     def retry_last_input(self):
-        """A failed user turn remains in history and can be resubmitted explicitly."""
-        if self._last_failed_input is None or self._closed:
-            return False
         previous = self._last_failed_input
-        self._last_failed_input = None
+        return previous is not None and self.retry_input(previous['chat_id'])
+
+    def retry_input(self, chat_id):
+        if self._closed:
+            return False
+        previous = self._failed_inputs.pop(chat_id, None)
+        if previous is None:
+            return False
         log_event('dialogue.retry_requested', '실패한 대화 재시도 요청', category='대화·AI',
                   trace_id=previous['trace_id'], turn_id=previous['turn_id'])
-        return self._submit_input(previous['text'], previous['source'],
-                                  retry_of=previous['trace_id'])
+        return self._submit_input(previous['text'], previous['source'], retry=previous)
+
+    def cancel_input(self, chat_id):
+        if self._closed:
+            return False
+        turn = next((item for item in self.pending_inputs if item['chat_id'] == chat_id), None)
+        if turn is None:
+            return False
+        self.pending_inputs.remove(turn)
+        self._set_input_state(turn, 'cancelled')
+        log_event('dialogue.turn_cancelled', '사용자 대기 메시지 전송 취소', category='대화·AI',
+                  trace_id=turn['trace_id'], turn_id=turn['turn_id'], reason='user_cancelled',
+                  phase='queued', queue_size=len(self.pending_inputs))
+        self._process_next_input()
+        return True
+
+    def _set_input_state(self, turn, state):
+        turn['state'] = state
+        if self.current_input_widget is not None:
+            self.current_input_widget.set_message_state(turn['chat_id'], state)
 
     def _on_tts_speaking_changed(self, speaking):
         if speaking or self._speaking:
@@ -730,6 +814,14 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.ai_motion_changed.emit('idle')
         # Count the normal reading interval from display, including delayed audio.
         self._response_hold_until = max(self._response_hold_until, self._time_provider() + 5.0)
+        if (reply_index := context.get('chat_reply_index')) is not None:
+            self._display_chat_message(self.conversation_history[reply_index])
+        elif context.get('chat_automatic') and reason != 'ai_error':
+            turn_id = len(self.conversation_history)
+            turn = {'role': 'assistant', 'text': text, 'source': 'automatic', 'state': 'completed',
+                    'turn_id': turn_id, 'chat_id': turn_id, 'trace_id': context['trace_id']}
+            self.conversation_history.append(turn)
+            self._display_chat_message(turn)
         if legacy and getattr(self.show_dialogue, '__func__', None) is not DialogueSystem.show_dialogue:
             self.show_dialogue(text, duration=5000)
         else:
@@ -766,15 +858,18 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
                       text=text)
             return False
         self._response_hold_until = self._time_provider() + 5.0
-        self.show_ai_response(text, log_context=log_context, failed=failed)
+        automatic = (log_context or {}).get('source') != 'manual_generation'
+        self.show_ai_response(text, log_context=log_context, failed=failed, automatic=automatic)
         return True
 
-    def show_ai_response(self, response_text: str, *, log_context=None, failed=False):
+    def show_ai_response(self, response_text: str, *, log_context=None, failed=False, automatic=False):
         """Display on the Qt thread and use the existing voice/enabled settings."""
         if self._closed:
             return
         context = dict(log_context or {})
         context.setdefault('trace_id', new_trace_id('output'))
+        if automatic:
+            context['chat_automatic'] = True
         self._pending_ai_response = (response_text, context, log_context is None)
         # Preserve failure status through normalization: friendly error notices
         # belong in the bubble, but must not be synthesized as character speech.
@@ -828,10 +923,22 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
             self.current_input_widget = None
         self.tts.close()
 
-    def _append_chat_turn(self, turn):
-        self.conversation_history.append(turn)
+    def _display_chat_message(self, turn):
+        turn['displayed_at'] = QDateTime.currentDateTime()
         if self.current_input_widget is not None:
-            self.current_input_widget.append_message(turn['role'], turn['text'])
+            self.current_input_widget.append_message(turn)
+
+    def _speak_chat_message(self, text):
+        if self._closed:
+            return
+        if not getattr(self.tts, 'enabled', True):
+            QToolTip.showText(QCursor.pos(), '대화·음성 설정에서 AI 답변 음성으로 읽기를 켜 주세요.',
+                              self.current_input_widget)
+        elif self._pending_ai_response is not None:
+            QToolTip.showText(QCursor.pos(), '새 답변이 표시된 뒤 다시 눌러 주세요.',
+                              self.current_input_widget)
+        else:
+            self.tts.speak(text)
 
     def open_input_dialog(self):
         """Show the chat and keep the current draft and transcript."""
@@ -840,8 +947,12 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         if self.current_input_widget is None:
             self.current_input_widget = DialogueInputWidget()
             self.current_input_widget.text_submitted.connect(self.ask_ai)
+            self.current_input_widget.retry_requested.connect(self.retry_input)
+            self.current_input_widget.cancel_requested.connect(self.cancel_input)
+            self.current_input_widget.speech_requested.connect(self._speak_chat_message)
             for turn in self.conversation_history:
-                self.current_input_widget.append_message(turn['role'], turn['text'])
+                if 'displayed_at' in turn:
+                    self.current_input_widget.append_message(turn)
 
         input_widget = self.current_input_widget
         input_widget.showNormal()
@@ -863,6 +974,10 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         if not response:
             return normalized("뭔가 반응이 없네요... 😔", 'empty_fallback')
 
+        if response == FLASH_LITE_QUOTAS_EXHAUSTED:
+            return normalized('두 Flash Lite 모델의 오늘 요청 한도를 모두 사용했어요. 한도가 초기화되면 다시 보내 주세요.',
+                              'error_fallback', status=429)
+
         # Numeric answers (e.g. 500원) are valid conversation, not HTTP errors.
         error = self._is_error_response(response)
         if error and ("429" in response or "Too Many Requests" in response):
@@ -872,7 +987,8 @@ emotional_intensity는 저장 중요도 importance와 별개의 점수입니다.
         elif error and ("403" in response or "Forbidden" in response):
             return normalized("접근 권한이 없네요... 설정을 다시 확인해주세요.", 'error_fallback', status=403)
         elif error and ("503" in response or "Service Unavailable" in response):
-            return normalized("지금 AI 서버가 붐비고 있어. 잠시 후 '실패한 대화 다시 보내기'를 눌러줘.", 'error_fallback', status=503)
+            return normalized('지금 AI 서버가 붐비고 있어. 잠시 후 채팅창의 다시 보내기 버튼을 눌러줘.',
+                              'error_fallback', status=503)
         elif error and ("500" in response or "502" in response or "504" in response or "Internal Server Error" in response):
             return normalized("AI 서버에 문제가 생겼어요... 잠시 후에 다시 시도해주세요.", 'error_fallback', status=500)
         elif error:

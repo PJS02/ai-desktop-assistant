@@ -210,6 +210,7 @@
    * Clock-driven motion, sampled directly rather than played as sparse frames.
    * Optional walkAmount supports accelerating/decelerating under any expression.
    * It changes the stride and arm swing together; direction belongs to renderer.
+   * Optional walkTime controls step cadence separately from the action clock.
    * Optional runAmount blends the separate running stride; run/run_<emotion>
    * default to a full run. Existing walk and action samples stay unchanged.
    * Optional emotion selects only the face; omitted/'auto' keeps action defaults.
@@ -457,7 +458,7 @@
       }
     }
     if (amount > 0) {
-      const phase = time / 1.2;
+      const phase = (Number.isFinite(options.walkTime) ? options.walkTime : time) / 1.2;
       const a = TAU * phase;
       const stride = emotion === 'sad' ? 30 : 40;
       const lift = emotion === 'happy' ? 22 : 18;

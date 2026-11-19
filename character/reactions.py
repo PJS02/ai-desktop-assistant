@@ -1,116 +1,95 @@
-"""Choose short facial reactions from event appraisal and pre-event Russell mood."""
+"""Display short emotional reactions using the appraisal that changed the mood."""
 
+from collections import deque
 import math
-from dataclasses import dataclass
+import time
 
 from PyQt6.QtCore import QObject, QTimer
 
-from app_logging import log_event
-from .russell_sectors import SECTORS, SECTOR_ANGLE, russell_face
-from .perception_affect import choose_perception_face
+from app_logging import log_event, log_throttled
+from .interaction_emotions import FALL_EMOTION_MIN_HEIGHT
+from .russell_sectors import MOOD_REFERENCES, SECTOR_DIRECTIONS, russell_face
 
 
-@dataclass(frozen=True)
-class Appraisal:
-    # Outcome desirability, expressive arousal, and weight in the visible reaction.
-    outcome: float
-    arousal: float
-    weight: float
-    seconds: float
-    priority: int = 1
-    attribution: str = ""
-    prospect: str = ""
-    sudden: bool = False
+_FACES = dict(SECTOR_DIRECTIONS)
+_FACES.update(fear=(-.60, .75), angry=(-.85, .85), scared=(0., .95))
+_CONCERN = {'neutral', 'anxious', 'fear', 'scared', 'distressed', 'hurt', 'displeased'}
+_PHYSICAL_EVENTS = {'throw', 'fall_risk', 'impact', 'safe_landing', 'drag_shake'}
+_DIRECT_INTERACTIONS = {'tap', 'pet', 'pet_refused', 'poke_start', 'poke_play', 'poke_discomfort',
+                        'contact_ignored', 'palm', 'drag_start', 'drag_held', 'high_five',
+                        'high_five_refused', 'files_returned', 'files_dropped'}
 
 
-EVENTS = {
-    "pet": Appraisal(.56, -.42, .38, .50, 3, attribution="help"),
-    "pet_refused": Appraisal(-.52, .04, .65, .55, 3),
-    "poke_start": Appraisal(.12, .70, .55, .22, 3, sudden=True),
-    "poke_play": Appraisal(.44, .32, .40, .44, 3),
-    "poke_discomfort": Appraisal(-.44, .12, .54, .48, 3),
-    "tap": Appraisal(.47, .18, .39, .55, 3),
-    "drag_start": Appraisal(-.3, .73, .70, .36, 5, sudden=True),
-    "drag_discomfort": Appraisal(-.56, .10, .55, .68, 5),
-    "drag_repeated": Appraisal(-.68, .58, .54, .76, 5, attribution="blame"),
-    "palm": Appraisal(.50, -.38, .43, .58, 3, attribution="help"),
-    "ball_ready": Appraisal(.42, .37, .37, .58),
-    "ball_kicked": Appraisal(.60, .67, .42, .80, 2),
-    "ball_removed": Appraisal(-.40, -.33, .44, .64),
-    "file_received": Appraisal(.59, -.06, .45, .82, 2, attribution="help"),
-    "files_returned": Appraisal(-.60, -.30, .48, .76, 3),
-    "files_completed": Appraisal(.42, -.20, .4, .76, 3),
-    "files_dropped": Appraisal(-.60, -.30, .48, .76, 3),
-    "contact_ignored": Appraisal(-.68, .58, .54, .76, 3, attribution="blame"),
-    "fall_start": Appraisal(-.34, .8, .70, .22, 5, sudden=True),
-    "fall_risk": Appraisal(-.65, .68, .62, .65, 5, prospect="threat"),
-    "safe_landing": Appraisal(.52, -.40, .65, .73, 5, prospect="safe"),
-    "greeting": Appraisal(.52, .14, .42, .94, 2, attribution="help"),
-    "game_win": Appraisal(.66, .58, .48, 1.06, 4),
-    "game_earned_win": Appraisal(.69, .43, .51, 1.1, 4, attribution="self_credit"),
-    "game_loss": Appraisal(-.55, -.21, .48, 1.02, 4),
-    "game_draw": Appraisal(.37, -.18, .38, .74, 4),
-    "game_disappointed": Appraisal(-.66, -.28, .58, 1.22, 4, prospect="missed_reward"),
-    "self_play": Appraisal(.47, .43, .42, .63),
-    "wake": Appraisal(.25, -.55, .58, .58),
-    "wake_settle": Appraisal(.49, -.37, .55, .58),
-}
-
-_FACES = {
-    name: (math.cos(math.radians(i * SECTOR_ANGLE)), math.sin(math.radians(i * SECTOR_ANGLE)))
-    for i, (name, _) in enumerate(SECTORS)
-}
-_FACES["fear"] = (-.60, .75)
+def _strength(result):
+    return min(1., max(sum(abs(value) for value in result.get('changes', {}).values()),
+                       math.hypot(*result.get('bias_change', (0., 0.)))) / .04)
 
 
-def choose_face(event, before, *, strength=1.0):
-    """Gate by what happened, then rank eligible faces on the affect plane."""
-    rule = EVENTS[event]
-    if rule.sudden:
-        return "scared"
-    if rule.prospect == "safe":
-        return "relieved"
-    weight = min(1., rule.weight * strength)
-    target = ((1 - weight) * before[0] + weight * rule.outcome,
-              (1 - weight) * before[1] + weight * rule.arousal)
-    if rule.prospect == "threat":
-        candidates = ("anxious", "fear")
-        # Threat severity also changes which expressions are plausible.
-        if strength < .9:
-            return "anxious"
-        if strength >= 1.45:
-            return "fear"
-    elif rule.prospect == "missed_reward":
-        candidates = ("hurt", "sad")
-    elif event == "pet_refused":
-        return "displeased"
-    elif event == "wake":
-        candidates = ("tired", "quiet", "serene")
-    elif event in ("ball_ready", "ball_kicked", "self_play"):
-        candidates = ("pleasant", "excited", "thrilled")
-    elif rule.outcome < 0:
-        candidates = ("displeased", "hurt", "sad", "distressed")
-        if rule.attribution == "blame" and target[1] >= .38:
-            return "angry"
-    else:
-        candidates = ("pleasant", "serene", "happy", "excited", "thrilled")
-        if event in ("pet", "palm", "wake_settle", "tap", "greeting"):
-            candidates += ("calm",)
-        if rule.attribution == "self_credit":
-            candidates += ("proud",)
-    if rule.outcome > 0 and target[0] < 0 and event != "wake":
-        candidates = ("calm", "serene", "pleasant")
-    # Compare directions for ordinary faces. Use the authored coordinates of
-    # reactions outside the ring to distinguish nearby fear and anger.
+def choose_face(result, before, *, current=None):
+    """Score the event against the starting emotion category."""
+    strength = _strength(result)
+    if strength < .05:
+        return None
+    mood = russell_face(*before)
+    changes = result.get('changes', {})
+    valence, arousal = result.get('bias_change', (0., 0.))
+
+    gain = min(1., sum(max(0., changes.get(name, 0.)) for name in
+                       ('joy', 'gratitude', 'pride', 'hope', 'satisfaction')) / .04)
+    loss = min(1., sum(max(0., changes.get(name, 0.)) for name in
+                       ('distress', 'anger', 'shame')) / .035)
+    comfort = min(1., (max(0., changes.get('relief', 0.)) + max(0., -arousal)
+                      + sum(max(0., -changes.get(name, 0.)) for name in
+                            ('fear', 'distress', 'anger'))) / .045)
+    risk = result.get('risk', 0.)
+    threat = max(risk, min(1., max(0., changes.get('fear', 0.)) / .045))
+    surprise = min(result.get('surprise', 0.), max(0., arousal) / .025)
+    shift_x = gain + .35 * comfort - max(loss, threat) + valence
+    shift_y = .65 * gain + threat + surprise - 1.65 * comfort - .35 * loss
+    shift_length = math.hypot(shift_x, shift_y)
+    distance = (.32 + .28 * strength) / shift_length if shift_length else 0.
+    mood_x, mood_y = MOOD_REFERENCES[mood]
+    target = (mood_x + distance * shift_x, mood_y + distance * shift_y)
     radius = math.hypot(*target)
-    if radius > 0:
-        target = (target[0] / radius, target[1] / radius)
-    ranked = sorted(candidates, key=lambda face: math.dist(target, _FACES[face]))
-    best, second = ranked[:2]
-    if (rule.outcome > 0 and best == russell_face(*before)
-            and math.dist(target, _FACES[second]) - math.dist(target, _FACES[best]) < .30):
-        return second
-    return best
+
+    cheerful = gain * (1. - .4 * comfort)
+    support = dict.fromkeys(_FACES, 0.)
+    support.update(
+        pleasant=cheerful, happy=cheerful, excited=cheerful, thrilled=cheerful * .7,
+        serene=max(gain * .8, comfort), calm=max(gain * .55, comfort),
+        relieved=comfort, quiet=max(loss * .45, comfort * .7), tired=comfort * .4,
+        sad=loss, depressed=loss * .7, hurt=loss, distressed=max(loss, threat * .5),
+        displeased=loss, anxious=threat * (1. - .45 * risk), fear=threat * (.55 + .45 * risk),
+        scared=surprise, angry=min(1., max(0., changes.get('anger', 0.)) / .02),
+        proud=min(1., max(0., changes.get('pride', 0.)) / .025),
+    )
+    special = {'scared', 'fear', 'angry', 'proud'}
+    candidates = ['neutral', *(face for face in _FACES if face not in special or support[face] > .06)]
+    if changes.get('relief', 0.) <= 0:
+        candidates.remove('relieved')
+    if not changes and arousal > 0 and not surprise:
+        candidates = ['neutral', 'quiet', 'calm', 'serene', 'tired']
+        for face in candidates[1:]:
+            support[face] = .55
+    base = current if current == 'neutral' or current in _FACES else mood
+    if base not in candidates:
+        candidates.append(base)
+    if risk >= .45 and strength >= .45:
+        candidates = [face for face in candidates if face in _CONCERN]
+
+    def score(face):
+        if face == 'neutral':
+            return .62 - .22 * strength
+        x, y = _FACES[face]
+        direction = (1. + (x * target[0] + y * target[1]) / (math.hypot(x, y) * radius)) / 2 if radius else .5
+        continuity = 1. if face == base else 0.
+        if not continuity and base in _FACES:
+            bx, by = _FACES[base]
+            continuity = .5 if (x * bx + y * by) / (math.hypot(x, y) * math.hypot(bx, by)) >= .92 else 0.
+        return .52 * direction + .44 * support[face] + .04 * continuity
+
+    best = max(candidates, key=lambda face: (score(face), face == base))
+    return base if base in candidates and score(best) - score(base) < .01 else best
 
 
 def reaction_mood(host):
@@ -118,142 +97,150 @@ def reaction_mood(host):
     return (state.valence, state.arousal) if state is not None else (0., 0.)
 
 
-def react(host, event, **options):
+def react(host, event, result, **options):
     reactions = getattr(host, 'reactions', None)
-    if reactions is not None:
-        return reactions.play(event, **options)
+    if (reactions is not None and isinstance(result, dict) and result.get('applied')
+            and (face_event := result.get('reaction', event)) is not None):
+        return reactions.play(face_event, result=result, **options)
     return False
 
 
 def experience(host, event, *, source=None, event_id=None, reaction=True,
-               follow=None, sustain=False, **context):
-    """Record the real event once, then show its independently gated face."""
-    if getattr(host, '_character_closing', False):
-        return {'applied': False, 'reaction': None}
-    before = reaction_mood(host)
+               reaction_source=None, sustain=False, **context):
+    """Commit the event once and use the committed changes for its expression."""
     handler = getattr(getattr(host, 'mood_system', None), 'on_interaction', None)
-    result = handler(event, source=source, event_id=event_id, **context) if handler else {}
+    if getattr(host, '_character_closing', False) or handler is None:
+        return {'applied': False, 'reaction': None}
+    result = handler(event, source=source, event_id=event_id, **context)
     if not isinstance(result, dict):
-        result = {}
-    face_event = result.get('reaction', event)
-    if face_event == 'files_returned':
-        face_event = 'files_completed'
-    if reaction and result.get('accepted') and result.get('appraisal'):
-        reactions = getattr(host, 'reactions', None)
-        if reactions is not None:
-            reactions.play_perception(result['appraisal'], before=before)
-    elif reaction and face_event in EVENTS and not result.get('duplicate'):
-        react(host, face_event, before=before,
-              strength=context.get('strength', 1.), source=context.get('reaction_source'),
-              follow=follow, sustain=sustain)
+        return {'applied': False, 'reaction': None}
+    if reaction:
+        react(host, event, result, source=reaction_source, sustain=sustain)
     return result
 
 
 class Reactions(QObject):
-    """One temporary face. A newer event owns its timeout and any follow-up."""
+    """Own one temporary face, using a short window for continuous input."""
 
     def __init__(self, host):
         super().__init__(host)
         self.host = host
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._advance)
-        self.event = None
+        self._timer.timeout.connect(self.clear)
+        self.event = self.source = self.face = None
         self.priority = 0
-        self.source = None
-        self._next = None
-        self.threat = False
+        self._shown_at = 0.
+        self._sample_key = None
+        self._samples = deque()
 
-    def play(self, event, *, before=None, source=None, strength=1., follow=None, sustain=False):
+    def _recent(self, key, result, now):
+        if self._sample_key != key:
+            self._samples.clear()
+            self._sample_key = key
+        self._samples.append((now, result))
+        while self._samples and now - self._samples[0][0] > .45:
+            self._samples.popleft()
+        changes = {}
+        valence = arousal = 0.
+        for _, sample in self._samples:
+            for name, change in sample['changes'].items():
+                changes[name] = changes.get(name, 0.) + change
+            dv, da = sample['bias_change']
+            valence += dv
+            arousal += da
+        return {**result, 'changes': changes, 'bias_change': (valence, arousal)}
+
+    def play(self, event, *, result, source=None, sustain=False):
         host = self.host
-        if (host.rig_view is None or host._character_closing or not host.isVisible()
-                or getattr(host, '_hand_throw_active', False)):
+        appraisal = result.get('appraisal') or {}
+        source = source or ('perception' if appraisal else event)
+        priority = appraisal.get('priority', 2)
+        if event in _PHYSICAL_EVENTS:
+            priority = 5
+        elif event.startswith('game_') and event != 'game_start':
+            priority = 4
+        elif event in _DIRECT_INTERACTIONS:
+            priority = 3
+        now = time.monotonic()
+        if sustain:
+            result = self._recent((source, event), result, now)
+        strength = _strength(result)
+        animator = host.sprite_animator
+        before = reaction_mood(host)
+        face = choose_face(result, result.get('before', before),
+                           current=getattr(animator, 'current_emotion', None))
+        if face is None:
             return False
-        rule = EVENTS[event]
-        if self.event is not None and self.priority > rule.priority:
+        urgent = source == 'fall' or event in {'impact', 'safe_landing'}
+        blocked = (
+            'no_rig' if host.rig_view is None else
+            'hidden' if host._character_closing or not host.isVisible() else
+            'sleeping' if getattr(host, 'current_action', None) == 'sleep' else
+            'perception_policy' if not appraisal.get('reaction_allowed', True) else
+            'manual_face' if getattr(animator, '_emotion_override', None) and not urgent else
+            'higher_priority' if self.priority > priority else
+            'same_face' if self.event is None and face == getattr(animator, 'current_emotion', None) else None
+        )
+        if blocked:
+            log_throttled('character.reaction.skipped', '리액션 표정 표시 보류', category='캐릭터 상태',
+                          key=f'reaction:{event}:{blocked}', interval=.5,
+                          event_name=event, emotion=face, displayed_emotion=(
+                              'sleep' if blocked == 'sleeping' else getattr(animator, 'current_emotion', None)),
+                          reason=blocked)
             return False
-        source = source or event
-        if sustain and self.source == source and self.event == event:
-            self._timer.start(round(rule.seconds * 1000))
-            return True
-        before = before if before is not None else reaction_mood(host)
-        face = choose_face(event, before, strength=strength)
-        self.event, self.source = event, source
-        self.priority = rule.priority
-        self._next = (follow, before, strength) if follow else None
-        host.sprite_animator.set_reaction_emotion(face, urgent=source == "fall")
-        self._timer.start(round(rule.seconds * 1000))
-        log_event('character.reaction', '사건에 따라 리액션 표정을 표시합니다.',
-                  category='캐릭터 상태', event_name=event, source=source, emotion=face,
-                  valence=before[0], arousal=before[1], outcome=rule.outcome,
-                  attribution=rule.attribution, prospect=rule.prospect)
-        return True
 
-    def play_perception(self, appraisal, *, before=None):
-        host = self.host
-        if (not appraisal['accepted'] or not appraisal['reaction_allowed']
-                or host.rig_view is None or host._character_closing or not host.isVisible()
-                or getattr(host, '_hand_throw_active', False)
-                or getattr(getattr(host, 'manual_control', None), 'display_emotion', None)
-                or self.priority > appraisal['priority']):
-            return False
-        before = before if before is not None else reaction_mood(host)
-        face = choose_perception_face(appraisal, before)
-        self.event = 'user_' + appraisal['signal']
-        self.source, self.priority, self._next = 'perception', appraisal['priority'], None
-        host.sprite_animator.set_reaction_emotion(face)
-        self._timer.start(round(min(1.2, appraisal['seconds']) * 1000))
-        log_event('character.reaction', '사용자 인식의 해석에 따라 리액션을 표시합니다.',
-                  category='캐릭터 상태', event_name=self.event, emotion=face,
-                  valence=before[0], arousal=before[1],
-                  profile_weights=appraisal['weights'], interpretation=appraisal['interpretation'])
-        return True
-
-    def _advance(self):
-        follow, source = self._next, self.source
-        self.clear()
-        if follow is not None:
-            event, before, strength = follow
-            self.play(event, before=before, strength=strength, source=source)
+        seconds = .45 + .65 * strength
+        if face == 'scared':
+            seconds = .18 + .17 * strength
+        if self.source == source and self.event == event:
+            if face == self.face or (sustain and not urgent and now - self._shown_at < .30):
+                self._timer.start(round(seconds * 1000))
+                return animator.current_emotion == self.face
+        self.event, self.source, self.face = event, source, face
+        self.priority, self._shown_at = priority, now
+        animator.set_reaction_emotion(face, urgent=urgent)
+        self._timer.start(round(seconds * 1000))
+        shown = animator.current_emotion
+        if shown == face:
+            log_event('character.reaction', '사건에 따라 리액션 표정을 표시합니다.',
+                      category='캐릭터 상태', event_name=event, source=source, emotion=face,
+                      displayed_emotion=shown, valence=before[0], arousal=before[1],
+                      actual_occ=result['changes'], actual_bias=result['bias_change'])
+        else:
+            log_throttled('character.reaction.skipped', '동작 표정이 리액션보다 우선합니다.',
+                          category='캐릭터 상태', key=f'reaction:{event}:motion', interval=.5,
+                          event_name=event, emotion=face, displayed_emotion=shown, reason='motion_face')
+        return shown == face
 
     def clear(self, source=None):
+        if source is None or self._sample_key and self._sample_key[0] == source:
+            self._sample_key = None
+            self._samples.clear()
         if source is not None and source != self.source:
             return
         was_active = self.event is not None
         self._timer.stop()
-        self.event = self.source = self._next = None
+        self.event = self.source = self.face = None
         self.priority = 0
         if was_active and self.host.rig_view is not None:
-            mood = getattr(self.host, 'mood_system', None)
-            face = mood.decide_emotion()['emotion'] if mood is not None else 'neutral'
-            self.host.sprite_animator.set_mood_emotion(face)
+            mood = self.host.mood_system
+            self.host.sprite_animator.set_mood_emotion(mood.decide_emotion()['emotion'])
             self.host.sprite_animator.set_reaction_emotion()
 
     def cancel(self):
-        self.threat = False
         self.clear()
 
     def falling(self, distance, *, sudden=False):
-        if distance < .38 or getattr(self.host, '_hand_throw_active', False):
+        if distance < FALL_EMOTION_MIN_HEIGHT:
             return
-        strength = min(1.8, .65 + distance * .6)
-        result = experience(self.host, 'fall_risk', distance=distance, reaction=False)
-        self.threat = self.threat or distance >= .65
-        if self.source == "fall":
-            if self.event == "fall_risk" and self._timer.remainingTime() < 250:
-                self._timer.start(round(EVENTS["fall_risk"].seconds * 1000))
-            return
-        if sudden:
-            self.play("fall_start", source="fall", strength=strength,
-                      follow="fall_risk" if self.threat else None, before=result.get('before'))
-        elif self.threat:
-            self.play("fall_risk", source="fall", strength=strength, before=result.get('before'))
+        result = experience(self.host, 'fall_risk', distance=distance, sudden=sudden,
+                            reaction_source='fall', sustain=True)
+        if (not result.get('applied') and self.source == 'fall'
+                and self._timer.remainingTime() < 250):
+            self._timer.start(400)
 
     def safe(self, *, rescued=False):
-        was_threat = self.threat
-        self.threat = False
-        self.clear("fall")
-        result = experience(self.host, 'safe_landing', rescued=rescued, reaction=False)
-        if result.get('reaction') is None:
-            return False
-        return (was_threat or result.get('applied', False)) and self.play("safe_landing", before=result.get('before'))
+        self.clear('fall')
+        result = experience(self.host, 'safe_landing', rescued=rescued, reaction_source='fall')
+        return result.get('applied', False)

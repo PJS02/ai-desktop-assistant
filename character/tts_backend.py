@@ -10,14 +10,18 @@ import threading
 import time
 import wave
 from app_logging import log_event
+from app_paths import APP_ROOT, BUNDLED_TTS_RUNTIME, IS_INSTALLED, USER_DATA_ROOT
 
 from .tts_models import ModelStore
 
-ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_CONFIG = Path(os.environ.get('CAPSTONE_TTS_RUNTIME_CONFIG', str(ROOT / '.tts-runtime' / 'runtime.json')))
+TTS_RUNTIME_HOME = USER_DATA_ROOT / '.tts-runtime'
+RUNTIME_CONFIG = Path(os.environ.get('CAPSTONE_TTS_RUNTIME_CONFIG', str(TTS_RUNTIME_HOME / 'runtime.json')))
+BUNDLED_PYTHON = BUNDLED_TTS_RUNTIME / 'python.exe'
 
 
 def runtime_python():
+    if IS_INSTALLED and 'CAPSTONE_TTS_RUNTIME_CONFIG' not in os.environ and BUNDLED_PYTHON.is_file():
+        return BUNDLED_PYTHON
     try:
         config = json.loads(RUNTIME_CONFIG.read_text(encoding='utf8'))
         python = Path(config['python'])
@@ -25,7 +29,7 @@ def runtime_python():
             raise ValueError('missing interpreter')
         return python
     except (OSError, ValueError, KeyError):
-        raise ValueError('TTS 실행 환경이 준비되지 않았습니다. 프로젝트의 setup_tts_runtime.cmd를 먼저 실행해 주세요.') from None
+        raise ValueError('TTS 실행 환경이 준비되지 않았습니다. setup_tts_runtime.cmd를 먼저 실행해 주세요.') from None
 
 
 class SynthesisCancelled(Exception):
@@ -37,6 +41,7 @@ class LocalVoiceBackend:
         self.store = store or ModelStore()
         self.process = None
         self.voice = None
+        self.device = None
         self.lines = queue.Queue()
         self.errors = deque(maxlen=20)
         self.lock = threading.RLock()
@@ -79,17 +84,18 @@ class LocalVoiceBackend:
             log_event('tts.model_loading', '음성 모델 불러오기 시작', category='대화·AI', model=voice)
             python = runtime_python()
             self.store.verify_engine(voice)
-            work = self.store.root / voice
+            work = TTS_RUNTIME_HOME / 'work' / voice
             work.mkdir(parents=True, exist_ok=True)
+            nltk_home = BUNDLED_TTS_RUNTIME if python == BUNDLED_PYTHON else TTS_RUNTIME_HOME
             env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1',
                        TOKENIZERS_PARALLELISM='false', HF_HUB_OFFLINE='1',
-                       TRANSFORMERS_OFFLINE='1', HF_HOME=str(self.store.root / '.cache'),
-                       NLTK_DATA=str(ROOT / '.tts-runtime' / 'nltk_data'))
-            settings = json.loads(RUNTIME_CONFIG.read_text(encoding='utf8'))
+                       TRANSFORMERS_OFFLINE='1', HF_HOME=str(TTS_RUNTIME_HOME / 'hf-cache'),
+                       NLTK_DATA=str(nltk_home / 'nltk_data'))
+            settings = {} if python == BUNDLED_PYTHON else json.loads(RUNTIME_CONFIG.read_text(encoding='utf8'))
             env['CAPSTONE_TTS_EXTRA_SITE'] = json.dumps(settings.get('site_packages', []))
             self.lines, self.errors = queue.Queue(), deque(maxlen=20)
             process = subprocess.Popen([str(python), '-B', '-X', 'utf8', '-u',
-                str(ROOT / 'tts_runtime' / 'worker.py'), voice, str(self.store.root)],
+                str(APP_ROOT / 'tts_runtime' / 'worker.py'), voice, str(self.store.root)],
                 cwd=work, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, encoding='utf8', text=True, bufsize=1,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -112,9 +118,12 @@ class LocalVoiceBackend:
                     pass
             threading.Thread(target=output, daemon=True, name='tts-output').start()
             threading.Thread(target=stderr, daemon=True, name='tts-errors').start()
-        if self._line(cancelled, 180).get('status') != 'ready':
+        response = self._line(cancelled, 300)
+        if response.get('status') != 'ready':
             raise RuntimeError('TTS 모델 준비 응답이 올바르지 않습니다.')
-        log_event('tts.model_ready', '음성 모델 준비 완료', category='대화·AI', model=voice)
+        self.device = response.get('device')
+        log_event('tts.model_ready', '음성 모델 준비 완료', category='대화·AI', model=voice,
+                  device=self.device)
 
     def prepare(self, voice, cancelled):
         """Load and retain the selected model without generating any speech."""
@@ -138,7 +147,8 @@ class LocalVoiceBackend:
         try:
             self.process.stdin.write(json.dumps({'text': text, 'output': name}, ensure_ascii=False) + '\n')
             self.process.stdin.flush()
-            if self._line(cancelled, 120).get('status') != 'done':
+            timeout = 600 if self.device == 'cpu' else 120
+            if self._line(cancelled, timeout).get('status') != 'done':
                 raise RuntimeError('TTS 합성 응답이 올바르지 않습니다.')
             with wave.open(name, 'rb') as audio:
                 if audio.getnchannels() != 1 or audio.getsampwidth() != 2:
@@ -155,6 +165,7 @@ class LocalVoiceBackend:
             process, self.process = self.process, None
             voice = self.voice
             self.voice = None
+            self.device = None
             if process is not None:
                 if process.poll() is None:
                     process.terminate()

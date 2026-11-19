@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from app_logging import log_event
+from app_paths import USER_DATA_ROOT
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEVICE_SETTINGS_PATH = PROJECT_ROOT / "config" / "device_settings.json"
+DEVICE_SETTINGS_PATH = USER_DATA_ROOT / "medeapipe_capstone" / "config" / "device_settings.json"
 REALTEK_STEREO_MIX = 'realtek-stereo-mix'
 
 

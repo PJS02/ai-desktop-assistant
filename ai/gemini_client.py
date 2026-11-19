@@ -5,17 +5,22 @@ from __future__ import annotations
 import base64
 import io
 import json
-from pathlib import Path
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from PyQt6.QtCore import QDateTime
+
 from app_logging import log_event, new_trace_id, register_secret
+from app_paths import USER_DATA_ROOT
+from context import screen_history
 from context.screen_privacy import ScreenPrivacyError, redact_screen
+from .gemini_usage import record_attempt
 
 
-AI_DIR = Path(__file__).resolve().parent
+AI_DIR = USER_DATA_ROOT / "ai"
 REQUEST_TIMEOUT_SECONDS = 120
+DAILY_REQUEST_QUOTA_EXHAUSTED = "[gemini error] HTTP 429: daily model request quota exhausted"
 CONFIG_PATH = AI_DIR / "config" / "gemini_config.json"
 LEGACY_CONFIG_PATHS = (
     AI_DIR.parent / "context" / "gemini_config.json",
@@ -28,7 +33,8 @@ def _read_config():
         if path.exists():
             config = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(config, dict) or any(
-                not isinstance(config.get(field, ""), str) for field in ("api_key", "model")
+                not isinstance(config.get(field, ""), str)
+                for field in ("api_key", "model", "automatic_model")
             ):
                 raise ValueError("AI 설정 파일 형식이 올바르지 않습니다.")
             register_secret(config.get("api_key", ""))
@@ -53,11 +59,29 @@ def load_gemini_config() -> dict:
         _write_config(config)
     log_event("settings.ai.loaded" if path else "settings.ai.fallback", "AI 설정 로드",
               path=str(path) if path else None, model=config.get("model", ""),
+              automatic_model=config.get("automatic_model", ""),
               api_key_present=bool(config.get("api_key")))
     return config
 
 
-def save_gemini_config(api_key, model, *, trace_id=None):
+def automatic_dialogue_config(config):
+    model = config.get("automatic_model")
+    return {**config, "model": model} if model else config
+
+
+def is_screen_privacy_enabled(config):
+    return config.get("screen_privacy_enabled") is not False
+
+
+def _allows_unmasked_screen():
+    try:
+        config, _ = _read_config()
+    except (OSError, ValueError):
+        return False
+    return not is_screen_privacy_enabled(config)
+
+
+def save_gemini_config(api_key, model, *, automatic_model=None, screen_privacy_enabled=None, trace_id=None):
     """Atomically update the one shared config, preserving unrelated settings."""
     register_secret(api_key)
     try:
@@ -65,13 +89,48 @@ def save_gemini_config(api_key, model, *, trace_id=None):
             raise ValueError("API 키와 모델은 문자열이어야 합니다.")
         config, _ = _read_config()
         config.update(api_key=api_key, model=model)
+        if automatic_model is not None:
+            if not isinstance(automatic_model, str):
+                raise ValueError("자동대화용 모델은 문자열이어야 합니다.")
+            config["automatic_model"] = automatic_model
+        if screen_privacy_enabled is not None:
+            if not isinstance(screen_privacy_enabled, bool):
+                raise ValueError("화면 개인정보 마스킹 설정은 켬 또는 끔이어야 합니다.")
+            config["screen_privacy_enabled"] = screen_privacy_enabled
         _write_config(config)
+        screen_history.set_enabled(is_screen_privacy_enabled(config))
         log_event("settings.ai.saved", "AI 공통 설정 저장", trace_id=trace_id,
-                  path=str(CONFIG_PATH), model=model, api_key_present=bool(api_key))
+                  path=str(CONFIG_PATH), model=model, automatic_model=config.get("automatic_model", ""),
+                  api_key_present=bool(api_key))
     except (OSError, ValueError) as error:
         log_event("settings.ai.save_failed", "AI 설정 저장 실패: 기존 파일 유지",
                   category="오류", level="ERROR", trace_id=trace_id, error=str(error))
         raise
+
+
+def _is_daily_model_quota(error_body):
+    try:
+        details = json.loads(error_body)["error"]["details"]
+    except (ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(details, list):
+        return False
+    for detail in details:
+        if not isinstance(detail, dict) or detail.get("@type") != "type.googleapis.com/google.rpc.QuotaFailure":
+            continue
+        violations = detail.get("violations")
+        if not isinstance(violations, list):
+            continue
+        for violation in violations:
+            if isinstance(violation, dict) and (
+                violation.get("quotaId") in (
+                    "GenerateRequestsPerDayPerProjectPerModel",
+                    "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                )
+                or violation.get("quotaMetric") == "generativelanguage.googleapis.com/generate_requests_per_model_per_day"
+            ):
+                return True
+    return False
 
 
 def request_gemini(
@@ -108,15 +167,28 @@ def request_gemini(
     if expired():
         return '[gemini error] request deadline exceeded'
 
-    if image is not None:
+    unmasked_screen = (image is not None and not is_screen_privacy_enabled(config)
+                       and _allows_unmasked_screen())
+    if image is not None and not unmasked_screen:
+        generation = screen_history.capture_generation() if is_screen_privacy_enabled(config) else None
+        started = time.monotonic()
+        summary = {}
         try:
-            image, prompt, system_instruction = redact_screen(image, prompt, system_instruction)
+            image, prompt, system_instruction = redact_screen(image, prompt, system_instruction, summary=summary)
         except ScreenPrivacyError:
             log_event("gemini.privacy_blocked", "화면 개인정보 보호 실패로 요청 차단", category="대화·AI",
                       level="ERROR", trace_id=trace_id, source=context.get("source"))
             return "[gemini error] 화면 개인정보 보호 처리 실패: 요청을 전송하지 않았습니다."
+        elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+        try:
+            image_id = screen_history.save(image, generation)
+        except OSError as error:
+            image_id = None
+            log_event("screen.history.save_failed", "마스킹 이미지 저장 실패", category="대화·AI",
+                      level="WARNING", trace_id=trace_id, error_type=type(error).__name__)
         log_event("gemini.screen_redacted", "활성 창 개인정보 마스킹 완료", category="대화·AI",
-                  trace_id=trace_id, width=image.width, height=image.height)
+                  trace_id=trace_id, width=image.width, height=image.height,
+                  elapsed_ms=elapsed_ms, screen_image_id=image_id, **summary)
 
     if expired():
         return '[gemini error] request deadline exceeded'
@@ -136,31 +208,44 @@ def request_gemini(
         payload["system_instruction"] = {"parts": [{"text": system_instruction}]}
 
     log_payload = dict(payload)
+    log_prompt = "[UNMASKED SCREEN CONTEXT OMITTED]" if unmasked_screen else prompt
     log_payload["contents"] = [{"parts": [
         {"inlineData": {"mimeType": "image/png", "data": "[IMAGE OMITTED]"}}
-        if "inlineData" in part else part for part in parts]}]
+        if "inlineData" in part else {"text": log_prompt} for part in parts]}]
+    if unmasked_screen:
+        log_payload.pop("system_instruction", None)
     log_event("gemini.request", "Gemini 요청 본문 (이미지 데이터 제외)", category="대화·AI",
               trace_id=trace_id, model=model, payload=log_payload,
-              source=context.get("source"), timeout_seconds=timeout, max_attempts=attempts)
+              source=context.get("source"), timeout_seconds=timeout, max_attempts=attempts,
+              unmasked_screen=unmasked_screen)
     request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), method="POST")
     request.add_header("Content-Type", "application/json")
     for attempt in range(attempts):
         if expired():
             return '[gemini error] request deadline exceeded'
+        if unmasked_screen and not _allows_unmasked_screen():
+            log_event("gemini.skipped", "화면 마스킹 설정이 변경되어 요청을 중단했습니다.",
+                      category="대화·AI", trace_id=trace_id, reason="screen_privacy_reenabled")
+            return "[gemini error] 화면 마스킹 설정이 변경되었습니다. 다시 요청해 주세요."
         started = time.monotonic()
         log_event("gemini.attempt_started", "Gemini HTTP 요청 시작", category="대화·AI",
                   trace_id=trace_id, attempt=attempt + 1, model=model)
+        sent_at = QDateTime.currentDateTimeUtc()
+        status = None
+        failed = True
         try:
             remaining_timeout = min(timeout, max(.1, deadline - started)) if deadline is not None else timeout
             with urlopen(request, timeout=remaining_timeout) as response:
-                raw_body = response.read().decode("utf-8")
                 status = getattr(response, "status", None)
+                raw_body = response.read().decode("utf-8")
             log_event("gemini.http_response", "Gemini HTTP 응답 전체", category="대화·AI",
                       trace_id=trace_id, attempt=attempt + 1, status=status,
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2), body=raw_body)
             data = json.loads(raw_body)
+            failed = False
             break
         except HTTPError as error:
+            status = error.code
             try:
                 error_body = error.read().decode("utf-8", errors="replace")
             except Exception:
@@ -169,6 +254,8 @@ def request_gemini(
                       level="ERROR", trace_id=trace_id, attempt=attempt + 1,
                       status=error.code, error=str(error), body=error_body,
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2))
+            if error.code == 429 and _is_daily_model_quota(error_body):
+                return DAILY_REQUEST_QUOTA_EXHAUSTED
             if error.code in (500, 502, 503, 504) and attempt + 1 < attempts:
                 log_event("gemini.retry_scheduled", "Gemini 서버 오류 재시도", category="대화·AI",
                           level="WARNING", trace_id=trace_id, attempt=attempt + 1,
@@ -196,6 +283,8 @@ def request_gemini(
                       level="ERROR", trace_id=trace_id, attempt=attempt + 1, error=str(error),
                       elapsed_ms=round((time.monotonic() - started) * 1000, 2))
             return f"[gemini error] {error}"
+        finally:
+            record_attempt(api_key, model, sent_at, status, failed)
 
     candidates = data.get("candidates", [])
     if not candidates:

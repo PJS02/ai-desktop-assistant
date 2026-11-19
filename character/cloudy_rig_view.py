@@ -7,41 +7,44 @@ Float32 vertices to the original fragment calculation.
 from __future__ import annotations
 
 from array import array
+import math
 from pathlib import Path
 import time
 import traceback
 from app_logging import log_event
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPainterPath, QPixmap, QSurfaceFormat, QVector2D, QVector3D, QVector4D
 from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
                            QOpenGLTexture, QOpenGLVersionFunctionsFactory,
                            QOpenGLVersionProfile, QOpenGLFramebufferObject)
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
+from .desktop_geometry import NativeWindowClip
 from .rig_v8 import NodeRigPlanner
+from .rig_state import RIG_ACTIONS, TRIP_ACTIONS
 from .texture_cache import BoundedTextureCache
 
 
-_VERTEX = """attribute vec2 pos;attribute vec2 uv;uniform vec2 viewport;
-uniform vec2 sceneOffset;varying vec2 stagePoint;
-varying vec2 tex;void main(){stagePoint=pos+sceneOffset;
-gl_Position=vec4(stagePoint.x/viewport.x*2.0-1.0,
-1.0-stagePoint.y/viewport.y*2.0,0.0,1.0);tex=uv;}"""
+_VERTEX = """attribute vec2 pos;attribute vec2 uv;uniform vec2 viewport;uniform vec2 stageOrigin;
+uniform vec2 sceneOffset;varying vec2 tex;
+void main(){vec2 canvasPoint=(pos+sceneOffset+stageOrigin)/viewport;
+gl_Position=vec4(canvasPoint.x*2.0-1.0,1.0-canvasPoint.y*2.0,0.0,1.0);tex=uv;}"""
 _FRAGMENT = """uniform sampler2D image;uniform sampler2D replacement;
 uniform sampler2D bodyNegativeLower;uniform sampler2D bodyNegativeUpper;
 uniform float replacementAmount;uniform float bodyBlendEnabled;
 uniform float bodyPositiveWeight;uniform float sourceClipEnabled;
 uniform vec3 sourceClipAxis;uniform vec2 sourceClipBounds;uniform float opacity;
 uniform vec4 occlusion0;uniform vec4 occlusion1;uniform vec4 occlusion2;uniform vec4 occlusion3;
-uniform vec4 revealEllipse;varying vec2 stagePoint;
+uniform vec4 revealEllipse;
 uniform vec3 skinOffset;uniform vec3 replacementSkinOffset;
 uniform vec2 skinCenter;uniform vec2 skinRadius;
 uniform vec2 replacementSkinCenter;uniform vec2 replacementSkinRadius;
 varying vec2 tex;
 bool covered(vec4 rect){
- return stagePoint.x>=rect.x&&stagePoint.y>=rect.y&&stagePoint.x<=rect.z&&stagePoint.y<=rect.w;
+ vec2 pixel=floor(gl_FragCoord.xy);
+ return pixel.x>=rect.x&&pixel.x<rect.z&&pixel.y>=rect.y&&pixel.y<rect.w;
 }
 vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
  if(color.a<0.001||dot(abs(offset),vec3(1.0))<0.000001)return color;
@@ -57,7 +60,7 @@ vec4 skinTone(vec4 color,vec3 offset,vec2 center,vec2 radius){
 void main(){
 bool reveal=false;
 if(revealEllipse.z>0.0&&revealEllipse.w>0.0){
- vec2 q=(stagePoint-revealEllipse.xy)/revealEllipse.zw;
+ vec2 q=(gl_FragCoord.xy-revealEllipse.xy)/revealEllipse.zw;
  reveal=dot(q,q)<1.0;
 }
 if(!reveal&&(covered(occlusion0)||covered(occlusion1)||covered(occlusion2)||covered(occlusion3)))discard;
@@ -78,7 +81,6 @@ _GL_BLEND, _GL_DEPTH_TEST, _GL_CULL_FACE = 0x0BE2, 0x0B71, 0x0B44
 _GL_ONE, _GL_ONE_MINUS_SRC_ALPHA = 1, 0x0303
 _GL_FLOAT, _GL_TRIANGLES = 0x1406, 0x0004
 _DURATIONS = {"wave": 4.6, "jump": 2.4, "land": 1.6}
-_ACTIONS = {"idle", "walk", "run", "wave", "stretch", "arrive", "thinking", "sleep", "hovering", "jump", "fall", "land", "peek", "peek_left", "peek_right", "break_out", "spectate", "game_cheer", "game_oops"}
 
 
 def _texture_storage_bytes(part):
@@ -94,6 +96,7 @@ def _texture_storage_bytes(part):
 class CloudyRigView(QOpenGLWidget):
     frame_requested = pyqtSignal()
     animation_finished = pyqtSignal()
+    stage_padding_changed = pyqtSignal(int, int, int)
     pose_bounds_changed = pyqtSignal()
     failed = pyqtSignal(str)
 
@@ -126,6 +129,7 @@ class CloudyRigView(QOpenGLWidget):
             self._identity_metadata[identity] = (name, part)
         self._cache = BoundedTextureCache(texture_budget_bytes, self._load_texture,
                                          lambda texture: texture.destroy())
+        self._activity_textures = {}
         self._program = self._buffer = self._gl = None
         self._buffer_capacity = 0
         self._error = None
@@ -140,11 +144,18 @@ class CloudyRigView(QOpenGLWidget):
         self._speech_start = time.perf_counter()
         self._started = time.perf_counter()
         self._offset = 0.0
+        self._walk_rate = 1.0
+        self._walk_time_offset = 0.0
         self._paused = False
         self._finished = False
         self._fixed_state = None
+        self.stage_padding = (0, 0)
+        self._peek_padding = 0
+        self._high_five = None
         self._last_plan = None
         self._scene_layers = {}
+        self._native_window_clip = NativeWindowClip()
+        self.frameSwapped.connect(self._finish_clip_handoff)
         self._last_paint_time = time.perf_counter()
         self._overlay = QPixmap()
         self._debug_painter = None
@@ -164,21 +175,60 @@ class CloudyRigView(QOpenGLWidget):
         self._decoration_painter = callback
         self.update()
 
-    def set_scene_layer(self, name, *, offset=(0., 0.), occlusions=(), reveal=None, animated=False, input_margin=0.):
-        """Compose in logical widget pixels without moving/masking the native window."""
-        self._scene_layers[name] = dict(offset=offset, occlusions=tuple(QRectF(r) for r in occlusions),
-                                        reveal=reveal, animated=animated, input_margin=input_margin)
-        interval = 16 if any(v['animated'] for v in self._scene_layers.values()) else 33
+    def set_scene_layer(self, name, *, offset=(0., 0.), occlusions=(), reveal=None, animated=False,
+                        input_margin=0., cover_hwnd=None):
+        """Offset the rig locally and clip against logical desktop coordinates."""
+        self._scene_layers[name] = dict(
+            offset=offset, occlusions=tuple(QRectF(r) for r in occlusions), reveal=reveal,
+            animated=animated, input_margin=input_margin,
+            native_frame=self._native_window_clip.frame(cover_hwnd) if cover_hwnd is not None else None)
+        self._sync_native_clip()
+        interval = self._frame_interval()
         if self._timer.interval() != interval:
             self._timer.setInterval(interval)
         self.update()
 
     def clear_scene_layer(self, name):
         self._scene_layers.pop(name, None)
-        interval = 16 if any(v['animated'] for v in self._scene_layers.values()) else 33
+        self._sync_native_clip()
+        interval = self._frame_interval()
         if self._timer.interval() != interval:
             self._timer.setInterval(interval)
         self.update()
+
+    def _frame_interval(self):
+        return 16 if self._action in TRIP_ACTIONS or any(layer['animated'] for layer in self._scene_layers.values()) else 33
+
+    def _sync_native_clip(self):
+        if self._released:
+            return
+        for layer in self._scene_layers.values():
+            if (frame := layer.get('native_frame')) is not None:
+                layer['native_clip'] = self._native_window_clip.apply(self.window(), frame)
+                if layer['native_clip']:
+                    return
+        if not any(layer['occlusions'] for layer in self._scene_layers.values()):
+            self._native_window_clip.clear()
+
+    def _finish_clip_handoff(self):
+        # Let Qt present the next shader mask before lifting the HWND region.
+        if not any(layer.get('native_clip') for layer in self._scene_layers.values()):
+            self._native_window_clip.clear()
+
+    def prepare_host_move(self, position):
+        for layer in self._scene_layers.values():
+            if layer.get('native_clip'):
+                self._native_window_clip.prepare_move(self.window(), layer['native_frame'], position)
+                return
+
+    def host_moved(self, delta):
+        if self._scene_layers:
+            self._sync_native_clip()
+            viewport = QRectF(self.rect()).translated(self.mapToGlobal(QPointF()))
+            swept = viewport.united(viewport.translated(-QPointF(delta)))
+            if any(swept.intersects(rect) for layer in self._scene_layers.values()
+                   if not layer.get('native_clip') for rect in layer['occlusions']):
+                self.update()
 
     def scene_contains(self, point, body):
         dx = sum(v['offset'][0] for v in self._scene_layers.values())
@@ -186,34 +236,72 @@ class CloudyRigView(QOpenGLWidget):
         margin = max((v.get('input_margin', 0.) for v in self._scene_layers.values()), default=0.)
         if not QRectF(body).adjusted(-margin, 0, margin, 0).translated(dx, dy).contains(point.x(), point.y()):
             return False
+        if not self._scene_layers:
+            return True
+        desktop = self.mapToGlobal(QPointF(point))
+        x, y = desktop.x(), desktop.y()
         for layer in self._scene_layers.values():
-            if any(r.contains(point.x(), point.y()) for r in layer['occlusions']):
+            if any(r.left() <= x < r.right() and r.top() <= y < r.bottom() for r in layer['occlusions']):
                 reveal = layer['reveal']
                 if not reveal or reveal[2] <= 0 or reveal[3] <= 0:
                     return False
-                if ((point.x()-reveal[0])/reveal[2])**2 + ((point.y()-reveal[1])/reveal[3])**2 >= 1:
+                if ((x-reveal[0])/reveal[2])**2 + ((y-reveal[1])/reveal[3])**2 >= 1:
                     return False
         return True
 
-    def _scene_uniforms(self, width, height, dpr, enabled):
-        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
-        sx, sy = 360 * dpr / max(1, vw), 540 * dpr / max(1, vh)
-        ox, oy = (width-vw)/2/dpr, (height-vh)/2/dpr
-        layers = tuple(self._scene_layers.values()) if enabled else ()
+    def _framebuffer_layers(self, dpr):
+        if not self._scene_layers:
+            return ()
+        # Keep the native window's fractional logical position until pixel rounding.
+        origin = self.mapToGlobal(QPointF())
+        viewport = QRectF(self.rect()).translated(origin)
+        screen_origin = QPointF(self.screen().geometry().topLeft()) if dpr != 1.0 else QPointF()
+
+        def pixel(edge):
+            return math.floor(edge * dpr + .5)
+
+        # Round on the desktop's pixel grid before subtracting the widget origin.
+        origin_x = pixel(origin.x() - screen_origin.x())
+        origin_y = pixel(origin.y() - screen_origin.y())
+        layers = []
+        for layer in self._scene_layers.values():
+            if layer.get('native_clip'):
+                continue
+            occlusions = []
+            for rect in layer['occlusions']:
+                if rect.intersects(viewport):
+                    left = pixel(rect.left() - screen_origin.x()) - origin_x
+                    top = pixel(rect.top() - screen_origin.y()) - origin_y
+                    right = pixel(rect.right() - screen_origin.x()) - origin_x
+                    bottom = pixel(rect.bottom() - screen_origin.y()) - origin_y
+                    occlusions.append(QRectF(left, top, right - left, bottom - top))
+            reveal = layer['reveal']
+            if reveal:
+                cx, cy, rx, ry = reveal
+                reveal = ((cx - screen_origin.x()) * dpr - origin_x,
+                          (cy - screen_origin.y()) * dpr - origin_y, rx * dpr, ry * dpr)
+            layers.append(dict(layer, occlusions=occlusions, reveal=reveal))
+        return layers
+
+    def _scene_uniforms(self, stage, framebuffer_height, layers):
+        sx, sy = 360 / stage.width(), 540 / stage.height()
         dx = sum(v['offset'][0] for v in layers)
         dy = sum(v['offset'][1] for v in layers)
         self._program.setUniformValue(self._locations['sceneOffset'], QVector2D(dx*sx, dy*sy))
+        # Mask directly in framebuffer pixels, with OpenGL's bottom-left origin.
         rects = [r for layer in layers for r in layer['occlusions']][:4]
         for i in range(4):
             r = rects[i] if i < len(rects) else None
-            values = ((r.left()-ox)*sx, (r.top()-oy)*sy, (r.right()-ox)*sx, (r.bottom()-oy)*sy) if r else (0, 0, -1, -1)
+            values = (0, 0, -1, -1)
+            if r is not None:
+                values = (r.left(), framebuffer_height - r.bottom(), r.right(), framebuffer_height - r.top())
             self._program.setUniformValue(self._locations[f'occlusion{i}'], QVector4D(*values))
         reveal = next((v['reveal'] for v in layers if v['reveal']), None)
-        values = ((reveal[0]-ox)*sx, (reveal[1]-oy)*sy, reveal[2]*sx, reveal[3]*sy) if reveal else (0,0,0,0)
+        values = (reveal[0], framebuffer_height - reveal[1], *reveal[2:]) if reveal else (0, 0, 0, 0)
         self._program.setUniformValue(self._locations['revealEllipse'], QVector4D(*values))
 
     def set_action(self, action: str, loop: bool = True):
-        action = action if action in _ACTIONS else "idle"
+        action = action if action in RIG_ACTIONS else "idle"
         if action not in {"jump", "fall", "land"}:
             self._jump_phase = None
             self._authored_jump = False
@@ -221,9 +309,12 @@ class CloudyRigView(QOpenGLWidget):
             return
         self._action, self._loop = action, bool(loop)
         self._offset = 0.0
+        self._walk_rate = 1.0
+        self._walk_time_offset = 0.0
         self._started = time.perf_counter()
         self._finished = False
         self._fixed_state = None
+        self._set_stage_padding(action in TRIP_ACTIONS)
         self.update()
 
     def set_emotion(self, emotion: str):
@@ -266,26 +357,91 @@ class CloudyRigView(QOpenGLWidget):
         self._contact_painter = callback
         self.update()
 
+    def set_high_five(self, clip_time=None, *, side=0, target=None, refusal=None):
+        self._high_five = None if clip_time is None else (65 * side, {
+            'time': clip_time, 'target': target, 'refusal': refusal,
+        })
+        self.update()
+
+    def set_walk_rate(self, rate):
+        if rate == self._walk_rate:
+            return
+        # Preserve the current step when the rate changes mid-walk.
+        self._walk_time_offset += self._time() * (self._walk_rate - rate)
+        self._walk_rate = rate
+        self.update()
+
+    @property
+    def high_five_pose_active(self):
+        return self._high_five is not None or bool(self._last_plan and self._last_plan.get('highFivePalm'))
+
+    def stage_rect(self):
+        """The 360 by 540 rig viewport in logical widget pixels."""
+        dpr = self.devicePixelRatioF()
+        pad_x, pad_y = self.stage_padding
+        width = round((self.width() - 2 * pad_x) * dpr)
+        height = round((self.height() - 2 * pad_y) * dpr)
+        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
+        return QRectF((round(pad_x*dpr) + (width - vw) // 2) / dpr,
+                      (round(pad_y*dpr) + (height - vh) // 2) / dpr,
+                      vw / dpr, vh / dpr)
+
+    def set_peek_padding(self, pixels, *, shift_x=0):
+        self._peek_padding = pixels
+        self._set_stage_padding(self._action in TRIP_ACTIONS, shift_x=shift_x)
+
+    def _set_stage_padding(self, needs_room, *, shift_x=0):
+        # The falling silhouette can extend about 140 rig units past either side.
+        height = self.height() - 2 * self.stage_padding[1]
+        fall_pad_x = math.ceil(height * 160 / 540) if needs_room else 0
+        pad_x = max(self._peek_padding, fall_pad_x)
+        pad_y = math.ceil(height * 48 / 540) if needs_room else 0
+        dx, dy = pad_x - self.stage_padding[0], pad_y - self.stage_padding[1]
+        if dx or dy:
+            self.stage_padding = (pad_x, pad_y)
+            if self._character_pixel_rect is not None:
+                self._character_pixel_rect.translate(dx, dy)
+            if self.parentWidget() is None:
+                self.resize(self.width() + 2 * dx, self.height() + 2 * dy)
+            else:
+                self.stage_padding_changed.emit(dx, dy, shift_x)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_native_clip()
+        if self.stage_padding != (0, 0):
+            action = (self._fixed_state or {}).get('action', self._action)
+            self._set_stage_padding(action in TRIP_ACTIONS)
+
+    def high_five_contact(self, clip_time):
+        palm = self._last_plan and self._last_plan.get('highFivePalm')
+        if not palm or palm['time'] != clip_time:
+            return None
+        stage = self.stage_rect()
+        return QPointF(stage.x() + palm['x'] * stage.width() / 360,
+                       stage.y() + palm['y'] * stage.height() / 540)
+
     def character_rect(self):
         """Map current character meshes to the same viewport used by OpenGL."""
         if self._character_pixel_rect is not None:
             return QRectF(self._character_pixel_rect)
         if self._last_plan is None or self._last_plan.get('characterBounds') is None:
             return QRectF(self.rect())
-        dpr = self.devicePixelRatioF()
-        width, height = round(self.width() * dpr), round(self.height() * dpr)
-        vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
-        sx, sy = vw / dpr / 360, vh / dpr / 540
-        ox, oy = (width - vw) // 2 / dpr, (height - vh) // 2 / dpr
+        stage = self.stage_rect()
+        sx, sy = stage.width() / 360, stage.height() / 540
         left, top, right, bottom = self._last_plan['characterBounds']
-        return QRectF(ox + left * sx, oy + top * sy,
+        return QRectF(stage.x() + left * sx, stage.y() + top * sy,
                       (right - left) * sx, (bottom - top) * sy).intersected(QRectF(self.rect()))
 
     def _draw_commands(self, commands):
         gl, program = self._gl, self._program
         for command in commands:
             for unit, name in enumerate(('base', 'replacement', 'bodyNegativeLower', 'bodyNegativeUpper')):
-                self._cache.get(self._identities[command[name]]).bind(unit)
+                source = command[name]
+                texture = self._activity_textures.get(source)
+                if texture is None:
+                    texture = self._cache.get(self._identities[source])
+                texture.bind(unit)
             for name in ('replacementAmount', 'bodyBlendEnabled', 'bodyPositiveWeight', 'opacity', 'sourceClipEnabled'):
                 program.setUniformValue(self._locations[name], float(command[name]))
             program.setUniformValue(self._locations['sourceClipAxis'], QVector3D(*command['sourceClipAxis']))
@@ -343,14 +499,14 @@ class CloudyRigView(QOpenGLWidget):
         if self._paused:
             self._started = time.perf_counter()
             self._paused = False
-        self._timer.start(33)
+        self._timer.start(self._frame_interval())
         self.update()
 
     def _tick(self):
         if self._released or self._error:
             return
         self.frame_requested.emit()
-        duration = _DURATIONS.get(self._action)
+        duration = _DURATIONS.get(self._action) or self.planner.trip_durations.get(self._action)
         if not self._loop and duration and self._time() >= duration:
             # Clamp just before the periodic source pose wraps back to its start.
             self._offset = duration - 0.000001
@@ -366,6 +522,7 @@ class CloudyRigView(QOpenGLWidget):
         """Deterministic capture of the real renderer, without changing app state."""
         self.pause()
         self._fixed_state = dict(state) if state is not None else None
+        self._set_stage_padding((self._fixed_state or {}).get('action', self._action) in TRIP_ACTIONS)
         self.update()
 
     def _state(self):
@@ -374,12 +531,17 @@ class CloudyRigView(QOpenGLWidget):
         now = time.perf_counter()
         dt = now - self._last_paint_time
         self._last_paint_time = now
-        return {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
-                "time": self._time(), "externalPhysics": self._external_physics,
-                "jumpActive": self._jump_active,
-                "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
-                "speaking": self._speaking,
-                "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
+        state = {"action": self._action, "emotion": self._emotion, "yaw": self._yaw,
+                 "time": self._time(), "externalPhysics": self._external_physics,
+                 "jumpActive": self._jump_active,
+                 "jumpPhase": self._jump_phase, "authoredJump": self._authored_jump,
+                 "speaking": self._speaking,
+                 "speechTime": now - self._speech_start, "smooth": True, "dt": dt}
+        if self._action == 'walk':
+            state['walkTime'] = state['time'] * self._walk_rate + self._walk_time_offset
+        if self._high_five is not None:
+            state['yaw'], state['highFive'] = self._high_five
+        return state
 
     def initializeGL(self):
         try:
@@ -401,7 +563,7 @@ class CloudyRigView(QOpenGLWidget):
                 raise RuntimeError("Could not create the rig vertex buffer")
             self._buffer.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
             self._locations = {name: self._program.uniformLocation(name) for name in
-                ("viewport", "image", "replacement", "bodyNegativeLower", "bodyNegativeUpper",
+                ("viewport", "stageOrigin", "image", "replacement", "bodyNegativeLower", "bodyNegativeUpper",
                  "replacementAmount", "bodyBlendEnabled", "bodyPositiveWeight", "opacity",
                  "sourceClipEnabled", "sourceClipAxis", "sourceClipBounds",
                  "sceneOffset", "occlusion0", "occlusion1", "occlusion2", "occlusion3", "revealEllipse",
@@ -469,15 +631,16 @@ class CloudyRigView(QOpenGLWidget):
             image = QImage(identity)
         if image.isNull():
             raise RuntimeError(f"Cannot decode rig texture: {name}")
+        return self._make_texture(image, bool(part.get("drawnTearFrame"))), _texture_storage_bytes(part)
+
+    def _make_texture(self, image, painted_tear=False):
         image = image.convertToFormat(QImage.Format.Format_RGBA8888_Premultiplied)
-        size = _texture_storage_bytes(part)
         self._peak_decode_bytes = max(self._peak_decode_bytes, image.sizeInBytes())
         texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
         texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
         texture.setSize(image.width(), image.height())
         # Painted tear cels shrink substantially on the cheek. Prefilter them
         # instead of sparsely sampling the high-resolution ink and highlights.
-        painted_tear = bool(part.get("drawnTearFrame"))
         texture.setMipLevels(max(image.width(), image.height()).bit_length() if painted_tear else 1)
         texture.setAutoMipMapGenerationEnabled(False)
         texture.allocateStorage(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8)
@@ -489,7 +652,21 @@ class CloudyRigView(QOpenGLWidget):
                         image.constBits())
         if painted_tear:
             texture.generateMipMaps()
-        return texture, size
+        return texture
+
+    def _prepare_activity_textures(self, layers):
+        from .rig_fx import build_effect
+        for name in self._activity_textures.keys() - layers.keys():
+            self._activity_textures.pop(name).destroy()
+        for name, recipe in layers.items():
+            image = build_effect(name, recipe)
+            texture = self._activity_textures.get(name)
+            if texture is not None and (texture.width(), texture.height()) == (image.width(), image.height()):
+                texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, image.constBits())
+            else:
+                if texture is not None:
+                    self._activity_textures.pop(name).destroy()
+                self._activity_textures[name] = self._make_texture(image)
 
     def paintGL(self):
         if self._released or self._error or self._gl is None:
@@ -503,35 +680,47 @@ class CloudyRigView(QOpenGLWidget):
             self._plan_ms = (time.perf_counter() - t0) * 1000
             self._max_plan_ms = max(self._max_plan_ms, self._plan_ms)
             self._last_plan = plan
+            layers = plan.get('activityLayers', {})
             sizes = {}
             for name in plan["requiredTextures"]:
+                if name in layers:
+                    continue
                 part = self._parts[name]
                 sizes[self._identities[name]] = _texture_storage_bytes(part)
             self._cache.prepare(sizes)
-            # Keep the authored 2:3 stage, centered inside the existing host box.
+            self._prepare_activity_textures(layers)
+            # Use the original projection even when a fall needs a wider canvas.
             dpr = self.devicePixelRatioF()
-            width, height = round(self.width() * dpr), round(self.height() * dpr)
-            vw, vh = min(width, round(height * 2 / 3)), min(height, round(width * 3 / 2))
-            gl.glViewport((width - vw) // 2, (height - vh) // 2, vw, vh)
+            framebuffer_size = self.size() * dpr
+            width, height = framebuffer_size.width(), framebuffer_size.height()
+            stage = self.stage_rect()
+            vx, vy = round(stage.x() * dpr), round(stage.y() * dpr)
+            vw, vh = round(stage.width() * dpr), round(stage.height() * dpr)
+            gl.glViewport(0, 0, width, height)
             gl.glDisable(_GL_DEPTH_TEST)
             gl.glDisable(_GL_CULL_FACE)
             gl.glEnable(_GL_BLEND)
             gl.glBlendFunc(_GL_ONE, _GL_ONE_MINUS_SRC_ALPHA)
             program = self._program
             program.bind()
-            program.setUniformValue(self._locations["viewport"], QVector2D(360, 540))
+            sx, sy = 360 / vw, 540 / vh
+            program.setUniformValue(self._locations["viewport"], QVector2D(width * sx, height * sy))
+            program.setUniformValue(self._locations["stageOrigin"], QVector2D(vx * sx, vy * sy))
             for unit, name in enumerate(("image", "replacement", "bodyNegativeLower", "bodyNegativeUpper")):
                 program.setUniformValue(self._locations[name], unit)
             self._buffer.bind()
             program.enableAttributeArray(self._pos)
             program.enableAttributeArray(self._uv)
-            self._scene_uniforms(width, height, dpr, False)
+            self._scene_uniforms(stage, height, ())
             # Controlled peeks use stable physics bounds; avoid GPU readback on
             # every animated frame (and don't measure the clipped silhouette).
             if not any(v['animated'] for v in self._scene_layers.values()) or self._character_pixel_rect is None:
                 self._character_pixel_rect = None
                 self._measure_character_pixels(plan, width, height, dpr)
-            self._scene_uniforms(width, height, dpr, True)
+            # Align the host before mapping the desktop mask into this frame.
+            self.pose_bounds_changed.emit()
+            layers = self._framebuffer_layers(dpr)
+            self._scene_uniforms(stage, height, layers)
             self._draw_commands(plan['commands'])
             program.disableAttributeArray(self._pos)
             program.disableAttributeArray(self._uv)
@@ -539,39 +728,36 @@ class CloudyRigView(QOpenGLWidget):
             program.release()
             # Restore the active texture unit before Qt composites the widget.
             gl.glActiveTexture(0x84C0)
-            gl.glViewport(0, 0, width, height)
-            # Publish this frame's body bounds before Qt presents the host. A
-            # landing pose can extend the feet beyond the previous fall bounds.
-            self.pose_bounds_changed.emit()
-            show_diagnostics = not self._scene_layers and (
-                not self._overlay.isNull() or self._debug_painter is not None
-            )
+            show_diagnostics = (not self._overlay.isNull() or self._debug_painter is not None) and not any(
+                layer['animated'] or layer['occlusions'] for layer in layers)
             if show_diagnostics or self._contact_painter is not None or self._decoration_painter is not None:
                 painter = QPainter(self)
                 if show_diagnostics and not self._overlay.isNull():
-                    painter.drawPixmap(self.rect(), self._overlay)
+                    pad_x, pad_y = self.stage_padding
+                    painter.drawPixmap(self.rect().adjusted(pad_x, pad_y, -pad_x, -pad_y), self._overlay)
                 if show_diagnostics and self._debug_painter is not None:
                     self._debug_painter(painter)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                if self._scene_layers:
+                if layers:
                     allowed = QPainterPath()
                     allowed.addRect(QRectF(self.rect()))
-                    for layer in self._scene_layers.values():
+                    for layer in layers:
                         clipped = QPainterPath()
                         for r in layer['occlusions']:
-                            clipped.addRect(r)
+                            clipped.addRect(QRectF(r.topLeft() / dpr, r.size() / dpr))
                         reveal = layer['reveal']
                         if reveal:
+                            cx, cy, rx, ry = (value / dpr for value in reveal)
                             hole = QPainterPath()
-                            hole.addEllipse(QRectF(reveal[0]-reveal[2], reveal[1]-reveal[3], reveal[2]*2, reveal[3]*2))
+                            hole.addEllipse(QPointF(cx, cy), rx, ry)
                             clipped = clipped.subtracted(hole)
                         allowed = allowed.subtracted(clipped)
                     painter.setClipPath(allowed)
                 if self._contact_painter is not None:
                     self._contact_painter(painter)
                 if self._decoration_painter is not None:
-                    painter.translate((width-vw)//2/dpr, (height-vh)//2/dpr)
-                    painter.scale(vw/dpr/360, vh/dpr/540)
+                    painter.translate(stage.topLeft())
+                    painter.scale(stage.width()/360, stage.height()/540)
                     self._decoration_painter(painter, plan)
                 painter.end()
             self._draw_ms = (time.perf_counter() - t0) * 1000 - self._plan_ms
@@ -595,6 +781,7 @@ class CloudyRigView(QOpenGLWidget):
         self.makeCurrent()
         self._diagnostic_fbo = None
         self._cache.clear()
+        self._prepare_activity_textures({})
         if self._buffer is not None and self._buffer.isCreated():
             self._buffer.destroy()
         if self._program is not None:
@@ -607,6 +794,7 @@ class CloudyRigView(QOpenGLWidget):
             log_event('renderer.opengl.released', 'OpenGL 캐릭터 렌더 자원을 해제합니다.',
                       trace_id=getattr(self.planner, 'log_trace_id', None), **self._diagnostic_snapshot())
             self._released = True
+            self._native_window_clip.clear()
             self._debug_painter = None
             self._contact_painter = None
             self._timer.stop()

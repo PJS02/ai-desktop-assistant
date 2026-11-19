@@ -5,7 +5,22 @@ from pathlib import PureWindowsPath
 from app_logging import log_event, log_throttled
 
 DEFAULT_GAME_RULES = {'keywords': ['game', 'steam', 'unity'],
-                      'included_processes': [], 'excluded_processes': []}
+                      'included_processes': [], 'excluded_processes': [], 'motions': {}}
+GAME_MOTION_LABELS = {
+    'gaming': '게임패드 조작',
+    'gaming-console': '휴대용 콘솔',
+    'gaming-racing': '레이싱',
+    'gaming-rhythm': '리듬 게임',
+}
+
+
+def normalize_game_process(entry):
+    entry = PureWindowsPath(entry.strip().lower()).name
+    if not entry.endswith('.exe'):
+        entry += '.exe'
+    if entry == '.exe' or len(entry) > 255 or any(c in entry for c in '<>:"/\\|?*') or not entry.isprintable():
+        raise ValueError('게임 목록에는 실행 파일 이름을 입력하세요. 예: MyGame.exe')
+    return entry
 
 
 def normalize_game_rules(rules=None):
@@ -15,6 +30,8 @@ def normalize_game_rules(rules=None):
         raise ValueError('게임 목록 형식이 올바르지 않습니다.')
     result = {}
     for key, default in DEFAULT_GAME_RULES.items():
+        if key == 'motions':
+            continue
         entries = rules.get(key, default)
         if not isinstance(entries, list) or any(not isinstance(s, str) for s in entries):
             raise ValueError('게임 목록은 문자열 목록이어야 합니다.')
@@ -24,15 +41,21 @@ def normalize_game_rules(rules=None):
             if not entry:
                 continue
             if key != 'keywords':
-                entry = PureWindowsPath(entry).name
-                if not entry.endswith('.exe'):
-                    entry += '.exe'
-                if entry == '.exe' or len(entry) > 255 or any(c in entry for c in '<>:"/\\|?*') or not entry.isprintable():
-                    raise ValueError('게임 목록에는 실행 파일 이름을 입력하세요. 예: MyGame.exe')
+                entry = normalize_game_process(entry)
             elif len(entry) > 100 or any(c in entry for c in '\r\n'):
                 raise ValueError('게임 키워드는 한 줄에 하나씩 100자 이내로 입력하세요.')
             values.add(entry)
         result[key] = sorted(values)
+    motions = rules.get('motions', {})
+    if not isinstance(motions, dict) or any(
+            not isinstance(process, str) or not isinstance(action, str)
+            or (action != 'spectate' and action not in GAME_MOTION_LABELS)
+            for process, action in motions.items()):
+        raise ValueError('게임별 모션 설정이 올바르지 않습니다.')
+    motions = {normalize_game_process(process): action for process, action in motions.items()}
+    previously_registered = {process for process, action in motions.items() if action == 'spectate'}
+    result['included_processes'] = sorted(set(result['included_processes']) | previously_registered)
+    result['motions'] = {process: action for process, action in motions.items() if action != 'spectate'}
     return result
 
 

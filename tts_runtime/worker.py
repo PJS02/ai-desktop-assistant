@@ -9,28 +9,28 @@ import site
 ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT / 'vendor'
 MODE, MODELS = sys.argv[1], Path(sys.argv[2]).resolve()
-sys.path[:0] = [str(VENDOR), str(VENDOR / 'GPT_SoVITS'),
+sys.path[:0] = [str(ROOT.parent), str(VENDOR), str(VENDOR / 'GPT_SoVITS'),
                 str(VENDOR / 'GPT_SoVITS/eres2net'),
                 str(VENDOR / 'MeloTTS'), str(VENDOR / 'OpenVoice')]
 for directory in json.loads(os.environ.get('CAPSTONE_TTS_EXTRA_SITE', '[]')):
     site.addsitedir(directory)
 os.environ['CAPSTONE_TTS_KOREAN_BERT'] = str(MODELS / 'openvoice_v2/bert')
+os.environ['CAPSTONE_TTS_GPT_ROOT'] = str(MODELS / 'gpt_sovits')
+
+from inference_device import configure_inference_process, torch_device
 
 
 def send(**value):
     print('CAPSTONE_TTS:' + json.dumps(value, ensure_ascii=False), flush=True)
 
 
-def load_gpt():
-    import torch
+def load_gpt(device):
     import numpy as np
     import soundfile as sf
-    if not torch.cuda.is_available():
-        raise RuntimeError('GPT-SoVITS에는 지원되는 NVIDIA GPU와 드라이버가 필요합니다.')
     from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
     model_dir = MODELS / 'gpt_sovits'
     pretrained = model_dir / 'GPT_SoVITS/pretrained_models'
-    config = TTS_Config({'custom': {'device': 'cuda:0', 'is_half': True, 'version': 'v2Pro',
+    config = TTS_Config({'custom': {'device': device, 'is_half': device.startswith('cuda'), 'version': 'v2Pro',
         't2s_weights_path': str(model_dir / 'gpt.ckpt'), 'vits_weights_path': str(model_dir / 'sovits.pth'),
         'bert_base_path': str(pretrained / 'chinese-roberta-wwm-ext-large'),
         'cnhuhbert_base_path': str(pretrained / 'chinese-hubert-base')}})
@@ -50,14 +50,13 @@ def load_gpt():
     return synthesize
 
 
-def load_openvoice():
+def load_openvoice(device):
     import torch
     import soundfile as sf
     from melo.api import TTS
     from melo.text import japanese_bert, korean
     from openvoice.api import ToneColorConverter
     from transformers import AutoModelForMaskedLM, AutoTokenizer
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     folder = MODELS / 'openvoice_v2'
     send(status='loading', completed=1, total=7, detail='실행 환경 준비 완료 · 음색 변환 모델을 불러오는 중')
     converter = ToneColorConverter(str(folder / 'converter/config.json'), device=device, enable_watermark=False)
@@ -93,8 +92,14 @@ def load_openvoice():
 def main():
     if MODE not in ('gpt_sovits', 'openvoice_v2'):
         raise ValueError('Unknown engine')
-    synthesize = load_gpt() if MODE == 'gpt_sovits' else load_openvoice()
-    send(status='ready')
+    configure_inference_process()
+    import torch
+
+    device = torch_device(torch, auto_cuda=True)
+    if device == 'cpu':
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+    synthesize = load_gpt(device) if MODE == 'gpt_sovits' else load_openvoice(device)
+    send(status='ready', device=device)
     for line in sys.stdin:
         try:
             request = json.loads(line)
