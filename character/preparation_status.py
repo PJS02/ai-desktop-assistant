@@ -3,7 +3,8 @@ from html import escape
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar,
+                             QPushButton, QVBoxLayout, QWidget)
 
 from app_logging import subscribe
 
@@ -307,7 +308,7 @@ class _PreparationIndicator(QWidget):
 
 class PreparationOverlay(QWidget):
     """One bar attached to the character, with persistent click-open details."""
-    def __init__(self, status, character):
+    def __init__(self, status, character, *, retry_screen):
         super().__init__(character, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.status, self.character = status, character
@@ -373,6 +374,14 @@ class PreparationOverlay(QWidget):
             grid.addWidget(reason, row + 1, 0, 1, 3)
             self.details_rows[key] = label, caption, indicator, reason
         details_layout.addLayout(grid)
+        self.retry_button = QPushButton('화면 분석 다시 시도')
+        details_layout.addWidget(self.retry_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+        def request_retry():
+            if retry_screen():
+                status.set_state('screen', 'loading', '화면 분석 모델을 다시 준비하는 중')
+
+        self.retry_button.clicked.connect(request_retry)
         self.spinner_timer = QTimer(self.details_popup)
         self.spinner_timer.setInterval(45)
         self.spinner_timer.timeout.connect(self._advance_spinners)
@@ -415,6 +424,7 @@ class PreparationOverlay(QWidget):
             indicator.update()
             reason.setText(text)
             reason.setVisible(state == 'error')
+        self.retry_button.setVisible(self.status.screen_enabled and self.status.states['screen'][0] == 'error')
         self._sync_spinner_timer()
         self.bar.setAccessibleDescription(f'{percent}% 준비. ' + '; '.join(
             f'{LABELS[key]} {STATE_TEXT[state]}: {text}' for key, (state, text) in self.status.states.items()))

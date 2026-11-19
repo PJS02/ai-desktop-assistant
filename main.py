@@ -394,11 +394,12 @@ def main():
     character.hand_interactions = HandInteractionController(character, hand_overlay)
     settings_controller = SettingsController(character, mediapipe_manager, hand_overlay)
     character._show_settings_callback = settings_controller.show
-    character.preparation_overlay = PreparationOverlay(preparation, character)
     model_preparation = ModelPreparation(character.dialogue_system.long_term_memory,
                                         screen_enabled=(HAS_CONTEXT and character.auto_program_detection
                                                         and is_screen_privacy_enabled(character.gemini_config)))
     character.model_preparation = model_preparation
+    character.preparation_overlay = PreparationOverlay(preparation, character,
+                                                       retry_screen=model_preparation.retry_screen)
     picker = StartupPersonalityDialog(personality)
 
     def start_character(selected):
