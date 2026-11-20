@@ -435,6 +435,8 @@
     });
     var commands = gl.result(), required = Object.create(null);
     var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    // Avoid a contextified Math lookup for every coordinate in every mesh.
+    var min = Math.min, max = Math.max;
     commands.forEach(function (command) {
       [command.base, command.replacement, command.bodyNegativeLower, command.bodyNegativeUpper]
         .forEach(function (name) { if (name) required[name] = true; });
@@ -443,8 +445,8 @@
       command.characterPart = command.opacity > 0 && /^(?:(front|left|right)_(0\d|1[0-3])(?:_|$)|fx_high_five_palm_|activity_hand_|fx_activity_cuff_)/.test(command.base || '');
       if (command.characterPart) {
         for (var i = 0; i < command.vertices.length; i += 4) {
-          left = Math.min(left, command.vertices[i]); top = Math.min(top, command.vertices[i + 1]);
-          right = Math.max(right, command.vertices[i]); bottom = Math.max(bottom, command.vertices[i + 1]);
+          left = min(left, command.vertices[i]); top = min(top, command.vertices[i + 1]);
+          right = max(right, command.vertices[i]); bottom = max(bottom, command.vertices[i + 1]);
         }
       }
     });

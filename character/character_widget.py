@@ -3637,7 +3637,9 @@ class CharacterWidget(QLabel):
         for _ in range(steps):
             CharacterWidget._gravity_step(self, dt * 60 / steps)
         self.dialogue_system.update_dialogue_position()
-        self.repaint()
+        # The native view schedules its own frames; repainting the host redraws it too.
+        if self.rig_view is None:
+            self.repaint()
 
     def _gravity_step(self, frames):
         self._physics_seconds = getattr(self, '_physics_seconds', 0.) + frames / 60

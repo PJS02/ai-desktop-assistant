@@ -93,6 +93,15 @@ def _texture_storage_bytes(part):
     return total
 
 
+def _image_alpha_bounds(image):
+    image = image.convertToFormat(QImage.Format.Format_Alpha8)
+    pixels = image.constBits()
+    pixels.setsize(image.sizeInBytes())
+    # Alpha alone is enough; share its storage, including padded scanlines.
+    return Image.frombuffer('L', (image.width(), image.height()), pixels,
+                            'raw', 'L', image.bytesPerLine(), 1).getbbox()
+
+
 class CloudyRigView(QOpenGLWidget):
     frame_requested = pyqtSignal()
     animation_finished = pyqtSignal()
@@ -474,10 +483,7 @@ class CloudyRigView(QOpenGLWidget):
             raise RuntimeError('Could not create the character diagnostic framebuffer')
         self._gl.glClear(_GL_COLOR_BUFFER_BIT)
         self._draw_commands(c for c in plan['commands'] if c['characterPart'])
-        image = self._diagnostic_fbo.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
-        pixels = image.constBits().asstring(image.sizeInBytes())
-        alpha = Image.frombytes('RGBA', (width, height), pixels).getchannel('A')
-        bounds = alpha.getbbox()
+        bounds = _image_alpha_bounds(self._diagnostic_fbo.toImage())
         if bounds is not None:
             left, top, right, bottom = bounds
             self._character_pixel_rect = QRectF(left / dpr, top / dpr,

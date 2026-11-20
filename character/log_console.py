@@ -704,6 +704,9 @@ class LogWindow(QWidget):
     def on_entry_added(self, entry):
         if entry.event == 'settings.ai.saved':
             self.sync_screen_privacy()
+        # The manager retains every record; build display rows when opened.
+        if not self.isVisible():
+            return
         if self.is_paused:
             self._update_status()
             return
@@ -761,7 +764,8 @@ class LogWindow(QWidget):
 
     def _refresh_retained(self):
         self._refresh_pending = False
-        self.refresh()
+        if self.isVisible():
+            self.refresh()
 
     def refresh(self, *_args, force=False):
         if self.current_topic() == SCREEN_PRIVACY_TOPIC:
@@ -841,11 +845,16 @@ class LogWindow(QWidget):
             lines.append(format_readable_event(entry, self._presentation(entry), raw=self.current_topic() == '원본'))
         QApplication.clipboard().setText('\n'.join(lines))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+
     def show_and_raise(self):
+        if self.isVisible():
+            self.refresh()
         self.show()
         self.raise_()
         self.activateWindow()
-        self.refresh()
 
     def shutdown(self):
         self._allow_close = True
