@@ -594,9 +594,9 @@
    * source pixels below the ankle follow the ankle-to-toe frame, so the shoe can
    * stay level while the calf bends. Unlike separate rectangles, the shared mesh
    * remains connected through its joints. Width is preserved while bone length
-   * follows the posed chain. No allocation or mutation of the joint arrays.
+   * follows the posed chain. Reuse the bone frames for a fixed joint chain.
    */
-  function deformPoint(point, restJoints, posedJoints, normalScale) {
+  function prepareDeformer(restJoints, posedJoints, normalScale) {
     const count = restJoints.length;
     if (count !== posedJoints.length || count < 2) throw new RangeError('Matching joint chains are required');
     const bones = [];
@@ -610,41 +610,47 @@
       bones.push({start, length, x: dx / length, y: dy / length, posedStart,
         px: pdx / posedLength, py: pdy / posedLength, scale: posedLength / length});
     }
-    const transform = i => {
-      const b = bones[i], dx = point.x - b.start.x, dy = point.y - b.start.y;
-      const axial = dx * b.x + dy * b.y;
-      const along = axial * b.scale;
-      // Girth affects only distance across the bone, leaving its length and
-      // joint positions intact. Omitting the callback preserves the old map.
-      const normal = (-dx * b.y + dy * b.x) * (normalScale ? normalScale(i, axial / b.length) : 1);
-      return {x: b.posedStart.x + along * b.px - normal * b.py,
-        y: b.posedStart.y + along * b.py + normal * b.px};
+    return function deform(point) {
+      const transform = i => {
+        const b = bones[i], dx = point.x - b.start.x, dy = point.y - b.start.y;
+        const axial = dx * b.x + dy * b.y;
+        const along = axial * b.scale;
+        // Girth affects only distance across the bone, leaving its length and
+        // joint positions intact. Omitting the callback preserves the old map.
+        const normal = (-dx * b.y + dy * b.x) * (normalScale ? normalScale(i, axial / b.length) : 1);
+        return {x: b.posedStart.x + along * b.px - normal * b.py,
+          y: b.posedStart.y + along * b.py + normal * b.px};
+      };
+      // Smooth signed joint planes avoid the discontinuous "nearest bone" switch
+      // on a bent source limb. Every triangle vertex uses the same continuous map.
+      let result = transform(0);
+      for (let joint = 1; joint < bones.length; joint++) {
+        const previous = bones[joint - 1], next = bones[joint], center = restJoints[joint];
+        let bx = previous.x + next.x, by = previous.y + next.y;
+        const bisectorLength = Math.hypot(bx, by);
+        if (bisectorLength < 1e-6) { bx = previous.x; by = previous.y; }
+        else { bx /= bisectorLength; by /= bisectorLength; }
+        let axial = (point.x - center.x) * bx + (point.y - center.y) * by;
+        let radius = Math.min(previous.length, next.length) * 0.26;
+        let weight = smoothstep((axial + radius) / (2 * Math.max(radius, 1e-6)));
+        if (count === 4 && joint === 2) {
+          // Finish at the ankle plane: source shoe pixels below it stay rigid.
+          axial = (point.x - center.x) * previous.x + (point.y - center.y) * previous.y;
+          radius = Math.min(previous.length * 0.25, next.length * 0.45);
+          weight = smoothstep((axial + radius) / Math.max(radius, 1e-6));
+        }
+        if (weight > 0) {
+          const q = transform(joint);
+          result = {x: mix(result.x, q.x, weight), y: mix(result.y, q.y, weight)};
+        }
+      }
+      return result;
     };
-    // Smooth signed joint planes avoid the discontinuous "nearest bone" switch
-    // on a bent source limb. Every triangle vertex uses the same continuous map.
-    let result = transform(0);
-    for (let joint = 1; joint < bones.length; joint++) {
-      const previous = bones[joint - 1], next = bones[joint], center = restJoints[joint];
-      let bx = previous.x + next.x, by = previous.y + next.y;
-      const bisectorLength = Math.hypot(bx, by);
-      if (bisectorLength < 1e-6) { bx = previous.x; by = previous.y; }
-      else { bx /= bisectorLength; by /= bisectorLength; }
-      let axial = (point.x - center.x) * bx + (point.y - center.y) * by;
-      let radius = Math.min(previous.length, next.length) * 0.26;
-      let weight = smoothstep((axial + radius) / (2 * Math.max(radius, 1e-6)));
-      if (count === 4 && joint === 2) {
-        // Finish at the ankle plane: source shoe pixels below it stay rigid.
-        axial = (point.x - center.x) * previous.x + (point.y - center.y) * previous.y;
-        radius = Math.min(previous.length * 0.25, next.length * 0.45);
-        weight = smoothstep((axial + radius) / Math.max(radius, 1e-6));
-      }
-      if (weight > 0) {
-        const q = transform(joint);
-        result = {x: mix(result.x, q.x, weight), y: mix(result.y, q.y, weight)};
-      }
-    }
-    return result;
   }
 
-  return {smoothstep, sideWavePreparation, sideWaveRoll, gait, runGait, runProfile, solveIK, pose, applyEmotion, applySpeech, blinkAt, speechAt, PoseTransition, deformPoint, emotions, expressionKeys};
+  function deformPoint(point, restJoints, posedJoints, normalScale) {
+    return prepareDeformer(restJoints, posedJoints, normalScale)(point);
+  }
+
+  return {smoothstep, sideWavePreparation, sideWaveRoll, gait, runGait, runProfile, solveIK, pose, applyEmotion, applySpeech, blinkAt, speechAt, PoseTransition, deformPoint, prepareDeformer, emotions, expressionKeys};
 });
