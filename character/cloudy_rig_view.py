@@ -7,6 +7,7 @@ Float32 vertices to the original fragment calculation.
 from __future__ import annotations
 
 from array import array
+from copy import deepcopy
 import math
 from pathlib import Path
 import time
@@ -139,6 +140,7 @@ class CloudyRigView(QOpenGLWidget):
         self._cache = BoundedTextureCache(texture_budget_bytes, self._load_texture,
                                          lambda texture: texture.destroy())
         self._activity_textures = {}
+        self._activity_recipes = {}
         self._program = self._buffer = self._gl = None
         self._buffer_capacity = 0
         self._error = None
@@ -552,6 +554,7 @@ class CloudyRigView(QOpenGLWidget):
     def initializeGL(self):
         try:
             self._buffer_capacity = 0
+            self._activity_recipes.clear()
             profile = QOpenGLVersionProfile()
             profile.setVersion(2, 0)
             self._gl = QOpenGLVersionFunctionsFactory.get(profile, self.context())
@@ -664,15 +667,20 @@ class CloudyRigView(QOpenGLWidget):
         from .rig_fx import build_effect
         for name in self._activity_textures.keys() - layers.keys():
             self._activity_textures.pop(name).destroy()
+            self._activity_recipes.pop(name, None)
         for name, recipe in layers.items():
-            image = build_effect(name, recipe)
             texture = self._activity_textures.get(name)
+            if texture is not None and self._activity_recipes.get(name) == recipe:
+                continue
+            image = build_effect(name, recipe)
             if texture is not None and (texture.width(), texture.height()) == (image.width(), image.height()):
                 texture.setData(QOpenGLTexture.PixelFormat.RGBA, QOpenGLTexture.PixelType.UInt8, image.constBits())
             else:
                 if texture is not None:
                     self._activity_textures.pop(name).destroy()
                 self._activity_textures[name] = self._make_texture(image)
+            # Snapshot nested commands so later edits cannot leave stale pixels.
+            self._activity_recipes[name] = deepcopy(recipe)
 
     def paintGL(self):
         if self._released or self._error or self._gl is None:
