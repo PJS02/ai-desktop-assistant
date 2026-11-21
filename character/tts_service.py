@@ -276,11 +276,13 @@ class SupertonicTTS(QObject):
     def _create_model():
         from supertonic import TTS
 
+        # Four ONNX sessions share the CPU with recognition and the Qt renderer.
+        options = dict(intra_op_num_threads=2, inter_op_num_threads=1)
         if IS_INSTALLED:
             return TTS(model="supertonic-3", model_dir=BUNDLED_MODELS_DIR / 'supertonic-3',
-                       auto_download=False)
+                       auto_download=False, **options)
         print("[TTS] Supertonic 3 모델 로딩 중 (첫 실행 시 약 400MB 다운로드)")
-        return TTS(model="supertonic-3", auto_download=True)
+        return TTS(model="supertonic-3", auto_download=True, **options)
 
     def _run(self) -> None:
         model, styles = None, {}

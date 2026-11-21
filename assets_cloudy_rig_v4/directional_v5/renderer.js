@@ -262,11 +262,12 @@ class Renderer{
   // exposes a seam and opposing upper/forearm maps pinch the elbow.
   const normalScale=type==='arm'&&!near&&cfg.prefix!=='front'
    ?(boneIndex,fraction)=>-(baseNormalScale?baseNormalScale(boneIndex,fraction):1):baseNormalScale;
+  const deform = M.prepareDeformer(src, dest, normalScale);
   const splitMaterials=this.textures[name+'_connected_wave_cloth']&&this.textures[name+'_connected_wave_hardware']
    &&this.textures[name+'_connected_wave_tag']&&this.textures[name+'_wave_elbow_cloth_cap_v16'];
   const waveLayers=type==='arm'&&near&&cfg.prefix!=='front'&&(pose.waveSideGesture||0)>0&&root.CloudySideWaveSkinning&&splitMaterials
    ?root.CloudySideWaveSkinning.createLayers(src,dest,{activation:pose.waveSideGesture,normalScale,
-      fallback:p=>M.deformPoint(p,src,dest,normalScale),overlap:1.2,
+      fallback:deform,overlap:1.2,
       capStatic:true,capScale:{along:.72,across:.82},capOffset:cfg.prefix==='left'?{along:0,across:0}:{along:-2,across:2},
       capActivation:M.smoothstep((pose.waveSideGesture-elbowCapStart)/(elbowCapFull-elbowCapStart))}):null;
   if(waveLayers&&cfg.prefix==='left'){
@@ -292,7 +293,7 @@ class Renderer{
    };
   }
   const mapping=p=>{
-   const source={x:p.x*scale,y:p.y*scale},mapped=waveLayers?waveLayers.map(source):M.deformPoint(source,src,dest,normalScale);
+   const source={x:p.x*scale,y:p.y*scale},mapped=waveLayers?waveLayers.map(source):deform(source);
    if(type!=='leg')return mapped;
    // The painted overlap above the hip belongs inside the skirt. Letting it
    // rotate backwards with the thigh makes a skin spike appear at the waist.

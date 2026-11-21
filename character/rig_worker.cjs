@@ -13,6 +13,8 @@ const context = {CLOUDY_BINARY_MESHES: true};
 context.window = context;
 context.globalThis = context;
 vm.createContext(context);
+// Keep the VM's own Math object, avoiding repeated implicit global lookups.
+context.Math = vm.runInContext('Math', context);
 const hashes = {};
 for (const relative of files) {
   const raw = fs.readFileSync(path.join(rigRoot, relative));
